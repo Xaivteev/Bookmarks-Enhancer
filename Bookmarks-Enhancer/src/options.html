@@ -1,0 +1,39 @@
+<!DOCTYPE html>
+
+<html>
+<head>
+    <meta charset="utf-8">
+    <style>
+        label {
+            display: block;
+        }
+
+        label {
+            font-weight: bold;
+        }
+
+        .formControl {
+            margin-bottom: 2em;
+            width: 80%;
+        }
+
+        .formControl > * {
+            width: 100%;
+        }
+    </style>
+</head>
+<body>
+    <form>
+		<label>Enable Top Border</label>
+		<input type="checkbox" id="enableTopBorder">
+		<label>Only Use Specified Sites</label>
+		<input type="checkbox" id="onlyUseSites">
+		<label>Sites for Search (in the form 'site1.com, site2.org, site3.gov')</label>
+        <div class="formControl"><textarea id="sitesForSearch" rows="5" ></textarea></div>
+        <label>HTML Tags for Search (in the form 'tag1, tag2 tag2-1, tag3')</label>
+        <div class="formControl"><textarea id="tagsForSearch" rows="5" ></textarea></div>
+        <button type="submit">Save</button>
+    </form>
+    <script src="options.js"></script>
+</body>
+</html>

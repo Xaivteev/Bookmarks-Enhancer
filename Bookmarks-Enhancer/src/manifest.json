@@ -1,0 +1,47 @@
+{
+  "manifest_version": 2,
+  "name": "Bookmarks Enhancer",
+  "version": "1.0",
+  "description": "Hides 'Blocked' bookmarked links. Marks bookmarked and 'Favorite' links.",
+  "icons": {
+    "48": "icons/highlighter-48.png",
+    "96": "icons/highlighter-96.png"
+  },
+  "content_scripts": [
+    {
+      "matches": [
+        "<all_urls>"
+      ],
+      "js": [
+        "contentScript.js"
+      ]
+    }
+  ],
+  "background": {
+    "scripts": [
+      "backgroundScript.js"
+    ]
+  },
+  "permissions": [
+    "bookmarks",
+    "storage",
+	"activeTab"
+  ],
+  "options_ui": {
+	"page": "options.html"
+	},
+  "applications": {
+    "gecko": {
+      "id": "Bookmarks@Enhancer"
+    }
+  },
+  "browser_action": {
+    "default_icon": "icons/highlighter-48.png",
+    "default_title": "Enhance Bookmarks"
+  },
+  "page_action": {
+	"default_icon": "icons/highlighter-48.png",
+    "default_title": "Enhance Bookmarks",
+	"show_matches": ["<all_urls>"]
+  }
+}
