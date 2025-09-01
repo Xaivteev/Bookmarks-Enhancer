@@ -24,14 +24,24 @@
 </head>
 <body>
     <form>
-		<label>Enable Top Border</label>
-		<input type="checkbox" id="enableTopBorder">
-		<label>Only Use Specified Sites</label>
-		<input type="checkbox" id="onlyUseSites">
-		<label>Sites for Search (in the form 'site1.com, site2.org, site3.gov')</label>
-        <div class="formControl"><textarea id="sitesForSearch" rows="5" ></textarea></div>
-        <label>HTML Tags for Search (in the form 'tag1, tag2 tag2-1, tag3')</label>
-        <div class="formControl"><textarea id="tagsForSearch" rows="5" ></textarea></div>
+        <label>Enable Top Border</label>
+        <input type="checkbox" id="enableTopBorder">
+        <label>Only Use Specified Sites</label>
+        <input type="checkbox" id="onlyUseSites">
+        <label>Sites and Tags for Search</label>
+        <table id="searchTable">
+            <thead>
+                <tr>
+                    <th>Site</th>
+                    <th>Tag</th>
+                    <th>Actions</th>
+                </tr>
+            </thead>
+            <tbody id="tableBody">
+                <!-- Rows will be added dynamically -->
+            </tbody>
+        </table>
+        <button type="button" id="addRowBtn">Add Row</button>
         <button type="submit">Save</button>
     </form>
     <script src="options.js"></script>

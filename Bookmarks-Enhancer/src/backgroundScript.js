@@ -1,8 +1,8 @@
-var port;
+﻿let port;
 
 // initial page setup
 function connected(p) {
-    port = p;
+	port = p;
 
     port.onMessage.addListener(function(m) {
         if (m.hrefs) {
@@ -15,7 +15,7 @@ browser.runtime.onConnect.addListener(connected);
 
 // trigger update styling if button is clicked
 browser.browserAction.onClicked.addListener(() => {
-	var activeTab = browser.tabs.query({
+	let activeTab = browser.tabs.query({
 		currentWindow: true,
 		active: true
 	});
@@ -23,7 +23,7 @@ browser.browserAction.onClicked.addListener(() => {
 });
 
 browser.pageAction.onClicked.addListener(() => {
-	var activeTab = browser.tabs.query({
+	let activeTab = browser.tabs.query({
 		currentWindow: true,
 		active: true
 	});
@@ -48,50 +48,81 @@ function onError(error) {
 	console.log(`Error: ${error}`);
 }
 
+let bookmarkStatusMap = new Map(); // href -> { seen, blocked, favorited }
 function searchhrefs(hrefs) {
-	var searches = [];
-	var blockedFolderName = 'Blocked';
-	var favoritedFolderName = 'Favorited';
+	let blockedFolderName = 'Blocked';
+	let favoritedFolderName = 'Favorited';
 	
 	// contentScript asks if links have been bookmarked
-	// Search for bookmarks
-	for (var i = 0; i < hrefs.length; i++) {
-		var href = hrefs[i].split('?p=')[0];
-		searches.push(browser.bookmarks.search({url: href}));
-	}
-	
-	// Search for blocked and favorited bookmark folders
-	browser.bookmarks.search({title: blockedFolderName}).then(function (blockedFolderNode) {
-		browser.bookmarks.search({title: favoritedFolderName}).then(function (favoritedFolderNode) {
-			//Search for bookmarks
-			Promise.all(searches).then(function (bookmarkedArray) {
-				var savedBookmarks = [];
-				var blockedBookmarks = [];
-				var favoritedBookmarks = [];
-				// Collect bookmarks into arrays
-				for (var i = 0; i < bookmarkedArray.length; i++) {
-					var bookmark = bookmarkedArray[i];
+	// Normalize hrefs and prepare lookup
+	const normalizedHrefs = hrefs.map(href => href.split('?p=')[0]);
 
-					if (bookmark.length > 0) {
-						if (!!blockedFolderNode && bookmark[0].parentId === blockedFolderNode[0].id) {
-							blockedBookmarks.push(bookmark[0]);
-						} else if (!!favoritedFolderNode && bookmark[0].parentId === favoritedFolderNode[0].id) {
-							favoritedBookmarks.push(bookmark[0]);
-						} else if (bookmark[0].title !== blockedFolderName &&
-									bookmark[0].title !== favoritedFolderName) {
-							savedBookmarks.push(bookmark[0]);			
-						}
-							
-					}
+	// Filter out hrefs that have already been processed
+    const hrefsToSearch = normalizedHrefs.filter(href => !bookmarkStatusMap.has(href));
+
+	// Prepare search promises
+	const searches = hrefsToSearch.map(href => browser.bookmarks.search({ url: href }));
+
+	// Search for blocked and favorited bookmark folders
+	Promise.all([
+		browser.bookmarks.search({ title: blockedFolderName }),
+		browser.bookmarks.search({ title: favoritedFolderName }),
+		Promise.all(searches)
+	]).then(([blockedFolderNode, favoritedFolderNode, bookmarkedArray]) => {
+		const blockedFolderId = blockedFolderNode?.[0]?.id;
+		const favoritedFolderId = favoritedFolderNode?.[0]?.id;
+
+		for (let i = 0; i < bookmarkedArray.length; i++) {
+			const bookmarkList = bookmarkedArray[i];
+			const href = normalizedHrefs[i];
+
+			const status = {
+				seen: null,
+				blocked: null,
+				favorited: null
+			};
+
+			if (bookmarkList.length > 0) {
+				const bookmark = bookmarkList[0];
+
+				if (bookmark.parentId === blockedFolderId) {
+					status.blocked = bookmark;
+				} else if (bookmark.parentId === favoritedFolderId) {
+					status.favorited = bookmark;
+				} else if (
+					bookmark.title !== blockedFolderName &&
+					bookmark.title !== favoritedFolderName
+				) {
+					status.seen = bookmark;
 				}
-				
-				// Pass bookmark arrays back to contentScript
-				var msg = { blocked: blockedBookmarks,
-							favorited: favoritedBookmarks,
-							seen: savedBookmarks};
-							
-				port.postMessage(msg);
-			});
+			}
+
+			bookmarkStatusMap.set(href, status);
+		}
+
+		// Collect bookmarks into arrays
+		const savedBookmarks = [];
+		const blockedBookmarks = [];
+		const favoritedBookmarks = [];
+
+		for (const status of bookmarkStatusMap.values()) {
+			if (status.seen) savedBookmarks.push(status.seen);
+			if (status.blocked) blockedBookmarks.push(status.blocked);
+			if (status.favorited) favoritedBookmarks.push(status.favorited);
+		}
+
+		// Pass bookmark arrays back to contentScript
+		port.postMessage({
+			seen: savedBookmarks,
+			blocked: blockedBookmarks,
+			favorited: favoritedBookmarks
 		});
 	});
 }
+
+// Clear cached bookmarks when refreshed or navigated
+browser.tabs.onUpdated.addListener((tabId, changeInfo, tab) => {
+	if (changeInfo.status === "complete") {
+		bookmarkStatusMap = new Map();
+	}
+});

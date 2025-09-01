@@ -1,63 +1,63 @@
 // Load settings from config
-var tagsForSearch = [];
-var searchSite = true;
-var enableTopBorder = false;
+let searchPairs = [];
+let tagsForSearch = [];
+let searchSite = true;
+let enableTopBorder = false;
 
+let getting = browser.storage.local.get(["searchPairs", "enableTopBorder", "onlyUseSites"]);
+getting.then(onGot, onError);
 function onError(error) {
     console.log(`Error: ${error}`);
 }
 
 function onGot(item) {
-    if (item.tagsForSearch) {
-        tagsForSearch = item.tagsForSearch.split(',');
-		for(var i = 0; i < tagsForSearch.length; i++) {
-			tagsForSearch[i] = tagsForSearch[i].trim();
-		}
-    }
+	searchPairs = Array.isArray(item.searchPairs) ? item.searchPairs : [];
 	
-	if (!!item.onlyUseSites) {
+	if (item.onlyUseSites) {
 		searchSite = false;
-		if (item.sitesForSearch) {
-			sitesForSearch = item.sitesForSearch.split(',');
-			for(var i = 0; i < sitesForSearch.length; i++) {
-				sitesForSearch[i] = sitesForSearch[i].trim();
-			}
-			for (var i = 0; i < sitesForSearch.length; i++) {
-				if (window.location.href.includes(sitesForSearch[i])) {
-					searchSite = true;
-				}
-			}
+		// Find pair where site matches current URL
+		const matchedPair = searchPairs.find(pair => window.location.href.includes(pair.site));
+
+		if (matchedPair) {
+			searchSite = true;
+			tagsForSearch = matchedPair.tag.split(',').map(tag => tag.trim()).filter(Boolean);
 		}
+
 	} else {
+        tagsForSearch = searchPairs.flatMap(pair => pair.tag.split(',').map(tag => tag.trim()).filter(Boolean));
 		searchSite = true;
 	}
-	
-	if (!!item.enableTopBorder) {
-		enableTopBorder = item.enableTopBorder;
-	}
-}
 
-var getting = browser.storage.local.get(["sitesForSearch", "tagsForSearch", "enableTopBorder", "onlyUseSites"]);
-getting.then(onGot, onError);
+    enableTopBorder = !!item.enableTopBorder;
+}
 
 // Set up communication port for initial styling
 
-var port = browser.runtime.connect({name:"bookmark-highlighter"});
+let port = browser.runtime.connect({name:"bookmark-highlighter"});
 
 // Listen for response from background script
 
 port.onMessage.addListener(function(m) {
 	if (searchSite) {
-		for (var i = 0; i < tagsForSearch.length; i++) {
-			var divs = document.getElementsByClassName(tagsForSearch[i]);
+		for (let i = 0; i < tagsForSearch.length; i++) {
+			let elements = Array.from(document.getElementsByClassName(tagsForSearch[i])).filter(el => {
+				const style = window.getComputedStyle(el);
+
+				const isHidden = style.display === 'none';
+				const hasUnderlineDouble = style.textDecoration.includes('underline') && style.textDecorationStyle === 'double';
+				const hasUnderlineDashed = style.textDecorationLine === 'underline' && style.textDecorationStyle === 'dashed';
+
+				return !isHidden && !hasUnderlineDouble && !hasUnderlineDashed;
+			});
+
 			if (m.seen) {
-				styleSeen(m.seen, divs);
+				styleSeen(m.seen, elements);
 			}
 			if (m.blocked) {
-				styleBlocked(m.blocked, divs);
+				styleBlocked(m.blocked, elements);
 			}
 			if (m.favorited) {
-				styleFavorited(m.favorited, divs);
+				styleFavorited(m.favorited, elements);
 			}
 		}
 	}
@@ -65,11 +65,12 @@ port.onMessage.addListener(function(m) {
 
 // Collect list of links
 
-var hrefs = [];
+let hrefs = [];
 
-for (var i = 0; i < document.links.length; i++) {
-    var item = document.links[i];
-    hrefs.push(item.href);
+for (let i = 0; i < document.links.length; i++) {
+    let item = document.links[i];
+	hrefs.push(item.href);
+    console.log(item.href);
 }
 
 // Ask background script to check for bookmarks
@@ -82,25 +83,35 @@ function connected(p) {
 	port = p;
 	port.onMessage.addListener(function(m) {
 		if (searchSite) {
-			for (var i = 0; i < tagsForSearch.length; i++) {
-				var divs = document.getElementsByClassName(tagsForSearch[i]);
+			for (let i = 0; i < tagsForSearch.length; i++) {
+				let elements = Array.from(document.getElementsByClassName(tagsForSearch[i])).filter(el => {
+					const style = window.getComputedStyle(el);
+
+                    // filter out hidden elements and those already styled
+					const isHidden = style.display === 'none';
+					const hasUnderlineDouble = style.textDecoration.includes('underline') && style.textDecorationStyle === 'double';
+					const hasUnderlineDashed = style.textDecorationLine === 'underline' && style.textDecorationStyle === 'dashed';
+
+					return !isHidden && !hasUnderlineDouble && !hasUnderlineDashed;
+				});
+
 				if (m.seen) {
-					styleSeen(m.seen, divs);
+					styleSeen(m.seen, elements);
 				}
 				if (m.blocked) {
-					styleBlocked(m.blocked, divs);
+					styleBlocked(m.blocked, elements);
 				}
 				if (m.favorited) {
-					styleFavorited(m.favorited, divs);
+					styleFavorited(m.favorited, elements);
 				}
 			}
 		}
 	});
 
-	var hrefs = [];
+	let hrefs = [];
 
-	for (var i = 0; i < document.links.length; i++) {
-		var item = document.links[i];
+	for (let i = 0; i < document.links.length; i++) {
+		let item = document.links[i];
 		hrefs.push(item.href);
 	}
 		
@@ -109,11 +120,11 @@ function connected(p) {
 
 function styleBlocked(blocked, divs) {
 	// hide links of blocked bookmarks
-	for (var x = 0; x < divs.length; x++) {
-		var div = divs[x];
-		var content = div.innerHTML.trim();
-		for (var y = 0; y < blocked.length; y++) {
-			var currentURL = new URL(blocked[y].url).pathname;
+	for (let x = 0; x < divs.length; x++) {
+		let div = divs[x];
+		let content = div.innerHTML.trim();
+		for (let y = 0; y < blocked.length; y++) {
+			let currentURL = new URL(blocked[y].url).pathname;
 			if (currentURL !== '/') {
 				if (content.includes(new URL(blocked[y].url).pathname)) {
 					div.style.display = 'none';
@@ -126,10 +137,10 @@ function styleBlocked(blocked, divs) {
 		}
 	}
 	
-	for (var i = 0; i < document.links.length; i++) {
-		var link = document.links[i];
-		for (var y = 0; y < blocked.length; y++) {
-			var currentURL = new URL(blocked[y].url).pathname;
+	for (let i = 0; i < document.links.length; i++) {
+		let link = document.links[i];
+		for (let y = 0; y < blocked.length; y++) {
+			let currentURL = new URL(blocked[y].url).pathname;
 			if (currentURL !== '/') {
 				if(link.href.includes(new URL(blocked[y].url).pathname)) {
 					link.style.cssText += ';' + 'display: none;';
@@ -141,11 +152,11 @@ function styleBlocked(blocked, divs) {
 
 function styleFavorited(favorited, divs) {
 	// underline links of favorited bookmarks
-	for (var x = 0; x < divs.length; x++) {
-		var div = divs[x];
-		var content = div.innerHTML.trim();
-		for (var y = 0; y < favorited.length; y++) {
-			var currentURL = new URL(favorited[y].url).pathname;
+	for (let x = 0; x < divs.length; x++) {
+		let div = divs[x];
+		let content = div.innerHTML.trim();
+		for (let y = 0; y < favorited.length; y++) {
+			let currentURL = new URL(favorited[y].url).pathname;
 			if (currentURL !== '/') {
 				if (content.includes(new URL(favorited[y].url).pathname)) {
 					div.style.textDecoration = "underline";
@@ -159,10 +170,10 @@ function styleFavorited(favorited, divs) {
 		}
 	}
 	
-	for (var i = 0; i < document.links.length; i++) {
-		var link = document.links[i];
-		for (var y = 0; y < favorited.length; y++) {
-			var currentURL = new URL(favorited[y].url).pathname;
+	for (let i = 0; i < document.links.length; i++) {
+		let link = document.links[i];
+		for (let y = 0; y < favorited.length; y++) {
+			let currentURL = new URL(favorited[y].url).pathname;
 			if (currentURL !== '/') {
 				if(link.href.includes(new URL(favorited[y].url).pathname)) {
 					link.style.cssText += ';' + 'text-decoration: underline double;';
@@ -174,11 +185,11 @@ function styleFavorited(favorited, divs) {
 
 function styleSeen(seen, divs) {
 	// dashed underline links of seen bookmarks
-	for (var x = 0; x < divs.length; x++) {
-		var div = divs[x];
-		var content = div.innerHTML.trim();	
-		for (var y = 0; y < seen.length; y++) {
-			var currentURL = new URL(seen[y].url).pathname;
+	for (let x = 0; x < divs.length; x++) {
+		let div = divs[x];
+		let content = div.innerHTML.trim();	
+		for (let y = 0; y < seen.length; y++) {
+			let currentURL = new URL(seen[y].url).pathname;
 			if (currentURL !== '/') {
 				if (content.includes(new URL(seen[y].url).pathname)) {
 					div.style.textDecorationLine = "underline";
@@ -192,10 +203,10 @@ function styleSeen(seen, divs) {
 		}
 	}
 	
-	for (var i = 0; i < document.links.length; i++) {
-		var link = document.links[i];
-		for (var y = 0; y < seen.length; y++) {
-			var currentURL = new URL(seen[y].url).pathname;
+	for (let i = 0; i < document.links.length; i++) {
+		let link = document.links[i];
+		for (let y = 0; y < seen.length; y++) {
+			let currentURL = new URL(seen[y].url).pathname;
 			if (currentURL !== '/') {
 				if(link.href.includes(new URL(seen[y].url).pathname)) {
 					link.style.cssText += ';' + 'text-decoration: underline dashed;';
