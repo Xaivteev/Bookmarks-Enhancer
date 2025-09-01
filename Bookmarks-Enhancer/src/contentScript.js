@@ -70,7 +70,6 @@ let hrefs = [];
 for (let i = 0; i < document.links.length; i++) {
     let item = document.links[i];
 	hrefs.push(item.href);
-    console.log(item.href);
 }
 
 // Ask background script to check for bookmarks

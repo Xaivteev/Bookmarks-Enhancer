@@ -74,7 +74,7 @@ function searchhrefs(hrefs) {
 
 		for (let i = 0; i < bookmarkedArray.length; i++) {
 			const bookmarkList = bookmarkedArray[i];
-			const href = normalizedHrefs[i];
+			const href = hrefsToSearch[i];
 
 			const status = {
 				seen: null,
@@ -126,3 +126,26 @@ browser.tabs.onUpdated.addListener((tabId, changeInfo, tab) => {
 		bookmarkStatusMap = new Map();
 	}
 });
+
+browser.bookmarks.onRemoved.addListener((id, removeInfo) => {
+	removeBookmarkFromCache(id);
+});
+
+browser.bookmarks.onMoved.addListener((id, moveInfo) => {
+	removeBookmarkFromCache(id);
+});
+
+browser.bookmarks.onChanged.addListener((id, changeInfo) => {
+	removeBookmarkFromCache(id);
+});
+function removeBookmarkFromCache(bookmarkId) {
+	for (const [href, status] of bookmarkStatusMap.entries()) {
+		if (
+			status.seen?.id === bookmarkId ||
+			status.blocked?.id === bookmarkId ||
+			status.favorited?.id === bookmarkId
+		) {
+			bookmarkStatusMap.delete(href);
+		}
+	}
+}
