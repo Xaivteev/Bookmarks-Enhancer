@@ -37,180 +37,130 @@ let port = browser.runtime.connect({name:"bookmark-highlighter"});
 
 // Listen for response from background script
 
-port.onMessage.addListener(function(m) {
-	if (searchSite) {
-		for (let i = 0; i < tagsForSearch.length; i++) {
-			let elements = Array.from(document.getElementsByClassName(tagsForSearch[i])).filter(el => {
-				const style = window.getComputedStyle(el);
-
-				const isHidden = style.display === 'none';
-				const hasUnderlineDouble = style.textDecoration.includes('underline') && style.textDecorationStyle === 'double';
-				const hasUnderlineDashed = style.textDecorationLine === 'underline' && style.textDecorationStyle === 'dashed';
-
-				return !isHidden && !hasUnderlineDouble && !hasUnderlineDashed;
-			});
-
-			if (m.seen) {
-				styleSeen(m.seen, elements);
-			}
-			if (m.blocked) {
-				styleBlocked(m.blocked, elements);
-			}
-			if (m.favorited) {
-				styleFavorited(m.favorited, elements);
-			}
-		}
-	}
-});
-
-// Collect list of links
-
-let hrefs = [];
-
-for (let i = 0; i < document.links.length; i++) {
-    let item = document.links[i];
-	hrefs.push(item.href);
-}
+port.onMessage.addListener(applyBookmarkStyling);
 
 // Ask background script to check for bookmarks
 
-port.postMessage({hrefs: hrefs});
+port.postMessage({ hrefs: collectNormalizedHrefs() });
 
 // Connection from backgroundScript if update button is pressed
 browser.runtime.onConnect.addListener(connected);
 function connected(p) {
 	port = p;
-	port.onMessage.addListener(function(m) {
-		if (searchSite) {
-			for (let i = 0; i < tagsForSearch.length; i++) {
-				let elements = Array.from(document.getElementsByClassName(tagsForSearch[i])).filter(el => {
-					const style = window.getComputedStyle(el);
-
-                    // filter out hidden elements and those already styled
-					const isHidden = style.display === 'none';
-					const hasUnderlineDouble = style.textDecoration.includes('underline') && style.textDecorationStyle === 'double';
-					const hasUnderlineDashed = style.textDecorationLine === 'underline' && style.textDecorationStyle === 'dashed';
-
-					return !isHidden && !hasUnderlineDouble && !hasUnderlineDashed;
-				});
-
-				if (m.seen) {
-					styleSeen(m.seen, elements);
-				}
-				if (m.blocked) {
-					styleBlocked(m.blocked, elements);
-				}
-				if (m.favorited) {
-					styleFavorited(m.favorited, elements);
-				}
-			}
-		}
-	});
-
-	let hrefs = [];
-
-	for (let i = 0; i < document.links.length; i++) {
-		let item = document.links[i];
-		hrefs.push(item.href);
-	}
+	port.onMessage.addListener(applyBookmarkStyling);
 		
-	port.postMessage({hrefs: hrefs});
+	port.postMessage({ hrefs: collectNormalizedHrefs() });
 }
 
-function styleBlocked(blocked, divs) {
-	// hide links of blocked bookmarks
-	for (let x = 0; x < divs.length; x++) {
-		let div = divs[x];
-		let content = div.innerHTML.trim();
-		for (let y = 0; y < blocked.length; y++) {
-			let currentURL = new URL(blocked[y].url).pathname;
-			if (currentURL !== '/') {
-				if (content.includes(new URL(blocked[y].url).pathname)) {
-					div.style.display = 'none';
-				}
-				// add top border to blocked bookmarks
-				if (window.location.href.includes(blocked[y].url) && enableTopBorder) {
-					document.body.style.borderTop = "dashed red";
-				}
-			}
-		}
+function collectNormalizedHrefs() {
+	const hrefs = [];
+	for (const link of document.links) {
+		hrefs.push(normalizeHrefForSearch(link.href));
 	}
-	
-	for (let i = 0; i < document.links.length; i++) {
-		let link = document.links[i];
-		for (let y = 0; y < blocked.length; y++) {
-			let currentURL = new URL(blocked[y].url).pathname;
-			if (currentURL !== '/') {
-				if(link.href.includes(new URL(blocked[y].url).pathname)) {
-					link.style.cssText += ';' + 'display: none;';
-				}
-			}
-		}
-	}
+	return hrefs;
 }
 
-function styleFavorited(favorited, divs) {
-	// underline links of favorited bookmarks
-	for (let x = 0; x < divs.length; x++) {
-		let div = divs[x];
-		let content = div.innerHTML.trim();
-		for (let y = 0; y < favorited.length; y++) {
-			let currentURL = new URL(favorited[y].url).pathname;
-			if (currentURL !== '/') {
-				if (content.includes(new URL(favorited[y].url).pathname)) {
-					div.style.textDecoration = "underline";
-					div.style.textDecorationStyle = "double";
-				}
-				//add top border to favorited bookmarks
-				if (window.location.href.includes(favorited[y].url) && enableTopBorder) {
-					document.body.style.borderTop = "double white";
-				}
+function applyBookmarkStyling(message) {
+	if (!searchSite) return;
+
+	for (const tag of tagsForSearch) {
+		const elements = Array.from(document.getElementsByClassName(tag)).filter(el => {
+			const style = window.getComputedStyle(el);
+
+			// filter out hidden elements and those already styled
+			const isHidden = style.display === 'none';
+			const hasUnderlineDouble = style.textDecoration.includes('underline') && style.textDecorationStyle === 'double';
+			const hasUnderlineDashed = style.textDecorationLine === 'underline' && style.textDecorationStyle === 'dashed';
+
+			return !isHidden && !hasUnderlineDouble && !hasUnderlineDashed;
+		});
+
+		if (message.seen) styleSeen(message.seen, elements);
+		if (message.blocked) styleBlocked(message.blocked, elements);
+		if (message.favorited) styleFavorited(message.favorited, elements);
+	}
+}
+function styleBookmarks(bookmarks, elements, styleConfig) {
+	// Style matching elements
+	for (const element of elements) {
+		const content = element.innerHTML.trim();
+		for (const bookmark of bookmarks) {
+			const path = new URL(bookmark.url).pathname;
+			if (content.includes(path)) {
+				Object.assign(element.style, styleConfig.element);
+			}
+			if (window.location.href.includes(bookmark.url) && enableTopBorder) {
+				document.body.style.borderTop = styleConfig.border;
 			}
 		}
 	}
-	
-	for (let i = 0; i < document.links.length; i++) {
-		let link = document.links[i];
-		for (let y = 0; y < favorited.length; y++) {
-			let currentURL = new URL(favorited[y].url).pathname;
-			if (currentURL !== '/') {
-				if(link.href.includes(new URL(favorited[y].url).pathname)) {
-					link.style.cssText += ';' + 'text-decoration: underline double;';
-				}
+
+	// Style matching links
+	for (const link of document.links) {
+		for (const bookmark of bookmarks) {
+			if (hrefsMatch(link.href, bookmark.url)) {
+				Object.assign(link.style, styleConfig.link);
 			}
 		}
 	}
 }
 
-function styleSeen(seen, divs) {
-	// dashed underline links of seen bookmarks
-	for (let x = 0; x < divs.length; x++) {
-		let div = divs[x];
-		let content = div.innerHTML.trim();	
-		for (let y = 0; y < seen.length; y++) {
-			let currentURL = new URL(seen[y].url).pathname;
-			if (currentURL !== '/') {
-				if (content.includes(new URL(seen[y].url).pathname)) {
-					div.style.textDecorationLine = "underline";
-					div.style.textDecorationStyle = "dashed";
-				}
-				// add top border to seen bookmarks
-				if (window.location.href.includes(seen[y].url) && enableTopBorder) {
-					document.body.style.borderTop = "dashed white";
-				}
-			}
+function styleBlocked(blocked, element) {
+	styleBookmarks(blocked, element, {
+		element: { display: "none" },
+		link: { display: "none" },
+		border: "dashed red"
+	});
+}
+
+function styleFavorited(favorited, element) {
+	styleBookmarks(favorited, element, {
+		element: { textDecoration: "underline", textDecorationStyle: "double" },
+		link: { textDecoration: "underline double" },
+		border: "double white"
+	});
+}
+
+function styleSeen(seen, element) {
+	styleBookmarks(seen, element, {
+		element: { textDecorationLine: "underline", textDecorationStyle: "dashed" },
+		link: { textDecoration: "underline dashed" },
+		border: "dashed white"
+	});
+}
+
+// Compare two hrefs for equality after normalization
+function hrefsMatch(linkHref, bookmarkUrl) {
+	try {
+		const normalizedLink = normalizeHrefForSearch(linkHref);
+		const normalizedBookmark = normalizeHrefForSearch(bookmarkUrl);
+		return normalizedLink === normalizedBookmark;
+	} catch {
+		return false;
+	}
+}
+
+function normalizeHrefForSearch(href) {
+	try {
+		const url = new URL(href);
+		// Absolute URL (http/https)
+		if (url.protocol === "http:" || url.protocol === "https:") {
+			return url.href;
+		}
+		// Protocol-relative (e.g., //cdn.example.com/lib.js)
+		if (url.protocol === "") {
+			return new URL(href, window.location.origin).href;
+		}
+	} catch {
+		// Likely a relative path
+		try {
+			return new URL(href, window.location.origin).href;
+		} catch {
+			// Final fallback: return original href value
+			return href;
 		}
 	}
-	
-	for (let i = 0; i < document.links.length; i++) {
-		let link = document.links[i];
-		for (let y = 0; y < seen.length; y++) {
-			let currentURL = new URL(seen[y].url).pathname;
-			if (currentURL !== '/') {
-				if(link.href.includes(new URL(seen[y].url).pathname)) {
-					link.style.cssText += ';' + 'text-decoration: underline dashed;';
-				}
-			}
-		}
-	}
+
+	// Fallback
+	return href;
 }

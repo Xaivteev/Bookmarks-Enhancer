@@ -4,12 +4,14 @@
 function connected(p) {
 	port = p;
 
-    port.onMessage.addListener(function(m) {
-        if (m.hrefs) {
-			searchhrefs(m.hrefs);
-        };
-    });
+	port.onMessage.addListener(handlePortMessage);
 }
+function handlePortMessage(m) {
+	if (m.hrefs) {
+		searchhrefs(m.hrefs);
+	}
+}
+
 
 browser.runtime.onConnect.addListener(connected);
 
