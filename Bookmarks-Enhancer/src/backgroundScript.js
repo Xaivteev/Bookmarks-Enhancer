@@ -59,8 +59,11 @@ function searchhrefs(hrefs) {
 	// Normalize hrefs and prepare lookup
 	const normalizedHrefs = hrefs.map(href => href.split('?p=')[0]);
 
+    // Filter out invalid URLs
+	const validHrefs = normalizedHrefs.filter(isValidBookmarkUrl);
+
 	// Filter out hrefs that have already been processed
-    const hrefsToSearch = normalizedHrefs.filter(href => !bookmarkStatusMap.has(href));
+	const hrefsToSearch = validHrefs.filter(href => !bookmarkStatusMap.has(href));
 
 	// Prepare search promises
 	const searches = hrefsToSearch.map(href => browser.bookmarks.search({ url: href }));
@@ -120,6 +123,15 @@ function searchhrefs(hrefs) {
 			favorited: favoritedBookmarks
 		});
 	});
+}
+
+function isValidBookmarkUrl(href) {
+	try {
+		const url = new URL(href);
+		return url.protocol === "http:" || url.protocol === "https:";
+	} catch {
+		return false;
+	}
 }
 
 // Clear cached bookmarks when refreshed or navigated

@@ -81,29 +81,67 @@ function applyBookmarkStyling(message) {
 	}
 }
 function styleBookmarks(bookmarks, elements, styleConfig) {
-	// Style matching elements
+	const normalizedBookmarks = bookmarks.map(b => ({
+		url: b.url,
+		normalized: normalizeHrefForSearch(b.url),
+		path: new URL(b.url).pathname
+	}));
+
 	for (const element of elements) {
-		const content = element.innerHTML.trim();
-		for (const bookmark of bookmarks) {
-			const path = new URL(bookmark.url).pathname;
-			if (content.includes(path)) {
-				Object.assign(element.style, styleConfig.element);
+		const text = element.textContent || "";
+		const html = element.innerHTML || "";
+
+		let matched = false;
+
+		for (const bookmark of normalizedBookmarks) {
+			const { normalized, path } = bookmark;
+
+			// Match against text or innerHTML
+			if (text.includes(normalized) || text.includes(path) ||
+				html.includes(normalized) || html.includes(path)) {
+				matched = true;
+				break;
 			}
-			if (window.location.href.includes(bookmark.url) && enableTopBorder) {
-				document.body.style.borderTop = styleConfig.border;
+
+			// Match against any attribute in any descendant
+			const descendants = element.querySelectorAll("*");
+			for (const desc of descendants) {
+				for (const attr of desc.attributes) {
+					const val = attr.value;
+					if (val.includes(normalized) || val.includes(path)) {
+						matched = true;
+						break;
+					}
+				}
+				if (matched) break;
 			}
+
+			if (matched) break;
+		}
+
+		if (matched) {
+			Object.assign(element.style, styleConfig.element);
 		}
 	}
 
 	// Style matching links
 	for (const link of document.links) {
-		for (const bookmark of bookmarks) {
-			if (hrefsMatch(link.href, bookmark.url)) {
+		const normalizedLink = normalizeHrefForSearch(link.href);
+		for (const bookmark of normalizedBookmarks) {
+			if (normalizedLink === bookmark.normalized) {
 				Object.assign(link.style, styleConfig.link);
 			}
 		}
 	}
+
+	// top border styling
+	for (const bookmark of normalizedBookmarks) {
+		if (window.location.href.includes(bookmark.normalized) && enableTopBorder) {
+			document.body.style.borderTop = styleConfig.border;
+		}
+	}
 }
+
 
 function styleBlocked(blocked, element) {
 	styleBookmarks(blocked, element, {
