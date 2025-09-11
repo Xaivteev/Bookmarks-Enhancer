@@ -111,7 +111,7 @@ function importTableFromJson(jsonString) {
 
     clearTable();
 
-    const table = document.querySelector("table");
+    const table = document.querySelector("tableBody");
     data.forEach(({ site, tag }) => {
         const row = document.createElement("tr");
 

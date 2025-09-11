@@ -25,7 +25,9 @@
   "permissions": [
     "bookmarks",
     "storage",
-	"activeTab"
+    "activeTab",
+    "clipboardWrite",
+    "clipboardRead"
   ],
   "options_ui": {
 	"page": "options.html"
