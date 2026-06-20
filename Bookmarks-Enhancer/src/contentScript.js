@@ -101,35 +101,39 @@ function sendAllHrefs() {
 function applyBookmarkStyling(message) {
 	if (!searchSite) return;
 
+	const bookmarkGroups = {
+		seen: normalizeBookmarks(message.seen),
+		blocked: normalizeBookmarks(message.blocked),
+		favorited: normalizeBookmarks(message.favorited)
+	};
+
 	// Store known bookmark status per normalized URL for incremental updates
 	function cacheBookmarkStatus(bookmarks, type) {
 		if (!bookmarks) return;
-		for (const b of bookmarks) {
-			const norm = normalizeHrefForSearch(b.url);
+		for (const bookmark of bookmarks) {
+			const norm = bookmark.normalized;
 			const status = linkStatusMap.get(norm) || { seen: false, blocked: false, favorited: false };
 			status[type] = true;
 			linkStatusMap.set(norm, status);
 		}
 	}
 
-	cacheBookmarkStatus(message.seen, 'seen');
-	cacheBookmarkStatus(message.blocked, 'blocked');
-	cacheBookmarkStatus(message.favorited, 'favorited');
+	cacheBookmarkStatus(bookmarkGroups.seen, 'seen');
+	cacheBookmarkStatus(bookmarkGroups.blocked, 'blocked');
+	cacheBookmarkStatus(bookmarkGroups.favorited, 'favorited');
 
 	function applyLinkResults(bookmarks, styleConfig) {
-		if (!bookmarks) return;
-		for (const b of bookmarks) {
-			const norm = normalizeHrefForSearch(b.url);
-			const els = linkMap.get(norm) || [];
+		for (const bookmark of bookmarks) {
+			const els = linkMap.get(bookmark.normalized) || [];
 			for (const el of els) {
 				Object.assign(el.style, styleConfig.link);
 			}
 		}
 	}
 
-	if (message.seen) applyLinkResults(message.seen, { link: { textDecoration: 'underline dashed' } });
-	if (message.blocked) applyLinkResults(message.blocked, { link: { display: 'none' } });
-	if (message.favorited) applyLinkResults(message.favorited, { link: { textDecoration: 'underline double' } });
+	applyLinkResults(bookmarkGroups.seen, { link: { textDecoration: 'underline dashed' } });
+	applyLinkResults(bookmarkGroups.blocked, { link: { display: 'none' } });
+	applyLinkResults(bookmarkGroups.favorited, { link: { textDecoration: 'underline double' } });
 
 	// Then run the existing class-based element styling for configured tags
 	for (const tag of tagsForSearch) {
@@ -141,96 +145,104 @@ function applyBookmarkStyling(message) {
 			return !isHidden && !hasUnderlineDouble && !hasUnderlineDashed;
 		});
 
-		if (message.seen) styleSeen(message.seen, elements);
-		if (message.blocked) styleBlocked(message.blocked, elements);
-		if (message.favorited) styleFavorited(message.favorited, elements);
+		styleElementsForBookmarks(elements, bookmarkGroups);
 	}
 }
-function styleBookmarks(bookmarks, elements, styleConfig) {
-	const normalizedBookmarks = bookmarks.map(b => ({
+
+function normalizeBookmarks(bookmarks) {
+	if (!bookmarks) return [];
+	return bookmarks.map(b => ({
 		url: b.url,
 		normalized: normalizeHrefForSearch(b.url),
 		path: new URL(b.url).pathname
 	}));
+}
+
+function styleElementsForBookmarks(elements, bookmarkGroups) {
+	const stylePriority = [
+		{ bookmarks: bookmarkGroups.blocked, styleConfig: getBlockedStyleConfig() },
+		{ bookmarks: bookmarkGroups.favorited, styleConfig: getFavoritedStyleConfig() },
+		{ bookmarks: bookmarkGroups.seen, styleConfig: getSeenStyleConfig() }
+	];
+	const normalizedCurrentUrl = normalizeHrefForSearch(window.location.href);
+
+	for (const group of stylePriority) {
+		for (const bookmark of group.bookmarks) {
+			if (normalizedCurrentUrl === bookmark.normalized && enableTopBorder) {
+				document.body.style.borderTop = group.styleConfig.border;
+			}
+		}
+	}
 
 	for (const element of elements) {
 		const text = element.textContent || "";
 		const html = element.innerHTML || "";
+		let matchedStyle = null;
 
-		let matched = false;
-
-		for (const bookmark of normalizedBookmarks) {
-			const { normalized, path } = bookmark;
-
-			// Match against text or innerHTML
-			if (text.includes(normalized) || text.includes(path) ||
-				html.includes(normalized) || html.includes(path)) {
-				matched = true;
+		for (const group of stylePriority) {
+			for (const bookmark of group.bookmarks) {
+				if (elementMatchesBookmark(element, text, html, bookmark)) {
+					matchedStyle = group.styleConfig.element;
+					break;
+				}
+			}
+			if (matchedStyle) {
 				break;
 			}
-
-			// Match against any attribute in any descendant
-			const descendants = element.querySelectorAll("*");
-			for (const desc of descendants) {
-				for (const attr of desc.attributes) {
-					const val = attr.value;
-					if (val.includes(normalized) || val.includes(path)) {
-						matched = true;
-						break;
-					}
-				}
-				if (matched) break;
-			}
-
-			if (matched) break;
 		}
 
-		if (matched) {
-			Object.assign(element.style, styleConfig.element);
-		}
-	}
-
-	// Style matching links
-	for (const link of document.links) {
-		const normalizedLink = normalizeHrefForSearch(link.href);
-		for (const bookmark of normalizedBookmarks) {
-			if (normalizedLink === bookmark.normalized) {
-				Object.assign(link.style, styleConfig.link);
-			}
-		}
-	}
-
-	// top border styling
-	for (const bookmark of normalizedBookmarks) {
-		if (window.location.href.includes(bookmark.normalized) && enableTopBorder) {
-			document.body.style.borderTop = styleConfig.border;
+		if (matchedStyle) {
+			Object.assign(element.style, matchedStyle);
 		}
 	}
 }
 
+function elementMatchesBookmark(element, text, html, bookmark) {
+	const { normalized, path } = bookmark;
 
-function styleBlocked(blocked, element) {
-	styleBookmarks(blocked, element, {
+	// Match against text or innerHTML
+	if (text.includes(normalized) || text.includes(path) ||
+		html.includes(normalized) || html.includes(path)) {
+		return true;
+	}
+
+	// Match against any attribute in any descendant
+	const descendants = element.querySelectorAll("*");
+	for (const desc of descendants) {
+		for (const attr of desc.attributes) {
+			const val = attr.value;
+			if (val.includes(normalized) || val.includes(path)) {
+				return true;
+			}
+		}
+	}
+
+	return false;
+}
+
+
+function getBlockedStyleConfig() {
+	return {
 		element: { display: "none" },
 		link: { display: "none" },
 		border: "dashed red"
-	});
+	};
 }
 
-function styleFavorited(favorited, element) {
-	styleBookmarks(favorited, element, {
+function getFavoritedStyleConfig() {
+	return {
 		element: { textDecoration: "underline", textDecorationStyle: "double" },
 		link: { textDecoration: "underline double" },
 		border: "double white"
-	});
+	};
 }
 
-function styleSeen(seen, element) {
-	styleBookmarks(seen, element, {
+function getSeenStyleConfig() {
+	return {
 		element: { textDecorationLine: "underline", textDecorationStyle: "dashed" },
 		link: { textDecoration: "underline dashed" },
 		border: "dashed white"
-	});
+	};
 }
 
 function normalizeHrefForSearch(href) {

@@ -1,4 +1,4 @@
-browser.runtime.onMessage.addListener((message, sender, sendResponse) => {
+﻿browser.runtime.onMessage.addListener((message, sender, sendResponse) => {
 	if (message && message.hrefs) {
 		searchhrefs(message.hrefs).then(sendResponse).catch(error => {
 			onError(error);
@@ -39,10 +39,8 @@ function onError(error) {
 }
 
 let bookmarkStatusMap = new Map(); // href -> { seen, blocked, favorited }
+let bookmarkIndexPromise = null;
 function searchhrefs(hrefs) {
-	let blockedFolderName = 'Blocked';
-	let favoritedFolderName = 'Favorited';
-	
 	// contentScript asks if links have been bookmarked
 	// Normalize hrefs and prepare lookup
 	const normalizedHrefs = hrefs.map(normalizeHrefForSearch);
@@ -52,29 +50,21 @@ function searchhrefs(hrefs) {
 
 	// Filter out hrefs that have already been processed
 	const hrefsToSearch = validHrefs.filter(href => !bookmarkStatusMap.has(href));
+	if (hrefsToSearch.length === 0) return Promise.resolve(buildStatusResponse());
 
-	// Search for blocked and favorited bookmark folders
-	return Promise.all([
-		browser.bookmarks.search({ title: blockedFolderName }),
-		browser.bookmarks.search({ title: favoritedFolderName }),
-		browser.bookmarks.getTree()
-	]).then(([blockedFolderNodes, favoritedFolderNodes, bookmarkTree]) => {
-		const blockedFolderId = findFolderByTitle(blockedFolderNodes, blockedFolderName)?.id;
-		const favoritedFolderId = findFolderByTitle(favoritedFolderNodes, favoritedFolderName)?.id;
-		const bookmarksByNormalizedUrl = buildBookmarkUrlMap(bookmarkTree);
-
+	return getBookmarkIndex().then(index => {
 		for (const href of hrefsToSearch) {
 			const status = {
 				seen: null,
 				blocked: null,
 				favorited: null
 			};
-			const bookmarkList = bookmarksByNormalizedUrl.get(href) || [];
-			const blockedBookmark = bookmarkList.find(bookmark => bookmark.parentId === blockedFolderId);
-			const favoritedBookmark = bookmarkList.find(bookmark => bookmark.parentId === favoritedFolderId);
+			const bookmarkList = index.bookmarksByNormalizedUrl.get(href) || [];
+			const blockedBookmark = bookmarkList.find(bookmark => bookmark.parentId === index.blockedFolderId);
+			const favoritedBookmark = bookmarkList.find(bookmark => bookmark.parentId === index.favoritedFolderId);
 			const seenBookmark = bookmarkList.find(bookmark =>
-				bookmark.parentId !== blockedFolderId &&
-				bookmark.parentId !== favoritedFolderId
+				bookmark.parentId !== index.blockedFolderId &&
+				bookmark.parentId !== index.favoritedFolderId
 			);
 
 			if (blockedBookmark) status.blocked = blockedBookmark;
@@ -84,25 +74,56 @@ function searchhrefs(hrefs) {
 			bookmarkStatusMap.set(href, status);
 		}
 
-		// Collect bookmarks into arrays
-		const savedBookmarks = [];
-		const blockedBookmarks = [];
-		const favoritedBookmarks = [];
-
-		for (const status of bookmarkStatusMap.values()) {
-			if (status.seen) savedBookmarks.push(status.seen);
-			if (status.blocked) blockedBookmarks.push(status.blocked);
-			if (status.favorited) favoritedBookmarks.push(status.favorited);
-		}
-
-		const response = {
-			seen: savedBookmarks,
-			blocked: blockedBookmarks,
-			favorited: favoritedBookmarks
-		};
-
-		return response;
+		return buildStatusResponse();
 	});
+}
+
+function buildStatusResponse() {
+	const savedBookmarks = [];
+	const blockedBookmarks = [];
+	const favoritedBookmarks = [];
+
+	for (const status of bookmarkStatusMap.values()) {
+		if (status.seen) savedBookmarks.push(status.seen);
+		if (status.blocked) blockedBookmarks.push(status.blocked);
+		if (status.favorited) favoritedBookmarks.push(status.favorited);
+	}
+
+	return {
+		seen: savedBookmarks,
+		blocked: blockedBookmarks,
+		favorited: favoritedBookmarks
+	};
+}
+
+function getBookmarkIndex() {
+	if (!bookmarkIndexPromise) {
+		bookmarkIndexPromise = buildBookmarkIndex().catch(error => {
+			bookmarkIndexPromise = null;
+			throw error;
+		});
+	}
+	return bookmarkIndexPromise;
+}
+
+function buildBookmarkIndex() {
+	const blockedFolderName = 'Blocked';
+	const favoritedFolderName = 'Favorited';
+
+	return Promise.all([
+		browser.bookmarks.search({ title: blockedFolderName }),
+		browser.bookmarks.search({ title: favoritedFolderName }),
+		browser.bookmarks.getTree()
+	]).then(([blockedFolderNodes, favoritedFolderNodes, bookmarkTree]) => ({
+		blockedFolderId: findFolderByTitle(blockedFolderNodes, blockedFolderName)?.id,
+		favoritedFolderId: findFolderByTitle(favoritedFolderNodes, favoritedFolderName)?.id,
+		bookmarksByNormalizedUrl: buildBookmarkUrlMap(bookmarkTree)
+	}));
+}
+
+function invalidateBookmarkCaches() {
+	bookmarkStatusMap = new Map();
+	bookmarkIndexPromise = null;
 }
 
 function findFolderByTitle(nodes, title) {
@@ -166,24 +187,17 @@ browser.tabs.onUpdated.addListener((tabId, changeInfo, tab) => {
 });
 
 browser.bookmarks.onRemoved.addListener((id, removeInfo) => {
-	removeBookmarkFromCache(id);
+	invalidateBookmarkCaches();
+});
+
+browser.bookmarks.onCreated.addListener((id, bookmark) => {
+	invalidateBookmarkCaches();
 });
 
 browser.bookmarks.onMoved.addListener((id, moveInfo) => {
-	removeBookmarkFromCache(id);
+	invalidateBookmarkCaches();
 });
 
 browser.bookmarks.onChanged.addListener((id, changeInfo) => {
-	removeBookmarkFromCache(id);
+	invalidateBookmarkCaches();
 });
-function removeBookmarkFromCache(bookmarkId) {
-	for (const [href, status] of bookmarkStatusMap.entries()) {
-		if (
-			status.seen?.id === bookmarkId ||
-			status.blocked?.id === bookmarkId ||
-			status.favorited?.id === bookmarkId
-		) {
-			bookmarkStatusMap.delete(href);
-		}
-	}
-}

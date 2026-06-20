@@ -112,10 +112,10 @@ function importTableFromJson(jsonString) {
     try {
         data = JSON.parse(jsonString);
         if (!Array.isArray(data)) throw new Error("Invalid format");
-        if (!data.every(row => row && typeof row === "object")) throw new Error("Invalid row format");
+        if (!data.every(isValidImportRow)) throw new Error("Invalid row format");
     } catch (err) {
         console.error("Failed to parse JSON:", err);
-        showStatus("Import failed: invalid JSON", true);
+        showStatus("Import failed: expected rows with string site and tag values", true);
         return;
     }
 
@@ -124,6 +124,15 @@ function importTableFromJson(jsonString) {
     data.forEach(({ site, tag }) => createRow(site || "", tag || ""));
     showStatus(`Imported ${data.length} row${data.length === 1 ? "" : "s"}`);
 }
+
+function isValidImportRow(row) {
+    return row &&
+        typeof row === "object" &&
+        !Array.isArray(row) &&
+        typeof row.site === "string" &&
+        typeof row.tag === "string";
+}
+
 function importFromClipboard() {
     navigator.clipboard.readText()
         .then(text => importTableFromJson(text))
