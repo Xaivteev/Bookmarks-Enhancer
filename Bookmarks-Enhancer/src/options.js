@@ -111,24 +111,7 @@ function importTableFromJson(jsonString) {
 
     clearTable();
 
-    const table = document.querySelector("tableBody");
-    data.forEach(({ site, tag }) => {
-        const row = document.createElement("tr");
-
-        const siteCell = document.createElement("td");
-        const siteInput = document.createElement("input");
-        siteInput.value = site || "";
-        siteCell.appendChild(siteInput);
-
-        const tagCell = document.createElement("td");
-        const tagInput = document.createElement("input");
-        tagInput.value = tag || "";
-        tagCell.appendChild(tagInput);
-
-        row.appendChild(siteCell);
-        row.appendChild(tagCell);
-        table.appendChild(row);
-    });
+    data.forEach(({ site, tag }) => createRow(site || "", tag || ""));
 }
 function importFromClipboard() {
     navigator.clipboard.readText()
@@ -136,9 +119,10 @@ function importFromClipboard() {
         .catch(err => console.error("Clipboard read failed:", err));
 }
 function clearTable() {
-    const table = document.querySelector("table");
-    while (table.firstChild) {
-        table.removeChild(table.firstChild);
+    const tableBody = document.querySelector("#tableBody");
+    if (!tableBody) return;
+    while (tableBody.firstChild) {
+        tableBody.removeChild(tableBody.firstChild);
     }
 }
 

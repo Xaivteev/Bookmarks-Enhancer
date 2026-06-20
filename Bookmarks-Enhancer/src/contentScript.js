@@ -29,49 +29,112 @@ function onGot(item) {
 	}
 
     enableTopBorder = !!item.enableTopBorder;
+	// Start processing links now that settings are loaded
+	try { initProcessing(); } catch (e) { /* initProcessing may be defined later */ }
 }
 
-// Set up communication port for initial styling
+// Link map state
+let linkMap = new Map(); // normalizedHref -> [link elements]
+let linkStatusMap = new Map(); // normalizedHref -> { seen, blocked, favorited }
+let processedHrefs = new Set();
+let observer = null;
 
-let port = browser.runtime.connect({name:"bookmark-highlighter"});
-
-// Listen for response from background script
-
-port.onMessage.addListener(applyBookmarkStyling);
-
-// Ask background script to check for bookmarks
-
-port.postMessage({ hrefs: collectNormalizedHrefs() });
-
-// Connection from backgroundScript if update button is pressed
-browser.runtime.onConnect.addListener(connected);
-function connected(p) {
-	port = p;
-	port.onMessage.addListener(applyBookmarkStyling);
-		
-	port.postMessage({ hrefs: collectNormalizedHrefs() });
+function requestBookmarkStatuses(hrefs) {
+	if (!hrefs || !hrefs.length) return;
+	browser.runtime.sendMessage({ hrefs }).then(applyBookmarkStyling).catch(onError);
 }
 
-function collectNormalizedHrefs() {
-	const hrefs = [];
-	for (const link of document.links) {
-		hrefs.push(normalizeHrefForSearch(link.href));
+// Listen for explicit refresh messages from backgroundScript
+browser.runtime.onMessage.addListener(message => {
+	if (message && message.refresh) {
+		sendAllHrefs();
 	}
-	return hrefs;
+});
+
+// Build a map of normalizedHref -> [link elements], filtering invalid/hidden links
+function buildLinkMap() {
+	linkMap = new Map();
+	for (const link of document.links) {
+		collectLink(link);
+	}
+}
+
+function collectLink(link) {
+	const href = link.getAttribute('href') || link.href || '';
+	if (!href) return null;
+	let normalized;
+	try {
+		normalized = normalizeHrefForSearch(href);
+	} catch { return null; }
+
+	if (!/^https?:/.test(normalized)) return null;
+
+	const style = window.getComputedStyle(link);
+	if (style.display === 'none' || style.visibility === 'hidden' || style.opacity === '0') return null;
+
+	if (!linkMap.has(normalized)) linkMap.set(normalized, []);
+	linkMap.get(normalized).push(link);
+	return normalized;
+}
+
+function sendUniqueHrefs() {
+	if (!searchSite) return; // skip if site not relevant
+	buildLinkMap();
+	const allHrefs = Array.from(linkMap.keys());
+	const newHrefs = allHrefs.filter(h => !processedHrefs.has(h));
+	if (newHrefs.length === 0) return;
+	newHrefs.forEach(h => processedHrefs.add(h));
+	requestBookmarkStatuses(newHrefs);
+}
+
+function sendAllHrefs() {
+	if (!searchSite) return;
+	buildLinkMap();
+	const allHrefs = Array.from(linkMap.keys());
+	allHrefs.forEach(h => processedHrefs.add(h));
+	requestBookmarkStatuses(allHrefs);
 }
 
 function applyBookmarkStyling(message) {
 	if (!searchSite) return;
 
+	// Store known bookmark status per normalized URL for incremental updates
+	function cacheBookmarkStatus(bookmarks, type) {
+		if (!bookmarks) return;
+		for (const b of bookmarks) {
+			const norm = normalizeHrefForSearch(b.url);
+			const status = linkStatusMap.get(norm) || { seen: false, blocked: false, favorited: false };
+			status[type] = true;
+			linkStatusMap.set(norm, status);
+		}
+	}
+
+	cacheBookmarkStatus(message.seen, 'seen');
+	cacheBookmarkStatus(message.blocked, 'blocked');
+	cacheBookmarkStatus(message.favorited, 'favorited');
+
+	function applyLinkResults(bookmarks, styleConfig) {
+		if (!bookmarks) return;
+		for (const b of bookmarks) {
+			const norm = normalizeHrefForSearch(b.url);
+			const els = linkMap.get(norm) || [];
+			for (const el of els) {
+				Object.assign(el.style, styleConfig.link);
+			}
+		}
+	}
+
+	if (message.seen) applyLinkResults(message.seen, { link: { textDecoration: 'underline dashed' } });
+	if (message.blocked) applyLinkResults(message.blocked, { link: { display: 'none' } });
+	if (message.favorited) applyLinkResults(message.favorited, { link: { textDecoration: 'underline double' } });
+
+	// Then run the existing class-based element styling for configured tags
 	for (const tag of tagsForSearch) {
 		const elements = Array.from(document.getElementsByClassName(tag)).filter(el => {
 			const style = window.getComputedStyle(el);
-
-			// filter out hidden elements and those already styled
 			const isHidden = style.display === 'none';
 			const hasUnderlineDouble = style.textDecoration.includes('underline') && style.textDecorationStyle === 'double';
 			const hasUnderlineDashed = style.textDecorationLine === 'underline' && style.textDecorationStyle === 'dashed';
-
 			return !isHidden && !hasUnderlineDouble && !hasUnderlineDashed;
 		});
 
@@ -201,4 +264,56 @@ function normalizeHrefForSearch(href) {
 
 	// Fallback
 	return href;
+}
+
+// MutationObserver: watch for newly added links and process incrementally
+function startMutationObserver() {
+	if (observer) return;
+	observer = new MutationObserver(mutations => {
+		const newHrefs = new Set();
+		for (const m of mutations) {
+			for (const node of m.addedNodes) {
+				if (node instanceof HTMLAnchorElement) {
+					const norm = collectLink(node);
+					if (norm) newHrefs.add(norm);
+				}
+				if (node instanceof Element) {
+					const links = node.querySelectorAll ? node.querySelectorAll('a[href]') : [];
+					for (const link of links) {
+						const norm = collectLink(link);
+						if (norm) newHrefs.add(norm);
+					}
+				}
+			}
+		}
+		for (const norm of newHrefs) {
+			if (linkStatusMap.has(norm)) {
+				applyCachedLinkStatus(norm);
+			}
+			if (!processedHrefs.has(norm)) {
+				processedHrefs.add(norm);
+				requestBookmarkStatuses([norm]);
+			}
+		}
+	});
+	observer.observe(document.documentElement || document.body, { childList: true, subtree: true });
+}
+
+function applyCachedLinkStatus(norm) {
+	const status = linkStatusMap.get(norm);
+	if (!status) return;
+	const els = linkMap.get(norm) || [];
+	for (const el of els) {
+		if (status.blocked) Object.assign(el.style, { display: 'none' });
+		else if (status.favorited) Object.assign(el.style, { textDecoration: 'underline double' });
+		else if (status.seen) Object.assign(el.style, { textDecoration: 'underline dashed' });
+	}
+}
+
+function initProcessing() {
+	if (!searchSite) return;
+	// Build initial map and send unique hrefs
+	sendUniqueHrefs();
+	// Start observing for incremental additions
+	startMutationObserver();
 }

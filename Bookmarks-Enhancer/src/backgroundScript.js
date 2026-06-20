@@ -1,19 +1,24 @@
-﻿let port;
-
-// initial page setup
+﻿// initial page setup
 function connected(p) {
-	port = p;
-
-	port.onMessage.addListener(handlePortMessage);
+	p.onMessage.addListener(m => {
+		if (m.hrefs) {
+			searchhrefs(m.hrefs, p);
+		}
+	});
 }
-function handlePortMessage(m) {
-	if (m.hrefs) {
-		searchhrefs(m.hrefs);
-	}
-}
-
 
 browser.runtime.onConnect.addListener(connected);
+
+browser.runtime.onMessage.addListener((message, sender, sendResponse) => {
+	if (message && message.hrefs) {
+		searchhrefs(message.hrefs).then(sendResponse).catch(error => {
+			onError(error);
+			sendResponse({ seen: [], blocked: [], favorited: [] });
+		});
+		return true;
+	}
+	return false;
+});
 
 // trigger update styling if button is clicked
 browser.browserAction.onClicked.addListener(() => {
@@ -21,7 +26,11 @@ browser.browserAction.onClicked.addListener(() => {
 		currentWindow: true,
 		active: true
 	});
-	activeTab.then(connectToTab, onError);
+	activeTab.then(tabs => {
+		if (tabs.length > 0) {
+			browser.tabs.sendMessage(tabs[0].id, { refresh: true }).catch(onError);
+		}
+	}, onError);
 });
 
 browser.pageAction.onClicked.addListener(() => {
@@ -29,29 +38,19 @@ browser.pageAction.onClicked.addListener(() => {
 		currentWindow: true,
 		active: true
 	});
-	activeTab.then(connectToTab, onError);
+	activeTab.then(tabs => {
+		if (tabs.length > 0) {
+			browser.tabs.sendMessage(tabs[0].id, { refresh: true }).catch(onError);
+		}
+	}, onError);
 });
-
-function connectToTab(tabs) {
-	if (tabs.length > 0) {
-		port = browser.tabs.connect(tabs[0].id, {
-			name: "bookmark-highlighter",
-		});
-		
-		port.onMessage.addListener(function(m) {
-			if (m.hrefs) {
-				searchhrefs(m.hrefs);
-			};
-		});
-	}
-}
 
 function onError(error) {
 	console.log(`Error: ${error}`);
 }
 
 let bookmarkStatusMap = new Map(); // href -> { seen, blocked, favorited }
-function searchhrefs(hrefs) {
+function searchhrefs(hrefs, responsePort) {
 	let blockedFolderName = 'Blocked';
 	let favoritedFolderName = 'Favorited';
 	
@@ -69,7 +68,7 @@ function searchhrefs(hrefs) {
 	const searches = hrefsToSearch.map(href => browser.bookmarks.search({ url: href }));
 
 	// Search for blocked and favorited bookmark folders
-	Promise.all([
+	return Promise.all([
 		browser.bookmarks.search({ title: blockedFolderName }),
 		browser.bookmarks.search({ title: favoritedFolderName }),
 		Promise.all(searches)
@@ -116,12 +115,17 @@ function searchhrefs(hrefs) {
 			if (status.favorited) favoritedBookmarks.push(status.favorited);
 		}
 
-		// Pass bookmark arrays back to contentScript
-		port.postMessage({
+		const response = {
 			seen: savedBookmarks,
 			blocked: blockedBookmarks,
 			favorited: favoritedBookmarks
-		});
+		};
+
+		if (responsePort && responsePort.postMessage) {
+			responsePort.postMessage(response);
+		}
+
+		return response;
 	});
 }
 
