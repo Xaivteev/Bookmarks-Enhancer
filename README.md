@@ -20,7 +20,7 @@ It's still not in a very user friendly state at the moment, which is why I haven
 
 3. Input the relevant information into the extension configuration.
 
-![Screenshot 2025-06-03 160005](https://github.com/user-attachments/assets/79238b4a-eebd-462e-94c3-f7e8694804e7)
+<img width="686" height="449" alt="image" src="https://github.com/user-attachments/assets/0967ffea-447b-4999-883d-836f0ecb919f" />
 
 4. See the difference when you visit the page.
 
