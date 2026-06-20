@@ -41,10 +41,39 @@ let observer = null;
 let pendingObservedHrefs = new Set();
 let mutationDebounceTimer = null;
 const mutationDebounceDelay = 200;
+const statusClasses = {
+	blocked: 'be-bookmarks-enhancer-blocked',
+	favorited: 'be-bookmarks-enhancer-favorited',
+	seen: 'be-bookmarks-enhancer-seen'
+};
+const statusClassNames = Object.values(statusClasses);
 
 function requestBookmarkStatuses(hrefs) {
 	if (!hrefs || !hrefs.length) return;
 	browser.runtime.sendMessage({ hrefs }).then(applyBookmarkStyling).catch(onError);
+}
+
+function injectBookmarkStyles() {
+	if (document.getElementById('bookmarks-enhancer-styles')) return;
+
+	const style = document.createElement('style');
+	style.id = 'bookmarks-enhancer-styles';
+	style.textContent = `
+		.${statusClasses.blocked} {
+			display: none !important;
+		}
+
+		.${statusClasses.favorited} {
+			text-decoration-line: underline !important;
+			text-decoration-style: double !important;
+		}
+
+		.${statusClasses.seen} {
+			text-decoration-line: underline !important;
+			text-decoration-style: dashed !important;
+		}
+	`;
+	(document.head || document.documentElement).appendChild(style);
 }
 
 // Listen for explicit refresh messages from backgroundScript
@@ -126,23 +155,21 @@ function applyBookmarkStyling(message) {
 		for (const bookmark of bookmarks) {
 			const els = linkMap.get(bookmark.normalized) || [];
 			for (const el of els) {
-				Object.assign(el.style, styleConfig.link);
+				applyStatusClass(el, styleConfig.className);
 			}
 		}
 	}
 
-	applyLinkResults(bookmarkGroups.seen, { link: { textDecoration: 'underline dashed' } });
-	applyLinkResults(bookmarkGroups.blocked, { link: { display: 'none' } });
-	applyLinkResults(bookmarkGroups.favorited, { link: { textDecoration: 'underline double' } });
+	applyLinkResults(bookmarkGroups.seen, getSeenStyleConfig());
+	applyLinkResults(bookmarkGroups.favorited, getFavoritedStyleConfig());
+	applyLinkResults(bookmarkGroups.blocked, getBlockedStyleConfig());
 
 	// Then run the existing class-based element styling for configured tags
 	for (const tag of tagsForSearch) {
 		const elements = Array.from(document.getElementsByClassName(tag)).filter(el => {
 			const style = window.getComputedStyle(el);
 			const isHidden = style.display === 'none';
-			const hasUnderlineDouble = style.textDecoration.includes('underline') && style.textDecorationStyle === 'double';
-			const hasUnderlineDashed = style.textDecorationLine === 'underline' && style.textDecorationStyle === 'dashed';
-			return !isHidden && !hasUnderlineDouble && !hasUnderlineDashed;
+			return !isHidden && !hasStatusClass(el);
 		});
 
 		styleElementsForBookmarks(elements, bookmarkGroups);
@@ -160,9 +187,9 @@ function normalizeBookmarks(bookmarks) {
 
 function styleElementsForBookmarks(elements, bookmarkGroups) {
 	const stylePriority = [
-		{ bookmarks: bookmarkGroups.blocked, styleConfig: getBlockedStyleConfig() },
-		{ bookmarks: bookmarkGroups.favorited, styleConfig: getFavoritedStyleConfig() },
-		{ bookmarks: bookmarkGroups.seen, styleConfig: getSeenStyleConfig() }
+		{ type: 'blocked', bookmarks: bookmarkGroups.blocked, styleConfig: getBlockedStyleConfig() },
+		{ type: 'favorited', bookmarks: bookmarkGroups.favorited, styleConfig: getFavoritedStyleConfig() },
+		{ type: 'seen', bookmarks: bookmarkGroups.seen, styleConfig: getSeenStyleConfig() }
 	];
 	const normalizedCurrentUrl = normalizeHrefForSearch(window.location.href);
 
@@ -175,29 +202,66 @@ function styleElementsForBookmarks(elements, bookmarkGroups) {
 	}
 
 	for (const element of elements) {
-		const text = element.textContent || "";
-		const html = element.innerHTML || "";
-		let matchedStyle = null;
+		let matchedClassName = findStatusClassFromLinks(element, stylePriority);
 
-		for (const group of stylePriority) {
-			for (const bookmark of group.bookmarks) {
-				if (elementMatchesBookmark(element, text, html, bookmark)) {
-					matchedStyle = group.styleConfig.element;
+		if (!matchedClassName) {
+			const text = element.textContent || "";
+			const html = element.innerHTML || "";
+
+			for (const group of stylePriority) {
+				for (const bookmark of group.bookmarks) {
+					if (elementMatchesBookmarkFallback(element, text, html, bookmark)) {
+						matchedClassName = group.styleConfig.className;
+						break;
+					}
+				}
+				if (matchedClassName) {
 					break;
 				}
 			}
-			if (matchedStyle) {
-				break;
-			}
 		}
 
-		if (matchedStyle) {
-			Object.assign(element.style, matchedStyle);
+		if (matchedClassName) {
+			applyStatusClass(element, matchedClassName);
 		}
 	}
 }
 
-function elementMatchesBookmark(element, text, html, bookmark) {
+function findStatusClassFromLinks(element, stylePriority) {
+	const linkHrefs = getElementLinkHrefSet(element);
+	if (linkHrefs.size === 0) return null;
+
+	for (const group of stylePriority) {
+		for (const bookmark of group.bookmarks) {
+			if (linkHrefs.has(bookmark.normalized)) {
+				return group.styleConfig.className;
+			}
+		}
+	}
+
+	return null;
+}
+
+function getElementLinkHrefSet(element) {
+	const links = element instanceof HTMLAnchorElement
+		? [element, ...element.querySelectorAll('a[href]')]
+		: Array.from(element.querySelectorAll('a[href]'));
+	const normalizedHrefs = new Set();
+
+	for (const link of links) {
+		const href = link.getAttribute('href') || link.href || '';
+		if (!href) continue;
+
+		const normalized = normalizeHrefForSearch(href);
+		if (/^https?:/.test(normalized)) {
+			normalizedHrefs.add(normalized);
+		}
+	}
+
+	return normalizedHrefs;
+}
+
+function elementMatchesBookmarkFallback(element, text, html, bookmark) {
 	const { normalized, path } = bookmark;
 
 	// Match against text or innerHTML
@@ -223,26 +287,32 @@ function elementMatchesBookmark(element, text, html, bookmark) {
 
 function getBlockedStyleConfig() {
 	return {
-		element: { display: "none" },
-		link: { display: "none" },
+		className: statusClasses.blocked,
 		border: "dashed red"
 	};
 }
 
 function getFavoritedStyleConfig() {
 	return {
-		element: { textDecoration: "underline", textDecorationStyle: "double" },
-		link: { textDecoration: "underline double" },
+		className: statusClasses.favorited,
 		border: "double white"
 	};
 }
 
 function getSeenStyleConfig() {
 	return {
-		element: { textDecorationLine: "underline", textDecorationStyle: "dashed" },
-		link: { textDecoration: "underline dashed" },
+		className: statusClasses.seen,
 		border: "dashed white"
 	};
+}
+
+function applyStatusClass(element, className) {
+	element.classList.remove(...statusClassNames);
+	element.classList.add(className);
+}
+
+function hasStatusClass(element) {
+	return statusClassNames.some(className => element.classList.contains(className));
 }
 
 function normalizeHrefForSearch(href) {
@@ -317,14 +387,15 @@ function applyCachedLinkStatus(norm) {
 	if (!status) return;
 	const els = linkMap.get(norm) || [];
 	for (const el of els) {
-		if (status.blocked) Object.assign(el.style, { display: 'none' });
-		else if (status.favorited) Object.assign(el.style, { textDecoration: 'underline double' });
-		else if (status.seen) Object.assign(el.style, { textDecoration: 'underline dashed' });
+		if (status.blocked) applyStatusClass(el, statusClasses.blocked);
+		else if (status.favorited) applyStatusClass(el, statusClasses.favorited);
+		else if (status.seen) applyStatusClass(el, statusClasses.seen);
 	}
 }
 
 function initProcessing() {
 	if (!searchSite) return;
+	injectBookmarkStyles();
 	// Build initial map and send unique hrefs
 	sendUniqueHrefs();
 	// Start observing for incremental additions
