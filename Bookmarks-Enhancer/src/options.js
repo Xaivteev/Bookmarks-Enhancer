@@ -23,7 +23,12 @@ function saveOptions(e) {
     });
     obj.searchPairs = rows;
 
-    browser.storage.local.set(obj);
+    browser.storage.local.set(obj)
+        .then(() => showStatus("Options saved"))
+        .catch(err => {
+            console.error("Save failed:", err);
+            showStatus("Could not save options", true);
+        });
 }
 
 function createRow(site = "", tag = "") {
@@ -95,8 +100,11 @@ function exportTableToClipboard() {
 
     const json = JSON.stringify(data, null, 2);
     navigator.clipboard.writeText(json)
-        .then(() => console.log("Exported to clipboard"))
-        .catch(err => console.error("Clipboard write failed:", err));
+        .then(() => showStatus(`Exported ${data.length} row${data.length === 1 ? "" : "s"} to clipboard`))
+        .catch(err => {
+            console.error("Clipboard write failed:", err);
+            showStatus("Could not export to clipboard", true);
+        });
 }
 
 function importTableFromJson(jsonString) {
@@ -104,19 +112,25 @@ function importTableFromJson(jsonString) {
     try {
         data = JSON.parse(jsonString);
         if (!Array.isArray(data)) throw new Error("Invalid format");
+        if (!data.every(row => row && typeof row === "object")) throw new Error("Invalid row format");
     } catch (err) {
         console.error("Failed to parse JSON:", err);
+        showStatus("Import failed: invalid JSON", true);
         return;
     }
 
     clearTable();
 
     data.forEach(({ site, tag }) => createRow(site || "", tag || ""));
+    showStatus(`Imported ${data.length} row${data.length === 1 ? "" : "s"}`);
 }
 function importFromClipboard() {
     navigator.clipboard.readText()
         .then(text => importTableFromJson(text))
-        .catch(err => console.error("Clipboard read failed:", err));
+        .catch(err => {
+            console.error("Clipboard read failed:", err);
+            showStatus("Could not read from clipboard", true);
+        });
 }
 function clearTable() {
     const tableBody = document.querySelector("#tableBody");
@@ -124,6 +138,21 @@ function clearTable() {
     while (tableBody.firstChild) {
         tableBody.removeChild(tableBody.firstChild);
     }
+}
+
+let statusTimeout = null;
+function showStatus(message, isError = false) {
+    const toast = document.querySelector("#statusToast");
+    if (!toast) return;
+
+    toast.textContent = message;
+    toast.classList.toggle("error", isError);
+    toast.classList.add("visible");
+
+    clearTimeout(statusTimeout);
+    statusTimeout = setTimeout(() => {
+        toast.classList.remove("visible");
+    }, 3000);
 }
 
 init();

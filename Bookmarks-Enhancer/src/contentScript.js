@@ -38,6 +38,9 @@ let linkMap = new Map(); // normalizedHref -> [link elements]
 let linkStatusMap = new Map(); // normalizedHref -> { seen, blocked, favorited }
 let processedHrefs = new Set();
 let observer = null;
+let pendingObservedHrefs = new Set();
+let mutationDebounceTimer = null;
+const mutationDebounceDelay = 200;
 
 function requestBookmarkStatuses(hrefs) {
 	if (!hrefs || !hrefs.length) return;
@@ -230,73 +233,71 @@ function styleSeen(seen, element) {
 	});
 }
 
-// Compare two hrefs for equality after normalization
-function hrefsMatch(linkHref, bookmarkUrl) {
-	try {
-		const normalizedLink = normalizeHrefForSearch(linkHref);
-		const normalizedBookmark = normalizeHrefForSearch(bookmarkUrl);
-		return normalizedLink === normalizedBookmark;
-	} catch {
-		return false;
-	}
-}
-
 function normalizeHrefForSearch(href) {
 	try {
-		const url = new URL(href);
-		// Absolute URL (http/https)
-		if (url.protocol === "http:" || url.protocol === "https:") {
-			return url.href;
-		}
-		// Protocol-relative (e.g., //cdn.example.com/lib.js)
-		if (url.protocol === "") {
-			return new URL(href, window.location.origin).href;
-		}
-	} catch {
-		// Likely a relative path
-		try {
-			return new URL(href, window.location.origin).href;
-		} catch {
-			// Final fallback: return original href value
-			return href;
-		}
-	}
+		const url = new URL(href, window.location.origin);
+		if (url.protocol !== "http:" && url.protocol !== "https:") return href;
 
-	// Fallback
-	return href;
+		url.search = "";
+		url.hash = "";
+
+		let normalized = url.href;
+		if (url.pathname !== "/" && normalized.endsWith("/")) {
+			normalized = normalized.slice(0, -1);
+		}
+
+		return normalized;
+	} catch {
+		return href;
+	}
 }
 
 // MutationObserver: watch for newly added links and process incrementally
 function startMutationObserver() {
 	if (observer) return;
 	observer = new MutationObserver(mutations => {
-		const newHrefs = new Set();
 		for (const m of mutations) {
 			for (const node of m.addedNodes) {
 				if (node instanceof HTMLAnchorElement) {
 					const norm = collectLink(node);
-					if (norm) newHrefs.add(norm);
+					if (norm) pendingObservedHrefs.add(norm);
 				}
 				if (node instanceof Element) {
 					const links = node.querySelectorAll ? node.querySelectorAll('a[href]') : [];
 					for (const link of links) {
 						const norm = collectLink(link);
-						if (norm) newHrefs.add(norm);
+						if (norm) pendingObservedHrefs.add(norm);
 					}
 				}
 			}
 		}
-		for (const norm of newHrefs) {
-			if (linkStatusMap.has(norm)) {
-				applyCachedLinkStatus(norm);
-			}
-			if (!processedHrefs.has(norm)) {
-				processedHrefs.add(norm);
-				requestBookmarkStatuses([norm]);
-			}
-		}
+		scheduleObservedHrefProcessing();
 	});
 	observer.observe(document.documentElement || document.body, { childList: true, subtree: true });
+}
+
+function scheduleObservedHrefProcessing() {
+	if (mutationDebounceTimer) return;
+	mutationDebounceTimer = setTimeout(processObservedHrefs, mutationDebounceDelay);
+}
+
+function processObservedHrefs() {
+	const hrefs = Array.from(pendingObservedHrefs);
+	pendingObservedHrefs = new Set();
+	mutationDebounceTimer = null;
+
+	const hrefsToRequest = [];
+	for (const norm of hrefs) {
+		if (linkStatusMap.has(norm)) {
+			applyCachedLinkStatus(norm);
+		}
+		if (!processedHrefs.has(norm)) {
+			processedHrefs.add(norm);
+			hrefsToRequest.push(norm);
+		}
+	}
+
+	requestBookmarkStatuses(hrefsToRequest);
 }
 
 function applyCachedLinkStatus(norm) {
