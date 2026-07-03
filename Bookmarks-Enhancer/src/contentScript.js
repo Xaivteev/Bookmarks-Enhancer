@@ -1,3 +1,12 @@
+// Storage key constants
+const STORAGE_KEYS = {
+	searchPairs: "searchPairs",
+	urlRules: "urlRules",
+	textFilters: "textFilters",
+	enableTopBorder: "enableTopBorder",
+	onlyUseSites: "onlyUseSites"
+};
+
 // Load settings from config
 let searchPairs = [];
 let tagsForSearch = [];
@@ -5,13 +14,14 @@ let urlRules = [];
 let textFilters = [];
 let searchSite = true;
 let enableTopBorder = false;
+let onlyUseSites = false;
 
 let getting = browser.storage.local.get([
-    "searchPairs",
-    "urlRules",
-    "textFilters",
-    "enableTopBorder",
-    "onlyUseSites"
+    STORAGE_KEYS.searchPairs,
+    STORAGE_KEYS.urlRules,
+    STORAGE_KEYS.textFilters,
+    STORAGE_KEYS.enableTopBorder,
+    STORAGE_KEYS.onlyUseSites
 ]);
 getting.then(onGot, onError);
 
@@ -19,26 +29,27 @@ function onError(error) {
     console.log(`Error: ${error}`);
 }
 
-function onGot(item) {
-	searchPairs = Array.isArray(item.searchPairs) ? item.searchPairs : [];
-	urlRules = Array.isArray(item.urlRules) ? item.urlRules : [];
-	textFilters = Array.isArray(item.textFilters) ? item.textFilters : [];
-	if (item.onlyUseSites) {
+function updateTagsForSearch() {
+	if (onlyUseSites) {
 		searchSite = false;
-		// Find pair where site matches current URL
 		const matchedPair = searchPairs.find(pair => window.location.href.includes(pair.site));
-
 		if (matchedPair) {
 			searchSite = true;
 			tagsForSearch = matchedPair.tag.split(',').map(tag => tag.trim()).filter(Boolean);
 		}
-
 	} else {
-        tagsForSearch = searchPairs.flatMap(pair => pair.tag.split(',').map(tag => tag.trim()).filter(Boolean));
+		tagsForSearch = searchPairs.flatMap(pair => pair.tag.split(',').map(tag => tag.trim()).filter(Boolean));
 		searchSite = true;
 	}
+}
 
-    enableTopBorder = !!item.enableTopBorder;
+function onGot(item) {
+	searchPairs = Array.isArray(item[STORAGE_KEYS.searchPairs]) ? item[STORAGE_KEYS.searchPairs] : [];
+	urlRules = Array.isArray(item[STORAGE_KEYS.urlRules]) ? item[STORAGE_KEYS.urlRules] : [];
+	textFilters = Array.isArray(item[STORAGE_KEYS.textFilters]) ? item[STORAGE_KEYS.textFilters] : [];
+	enableTopBorder = !!item[STORAGE_KEYS.enableTopBorder];
+	onlyUseSites = !!item[STORAGE_KEYS.onlyUseSites];
+	updateTagsForSearch();
 	// Start processing links now that settings are loaded
 	try { initProcessing(); } catch (e) { /* initProcessing may be defined later */ }
 }
@@ -49,41 +60,34 @@ browser.storage.onChanged.addListener((changes, areaName) => {
 
 	let needsRefresh = false;
 
-	if (changes.searchPairs) {
-		searchPairs = Array.isArray(changes.searchPairs.newValue) ? changes.searchPairs.newValue : [];
+	if (changes[STORAGE_KEYS.searchPairs]) {
+		searchPairs = Array.isArray(changes[STORAGE_KEYS.searchPairs].newValue) ? changes[STORAGE_KEYS.searchPairs].newValue : [];
 		needsRefresh = true;
 	}
 
-	if (changes.urlRules) {
-		urlRules = Array.isArray(changes.urlRules.newValue) ? changes.urlRules.newValue : [];
+	if (changes[STORAGE_KEYS.urlRules]) {
+		urlRules = Array.isArray(changes[STORAGE_KEYS.urlRules].newValue) ? changes[STORAGE_KEYS.urlRules].newValue : [];
 		needsRefresh = true;
 	}
 
-	if (changes.textFilters) {
-		textFilters = Array.isArray(changes.textFilters.newValue) ? changes.textFilters.newValue : [];
+	if (changes[STORAGE_KEYS.textFilters]) {
+		textFilters = Array.isArray(changes[STORAGE_KEYS.textFilters].newValue) ? changes[STORAGE_KEYS.textFilters].newValue : [];
+		textFilterCache.clear();
 		needsRefresh = true;
 	}
 
-	if (changes.enableTopBorder) {
-		enableTopBorder = !!changes.enableTopBorder.newValue;
+	if (changes[STORAGE_KEYS.enableTopBorder]) {
+		enableTopBorder = !!changes[STORAGE_KEYS.enableTopBorder].newValue;
 	}
 
-	if (changes.onlyUseSites) {
+	if (changes[STORAGE_KEYS.onlyUseSites]) {
+		onlyUseSites = !!changes[STORAGE_KEYS.onlyUseSites].newValue;
+		updateTagsForSearch();
 		needsRefresh = true;
 	}
 
-	if (needsRefresh && (changes.searchPairs || changes.onlyUseSites)) {
-		if (changes.onlyUseSites ? changes.onlyUseSites.newValue : false) {
-			searchSite = false;
-			const matchedPair = searchPairs.find(pair => window.location.href.includes(pair.site));
-			if (matchedPair) {
-				searchSite = true;
-				tagsForSearch = matchedPair.tag.split(',').map(tag => tag.trim()).filter(Boolean);
-			}
-		} else {
-			tagsForSearch = searchPairs.flatMap(pair => pair.tag.split(',').map(tag => tag.trim()).filter(Boolean));
-			searchSite = true;
-		}
+	if (needsRefresh && (changes[STORAGE_KEYS.searchPairs] || changes[STORAGE_KEYS.onlyUseSites])) {
+		updateTagsForSearch();
 	}
 
 	if (needsRefresh && searchSite) {
@@ -91,6 +95,10 @@ browser.storage.onChanged.addListener((changes, areaName) => {
 		applyTextFilters();
 	}
 });
+
+// Caches for performance optimization
+const urlNormalizationCache = new Map(); // href -> normalized href
+const textFilterCache = new Map(); // element -> normalized text
 
 // Link map state
 let linkMap = new Map(); // normalizedHref -> [link elements]
@@ -382,50 +390,6 @@ function hasStatusClass(element) {
 	return statusClassNames.some(className => element.classList.contains(className));
 }
 
-function normalizeHrefForSearch(href) {
-	try {
-		const url = new URL(href, window.location.origin);
-		if (url.protocol !== "http:" && url.protocol !== "https:") return href;
-
-		const rule = urlRules.find(rule =>
-			url.hostname.includes(rule.site)
-		);
-
-		if (rule) {
-			const keptParams = new URLSearchParams();
-
-			const params = rule.keepParams
-				.split(',')
-				.map(p => p.trim())
-				.filter(Boolean);
-
-			for (const param of params) {
-				const value = url.searchParams.get(param);
-
-				if (value !== null) {
-					keptParams.set(param, value);
-				}
-			}
-
-			url.search = keptParams.toString()
-				? `?${keptParams.toString()}`
-				: "";
-		}
-		else {
-			url.search = "";
-		}
-		url.hash = "";
-
-		let normalized = url.href;
-		if (url.pathname !== "/" && normalized.endsWith("/")) {
-			normalized = normalized.slice(0, -1);
-		}
-
-		return normalized;
-	} catch {
-		return href;
-	}
-}
 
 function getMatchingTextFilters() {
 	const currentHost = window.location.hostname;
@@ -446,7 +410,11 @@ function applyTextFilters() {
 		});
 
 		for (const element of elements) {
-			const elementText = (element.textContent || "").toLowerCase();
+			let normalizedText = textFilterCache.get(element);
+			if (!normalizedText) {
+				normalizedText = (element.textContent || "").toLowerCase();
+				textFilterCache.set(element, normalizedText);
+			}
 
 			for (const filter of matchingFilters) {
 				const filterTexts = filter.filterText
@@ -455,7 +423,7 @@ function applyTextFilters() {
 					.filter(Boolean);
 
 				for (const text of filterTexts) {
-					if (elementText.includes(text.toLowerCase())) {
+					if (normalizedText.includes(text.toLowerCase())) {
 						applyStatusClass(element, statusClasses.textFiltered);
 						break;
 					}

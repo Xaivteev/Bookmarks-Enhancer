@@ -38,47 +38,50 @@ function onError(error) {
 	console.log(`Error: ${error}`);
 }
 
+// Storage key constants
+const STORAGE_KEYS = {
+	urlRules: "urlRules",
+	textFilters: "textFilters"
+};
+
 let urlRules = [];
 let textFilters = [];
-function loadUrlRules() {
+
+function loadSettings() {
     return browser.storage.local
-        .get("urlRules")
+        .get([STORAGE_KEYS.urlRules, STORAGE_KEYS.textFilters])
         .then(result => {
-            urlRules = Array.isArray(result.urlRules)
-                ? result.urlRules
+            urlRules = Array.isArray(result[STORAGE_KEYS.urlRules])
+                ? result[STORAGE_KEYS.urlRules]
+                : [];
+            textFilters = Array.isArray(result[STORAGE_KEYS.textFilters])
+                ? result[STORAGE_KEYS.textFilters]
                 : [];
         });
 }
 
-function loadTextFilters() {
-    return browser.storage.local
-        .get("textFilters")
-        .then(result => {
-            textFilters = Array.isArray(result.textFilters)
-                ? result.textFilters
-                : [];
-        });
-}
-
-loadUrlRules();
-loadTextFilters();
+loadSettings();
 
 // Listen for storage changes and update settings dynamically
 browser.storage.onChanged.addListener((changes, areaName) => {
 	if (areaName !== "local") return;
 
-	if (changes.urlRules) {
-		urlRules = Array.isArray(changes.urlRules.newValue)
-			? changes.urlRules.newValue
+	if (changes[STORAGE_KEYS.urlRules]) {
+		urlRules = Array.isArray(changes[STORAGE_KEYS.urlRules].newValue)
+			? changes[STORAGE_KEYS.urlRules].newValue
 			: [];
+		urlNormalizationCache.clear();
 	}
 
-	if (changes.textFilters) {
-		textFilters = Array.isArray(changes.textFilters.newValue)
-			? changes.textFilters.newValue
+	if (changes[STORAGE_KEYS.textFilters]) {
+		textFilters = Array.isArray(changes[STORAGE_KEYS.textFilters].newValue)
+			? changes[STORAGE_KEYS.textFilters].newValue
 			: [];
 	}
 });
+
+// Cache for URL normalization to avoid repeated calculations
+const urlNormalizationCache = new Map(); // href -> normalized href
 
 let bookmarkStatusMap = new Map(); // href -> { seen, blocked, favorited }
 let bookmarkIndexPromise = null;
@@ -191,51 +194,6 @@ function buildBookmarkUrlMap(bookmarkTree) {
 
 	bookmarkTree.forEach(visit);
 	return bookmarksByNormalizedUrl;
-}
-
-function normalizeHrefForSearch(href) {
-	try {
-		const url = new URL(href);
-		if (url.protocol !== "http:" && url.protocol !== "https:") return href;
-
-		const rule = urlRules.find(rule =>
-			url.hostname.includes(rule.site)
-		);
-
-		if (rule) {
-			const keptParams = new URLSearchParams();
-
-			const params = rule.keepParams
-				.split(',')
-				.map(p => p.trim())
-				.filter(Boolean);
-
-			for (const param of params) {
-				const value = url.searchParams.get(param);
-
-				if (value !== null) {
-					keptParams.set(param, value);
-				}
-			}
-
-			url.search = keptParams.toString()
-				? `?${keptParams.toString()}`
-				: "";
-		}
-		else {
-			url.search = "";
-		}
-		url.hash = "";
-
-		let normalized = url.href;
-		if (url.pathname !== "/" && normalized.endsWith("/")) {
-			normalized = normalized.slice(0, -1);
-		}
-
-		return normalized;
-	} catch {
-		return href;
-	}
 }
 
 function isValidBookmarkUrl(href) {

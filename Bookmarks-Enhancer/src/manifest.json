@@ -13,12 +13,14 @@
         "<all_urls>"
       ],
       "js": [
+        "utils.js",
         "contentScript.js"
       ]
     }
   ],
   "background": {
     "scripts": [
+      "utils.js",
       "backgroundScript.js"
     ]
   },
