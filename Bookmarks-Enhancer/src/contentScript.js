@@ -408,29 +408,39 @@ function applyTextFilters() {
 			const isHidden = style.display === 'none';
 			return !isHidden && !hasStatusClass(el);
 		});
+		applyTextFiltersTo(elements, matchingFilters);
+	}
+}
 
-		for (const element of elements) {
-			let normalizedText = textFilterCache.get(element);
-			if (!normalizedText) {
-				normalizedText = (element.textContent || "").toLowerCase();
-				textFilterCache.set(element, normalizedText);
-			}
+function applyTextFiltersTo(elements, matchingFilters) {
+	if (!elements || elements.length === 0) return;
+	matchingFilters = matchingFilters || getMatchingTextFilters();
+	if (matchingFilters.length === 0) return;
 
-			for (const filter of matchingFilters) {
-				const filterTexts = filter.filterText
-					.split(',')
-					.map(text => text.trim())
-					.filter(Boolean);
+	for (const element of elements) {
+		const style = window.getComputedStyle(element);
+		if (style.display === 'none' || hasStatusClass(element)) continue;
 
-				for (const text of filterTexts) {
-					if (normalizedText.includes(text.toLowerCase())) {
-						applyStatusClass(element, statusClasses.textFiltered);
-						break;
-					}
+		let normalizedText = textFilterCache.get(element);
+		if (!normalizedText) {
+			normalizedText = (element.textContent || "").toLowerCase();
+			textFilterCache.set(element, normalizedText);
+		}
+
+		for (const filter of matchingFilters) {
+			const filterTexts = filter.filterText
+				.split(',')
+				.map(text => text.trim())
+				.filter(Boolean);
+
+			for (const text of filterTexts) {
+				if (normalizedText.includes(text.toLowerCase())) {
+					applyStatusClass(element, statusClasses.textFiltered);
+					break;
 				}
-
-				if (hasStatusClass(element)) break;
 			}
+
+			if (hasStatusClass(element)) break;
 		}
 	}
 }
@@ -450,6 +460,22 @@ function startMutationObserver() {
 					for (const link of links) {
 						const norm = collectLink(link);
 						if (norm) pendingObservedHrefs.add(norm);
+					}
+
+					// Collect newly added elements that match configured tags for text filtering
+					if (tagsForSearch && tagsForSearch.length) {
+						const elems = [];
+						for (const tag of tagsForSearch) {
+							try {
+								if (node.classList && node.classList.contains(tag)) elems.push(node);
+								const found = node.getElementsByClassName ? node.getElementsByClassName(tag) : [];
+								for (const f of found) elems.push(f);
+							} catch (e) { /* ignore DOM exceptions */ }
+						}
+
+						if (elems.length) {
+							applyTextFiltersTo(elems, getMatchingTextFilters());
+						}
 					}
 				}
 			}
