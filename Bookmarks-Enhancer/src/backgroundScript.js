@@ -62,6 +62,97 @@ function loadSettings() {
 
 loadSettings();
 
+// Create context menu items for selection and links
+function createContextMenus() {
+	try {
+		browser.contextMenus.create({
+			id: 'addTextFilter',
+			title: 'Add selection to site blocked text',
+			contexts: ['selection']
+		});
+
+		browser.contextMenus.create({
+			id: 'addLinkBlocked',
+			title: 'Add link to Blocked bookmarks',
+			contexts: ['link']
+		});
+
+		browser.contextMenus.create({
+			id: 'addLinkFavorited',
+			title: 'Add link to Favorited bookmarks',
+			contexts: ['link']
+		});
+	} catch (e) {
+		console.error('Context menu creation failed', e);
+	}
+}
+
+createContextMenus();
+
+// Helper: ensure folder exists then create bookmark inside it
+function ensureFolderAndCreateBookmark(folderTitle, url, title) {
+	return browser.bookmarks.search({ title: folderTitle }).then(nodes => {
+		const folder = nodes.find(n => n.title === folderTitle && n.type === 'folder');
+		if (folder) return folder.id;
+		return browser.bookmarks.create({ title: folderTitle }).then(f => f.id);
+	}).then(folderId => {
+		return browser.bookmarks.create({ parentId: folderId, title: title || url, url });
+	});
+}
+
+function notifyAllTabsRefresh() {
+	return browser.tabs.query({}).then(tabs => {
+		for (const t of tabs) {
+			browser.tabs.sendMessage(t.id, { refresh: true }).catch(() => {});
+		}
+	}).catch(() => {});
+}
+
+browser.contextMenus.onClicked.addListener((info, tab) => {
+	if (!info || !tab) return;
+
+	if (info.menuItemId === 'addTextFilter') {
+		const selection = (info.selectionText || '').trim();
+		if (!selection) return;
+		let site = '';
+		try { site = new URL(tab.url).hostname; } catch (e) { site = tab.url || ''; }
+
+		browser.storage.local.get([STORAGE_KEYS.textFilters]).then(result => {
+			const existing = Array.isArray(result[STORAGE_KEYS.textFilters]) ? result[STORAGE_KEYS.textFilters] : [];
+			const found = existing.find(f => f.site === site);
+			const selNormalized = selection.trim();
+			if (found) {
+				const parts = found.filterText.split(',').map(s => s.trim()).filter(Boolean);
+				const lower = parts.map(p => p.toLowerCase());
+				if (!lower.includes(selNormalized.toLowerCase())) {
+					parts.push(selNormalized);
+					found.filterText = parts.join(', ');
+				}
+			} else {
+				existing.push({ site, filterText: selNormalized });
+			}
+			return browser.storage.local.set({ textFilters: existing });
+		}).then(() => {
+			// update local cache and notify tabs
+			loadSettings();
+		}).catch(onError);
+		return;
+	}
+
+	if (info.menuItemId === 'addLinkBlocked' || info.menuItemId === 'addLinkFavorited') {
+		const url = info.linkUrl;
+		if (!url) return;
+		const folder = info.menuItemId === 'addLinkBlocked' ? 'Blocked' : 'Favorited';
+		const title = info.linkText || url;
+
+		ensureFolderAndCreateBookmark(folder, url, title).then(() => {
+			invalidateBookmarkCaches();
+			notifyAllTabsRefresh();
+		}).catch(onError);
+		return;
+	}
+});
+
 // Listen for storage changes and update settings dynamically
 browser.storage.onChanged.addListener((changes, areaName) => {
 	if (areaName !== "local") return;

@@ -29,7 +29,8 @@
     "storage",
     "activeTab",
     "clipboardWrite",
-    "clipboardRead"
+    "clipboardRead",
+    "contextMenus"
   ],
   "options_ui": {
 	"page": "options.html"
