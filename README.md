@@ -14,13 +14,13 @@ It's still not in a very user friendly state at the moment, which is why I haven
 
 ![Screenshot 2025-06-03 153728](https://github.com/user-attachments/assets/52dd7c4a-d37b-44e1-872e-b4e7d400764b)
 
-2. Visit the page, and inspect it to find the corresponding class you want to block.
+2. Visit the page, and inspect it to find the corresponding class you want to style (block or underline).
 
 ![looking for element](https://github.com/user-attachments/assets/f9298d85-9730-43c5-80ea-25813b0b05e5)
 
 3. Input the relevant information into the extension configuration.
 
-![Screenshot 2025-06-03 160005](https://github.com/user-attachments/assets/79238b4a-eebd-462e-94c3-f7e8694804e7)
+<img width="686" height="449" alt="image" src="https://github.com/user-attachments/assets/0967ffea-447b-4999-883d-836f0ecb919f" />
 
 4. See the difference when you visit the page.
 
