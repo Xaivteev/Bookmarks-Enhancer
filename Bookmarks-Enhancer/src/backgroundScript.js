@@ -38,6 +38,48 @@ function onError(error) {
 	console.log(`Error: ${error}`);
 }
 
+let urlRules = [];
+let textFilters = [];
+function loadUrlRules() {
+    return browser.storage.local
+        .get("urlRules")
+        .then(result => {
+            urlRules = Array.isArray(result.urlRules)
+                ? result.urlRules
+                : [];
+        });
+}
+
+function loadTextFilters() {
+    return browser.storage.local
+        .get("textFilters")
+        .then(result => {
+            textFilters = Array.isArray(result.textFilters)
+                ? result.textFilters
+                : [];
+        });
+}
+
+loadUrlRules();
+loadTextFilters();
+
+// Listen for storage changes and update settings dynamically
+browser.storage.onChanged.addListener((changes, areaName) => {
+	if (areaName !== "local") return;
+
+	if (changes.urlRules) {
+		urlRules = Array.isArray(changes.urlRules.newValue)
+			? changes.urlRules.newValue
+			: [];
+	}
+
+	if (changes.textFilters) {
+		textFilters = Array.isArray(changes.textFilters.newValue)
+			? changes.textFilters.newValue
+			: [];
+	}
+});
+
 let bookmarkStatusMap = new Map(); // href -> { seen, blocked, favorited }
 let bookmarkIndexPromise = null;
 function searchhrefs(hrefs) {
@@ -156,7 +198,33 @@ function normalizeHrefForSearch(href) {
 		const url = new URL(href);
 		if (url.protocol !== "http:" && url.protocol !== "https:") return href;
 
-		url.search = "";
+		const rule = urlRules.find(rule =>
+			url.hostname.includes(rule.site)
+		);
+
+		if (rule) {
+			const keptParams = new URLSearchParams();
+
+			const params = rule.keepParams
+				.split(',')
+				.map(p => p.trim())
+				.filter(Boolean);
+
+			for (const param of params) {
+				const value = url.searchParams.get(param);
+
+				if (value !== null) {
+					keptParams.set(param, value);
+				}
+			}
+
+			url.search = keptParams.toString()
+				? `?${keptParams.toString()}`
+				: "";
+		}
+		else {
+			url.search = "";
+		}
 		url.hash = "";
 
 		let normalized = url.href;
@@ -200,4 +268,14 @@ browser.bookmarks.onMoved.addListener((id, moveInfo) => {
 
 browser.bookmarks.onChanged.addListener((id, changeInfo) => {
 	invalidateBookmarkCaches();
+});
+
+browser.storage.onChanged.addListener((changes, area) => {
+    if (
+        area === "local" &&
+        changes.urlRules
+    ) {
+        urlRules = changes.urlRules.newValue || [];
+        invalidateBookmarkCaches();
+    }
 });

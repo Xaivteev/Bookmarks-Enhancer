@@ -1,18 +1,28 @@
 // Load settings from config
 let searchPairs = [];
 let tagsForSearch = [];
+let urlRules = [];
+let textFilters = [];
 let searchSite = true;
 let enableTopBorder = false;
 
-let getting = browser.storage.local.get(["searchPairs", "enableTopBorder", "onlyUseSites"]);
+let getting = browser.storage.local.get([
+    "searchPairs",
+    "urlRules",
+    "textFilters",
+    "enableTopBorder",
+    "onlyUseSites"
+]);
 getting.then(onGot, onError);
+
 function onError(error) {
     console.log(`Error: ${error}`);
 }
 
 function onGot(item) {
 	searchPairs = Array.isArray(item.searchPairs) ? item.searchPairs : [];
-	
+	urlRules = Array.isArray(item.urlRules) ? item.urlRules : [];
+	textFilters = Array.isArray(item.textFilters) ? item.textFilters : [];
 	if (item.onlyUseSites) {
 		searchSite = false;
 		// Find pair where site matches current URL
@@ -33,6 +43,55 @@ function onGot(item) {
 	try { initProcessing(); } catch (e) { /* initProcessing may be defined later */ }
 }
 
+// Listen for storage changes and update settings dynamically
+browser.storage.onChanged.addListener((changes, areaName) => {
+	if (areaName !== "local") return;
+
+	let needsRefresh = false;
+
+	if (changes.searchPairs) {
+		searchPairs = Array.isArray(changes.searchPairs.newValue) ? changes.searchPairs.newValue : [];
+		needsRefresh = true;
+	}
+
+	if (changes.urlRules) {
+		urlRules = Array.isArray(changes.urlRules.newValue) ? changes.urlRules.newValue : [];
+		needsRefresh = true;
+	}
+
+	if (changes.textFilters) {
+		textFilters = Array.isArray(changes.textFilters.newValue) ? changes.textFilters.newValue : [];
+		needsRefresh = true;
+	}
+
+	if (changes.enableTopBorder) {
+		enableTopBorder = !!changes.enableTopBorder.newValue;
+	}
+
+	if (changes.onlyUseSites) {
+		needsRefresh = true;
+	}
+
+	if (needsRefresh && (changes.searchPairs || changes.onlyUseSites)) {
+		if (changes.onlyUseSites ? changes.onlyUseSites.newValue : false) {
+			searchSite = false;
+			const matchedPair = searchPairs.find(pair => window.location.href.includes(pair.site));
+			if (matchedPair) {
+				searchSite = true;
+				tagsForSearch = matchedPair.tag.split(',').map(tag => tag.trim()).filter(Boolean);
+			}
+		} else {
+			tagsForSearch = searchPairs.flatMap(pair => pair.tag.split(',').map(tag => tag.trim()).filter(Boolean));
+			searchSite = true;
+		}
+	}
+
+	if (needsRefresh && searchSite) {
+		sendAllHrefs();
+		applyTextFilters();
+	}
+});
+
 // Link map state
 let linkMap = new Map(); // normalizedHref -> [link elements]
 let linkStatusMap = new Map(); // normalizedHref -> { seen, blocked, favorited }
@@ -44,7 +103,8 @@ const mutationDebounceDelay = 200;
 const statusClasses = {
 	blocked: 'be-bookmarks-enhancer-blocked',
 	favorited: 'be-bookmarks-enhancer-favorited',
-	seen: 'be-bookmarks-enhancer-seen'
+	seen: 'be-bookmarks-enhancer-seen',
+	textFiltered: 'be-bookmarks-enhancer-text-filtered'
 };
 const statusClassNames = Object.values(statusClasses);
 
@@ -71,6 +131,10 @@ function injectBookmarkStyles() {
 		.${statusClasses.seen} {
 			text-decoration-line: underline !important;
 			text-decoration-style: dashed !important;
+		}
+
+		.${statusClasses.textFiltered} {
+			display: none !important;
 		}
 	`;
 	(document.head || document.documentElement).appendChild(style);
@@ -174,6 +238,9 @@ function applyBookmarkStyling(message) {
 
 		styleElementsForBookmarks(elements, bookmarkGroups);
 	}
+
+	// Apply text filters on the same tags
+	applyTextFilters();
 }
 
 function normalizeBookmarks(bookmarks) {
@@ -320,7 +387,33 @@ function normalizeHrefForSearch(href) {
 		const url = new URL(href, window.location.origin);
 		if (url.protocol !== "http:" && url.protocol !== "https:") return href;
 
-		url.search = "";
+		const rule = urlRules.find(rule =>
+			url.hostname.includes(rule.site)
+		);
+
+		if (rule) {
+			const keptParams = new URLSearchParams();
+
+			const params = rule.keepParams
+				.split(',')
+				.map(p => p.trim())
+				.filter(Boolean);
+
+			for (const param of params) {
+				const value = url.searchParams.get(param);
+
+				if (value !== null) {
+					keptParams.set(param, value);
+				}
+			}
+
+			url.search = keptParams.toString()
+				? `?${keptParams.toString()}`
+				: "";
+		}
+		else {
+			url.search = "";
+		}
 		url.hash = "";
 
 		let normalized = url.href;
@@ -331,6 +424,46 @@ function normalizeHrefForSearch(href) {
 		return normalized;
 	} catch {
 		return href;
+	}
+}
+
+function getMatchingTextFilters() {
+	const currentHost = window.location.hostname;
+	return textFilters.filter(filter =>
+		currentHost.includes(filter.site)
+	);
+}
+
+function applyTextFilters() {
+	const matchingFilters = getMatchingTextFilters();
+	if (matchingFilters.length === 0) return;
+
+	for (const tag of tagsForSearch) {
+		const elements = Array.from(document.getElementsByClassName(tag)).filter(el => {
+			const style = window.getComputedStyle(el);
+			const isHidden = style.display === 'none';
+			return !isHidden && !hasStatusClass(el);
+		});
+
+		for (const element of elements) {
+			const elementText = (element.textContent || "").toLowerCase();
+
+			for (const filter of matchingFilters) {
+				const filterTexts = filter.filterText
+					.split(',')
+					.map(text => text.trim())
+					.filter(Boolean);
+
+				for (const text of filterTexts) {
+					if (elementText.includes(text.toLowerCase())) {
+						applyStatusClass(element, statusClasses.textFiltered);
+						break;
+					}
+				}
+
+				if (hasStatusClass(element)) break;
+			}
+		}
 	}
 }
 

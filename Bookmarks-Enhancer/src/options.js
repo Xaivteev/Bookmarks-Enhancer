@@ -23,6 +23,30 @@ function saveOptions(e) {
     });
     obj.searchPairs = rows;
 
+    const urlRules = Array.from(
+        document.querySelectorAll("#urlRuleBody tr")
+        ).map(row => {
+            const inputs = row.querySelectorAll("input");
+
+            return {
+                site: inputs[0].value.trim(),
+                keepParams: inputs[1].value.trim()
+            };
+        });
+    obj.urlRules = urlRules;
+
+    const textFilters = Array.from(
+        document.querySelectorAll("#textFilterBody tr")
+        ).map(row => {
+            const inputs = row.querySelectorAll("input");
+
+            return {
+                site: inputs[0].value.trim(),
+                filterText: inputs[1].value.trim()
+            };
+        });
+    obj.textFilters = textFilters;
+
     browser.storage.local.set(obj)
         .then(() => showStatus("Options saved"))
         .catch(err => {
@@ -60,69 +84,241 @@ function createRow(site = "", tag = "") {
     document.querySelector("#tableBody").appendChild(row);
 }
 
+function createUrlRuleRow(site = "", keepParams = "") {
+    const row = document.createElement("tr");
+
+    const siteCell = document.createElement("td");
+    const siteInput = document.createElement("input");
+    siteInput.type = "text";
+    siteInput.value = site;
+    siteCell.appendChild(siteInput);
+
+    const paramsCell = document.createElement("td");
+    const paramsInput = document.createElement("input");
+    paramsInput.type = "text";
+    paramsInput.value = keepParams;
+    paramsCell.appendChild(paramsInput);
+
+    const actionCell = document.createElement("td");
+    const deleteBtn = document.createElement("button");
+    deleteBtn.textContent = "Delete";
+    deleteBtn.type = "button";
+    deleteBtn.addEventListener("click", () => row.remove());
+    actionCell.appendChild(deleteBtn);
+
+    row.appendChild(siteCell);
+    row.appendChild(paramsCell);
+    row.appendChild(actionCell);
+
+    document.querySelector("#urlRuleBody").appendChild(row);
+}
+
+function createTextFilterRow(site = "", filterText = "") {
+    const row = document.createElement("tr");
+
+    const siteCell = document.createElement("td");
+    const siteInput = document.createElement("input");
+    siteInput.type = "text";
+    siteInput.value = site;
+    siteCell.appendChild(siteInput);
+
+    const filterCell = document.createElement("td");
+    const filterInput = document.createElement("input");
+    filterInput.type = "text";
+    filterInput.value = filterText;
+    filterCell.appendChild(filterInput);
+
+    const actionCell = document.createElement("td");
+    const deleteBtn = document.createElement("button");
+    deleteBtn.textContent = "Delete";
+    deleteBtn.type = "button";
+    deleteBtn.addEventListener("click", () => row.remove());
+    actionCell.appendChild(deleteBtn);
+
+    row.appendChild(siteCell);
+    row.appendChild(filterCell);
+    row.appendChild(actionCell);
+
+    document.querySelector("#textFilterBody").appendChild(row);
+}
+
 function restoreOptions() {
     function handleStorage(result) {
-		document.querySelector("#enableTopBorder").checked = !!result.enableTopBorder;
-        document.querySelector("#onlyUseSites").checked = !!result.onlyUseSites;
+
+        document.querySelector("#enableTopBorder").checked =
+            !!result.enableTopBorder;
+
+        document.querySelector("#onlyUseSites").checked =
+            !!result.onlyUseSites;
+
 
         if (result.searchPairs) {
-            result.searchPairs.forEach(({ site, tag }) => createRow(site, tag));
+            result.searchPairs.forEach(
+                ({ site, tag }) =>
+                    createRow(site, tag)
+            );
+        }
+
+
+        if (result.urlRules) {
+            result.urlRules.forEach(
+                ({ site, keepParams }) =>
+                    createUrlRuleRow(site, keepParams)
+            );
+        }
+
+        if (result.textFilters) {
+            result.textFilters.forEach(
+                ({ site, filterText }) =>
+                    createTextFilterRow(site, filterText)
+            );
         }
     }
 
 
-    function onError(error) {
-        console.error(`Error: ${error}`);
-    }
-
-    let getting = browser.storage.local.get(["searchPairs", "enableTopBorder", "onlyUseSites"]);
-    getting.then(handleStorage, onError);
+    browser.storage.local.get([
+        "searchPairs",
+        "urlRules",
+        "textFilters",
+        "enableTopBorder",
+        "onlyUseSites"
+    ])
+    .then(handleStorage)
+    .catch(console.error);
 }
 
 function initSaveLoadEvents() {
-    document.addEventListener("DOMContentLoaded", restoreOptions);
+    restoreOptions();
     document.querySelector("form").addEventListener("submit", saveOptions);
 }
-function exportTableToClipboard() {
-    const rows = document.querySelectorAll("table tr");
-    const data = [];
-
-    rows.forEach(row => {
+function exportToClipboard() {
+    const searchPairs = Array.from(
+        document.querySelectorAll("#tableBody tr")
+    ).map(row => {
         const inputs = row.querySelectorAll("input");
-        if (inputs.length >= 2) {
-            const site = inputs[0].value.trim();
-            const tag = inputs[1].value.trim();
-            if (site || tag) {
-                data.push({ site, tag });
-            }
-        }
+
+        return {
+            site: inputs[0].value.trim(),
+            tag: inputs[1].value.trim()
+        };
     });
 
-    const json = JSON.stringify(data, null, 2);
-    navigator.clipboard.writeText(json)
-        .then(() => showStatus(`Exported ${data.length} row${data.length === 1 ? "" : "s"} to clipboard`))
-        .catch(err => {
-            console.error("Clipboard write failed:", err);
-            showStatus("Could not export to clipboard", true);
-        });
+    const urlRules = Array.from(
+        document.querySelectorAll("#urlRuleBody tr")
+    ).map(row => {
+        const inputs = row.querySelectorAll("input");
+
+        return {
+            site: inputs[0].value.trim(),
+            keepParams: inputs[1].value.trim()
+        };
+    });
+
+    const textFilters = Array.from(
+        document.querySelectorAll("#textFilterBody tr")
+    ).map(row => {
+        const inputs = row.querySelectorAll("input");
+
+        return {
+            site: inputs[0].value.trim(),
+            filterText: inputs[1].value.trim()
+        };
+    });
+
+    const data = {
+        searchPairs,
+        urlRules,
+        textFilters
+    };
+
+    navigator.clipboard.writeText(
+        JSON.stringify(data, null, 2)
+    )
+    .then(() => showStatus("Exported configuration"))
+    .catch(err => {
+        console.error(err);
+        showStatus("Could not export", true);
+    });
 }
 
-function importTableFromJson(jsonString) {
+function importFromJson(jsonString) {
     let data;
+
     try {
         data = JSON.parse(jsonString);
-        if (!Array.isArray(data)) throw new Error("Invalid format");
-        if (!data.every(isValidImportRow)) throw new Error("Invalid row format");
-    } catch (err) {
-        console.error("Failed to parse JSON:", err);
-        showStatus("Import failed: expected rows with string site and tag values", true);
+
+        if (
+            !data ||
+            typeof data !== "object" ||
+            Array.isArray(data)
+        ) {
+            throw new Error("Invalid format");
+        }
+
+        if (
+            data.searchPairs &&
+            !data.searchPairs.every(isValidSearchPair)
+        ) {
+            throw new Error("Invalid searchPairs");
+        }
+
+        if (
+            data.urlRules &&
+            !data.urlRules.every(isValidUrlRule)
+        ) {
+            throw new Error("Invalid urlRules");
+        }
+
+        if (
+            data.textFilters &&
+            !data.textFilters.every(isValidTextFilter)
+        ) {
+            throw new Error("Invalid textFilters");
+        }
+    }
+    catch (err) {
+        console.error(err);
+        showStatus("Import failed", true);
         return;
     }
 
-    clearTable();
+    clearSearchTable();
+    clearUrlRuleTable();
+    clearTextFilterTable();
 
-    data.forEach(({ site, tag }) => createRow(site || "", tag || ""));
-    showStatus(`Imported ${data.length} row${data.length === 1 ? "" : "s"}`);
+    (data.searchPairs || []).forEach(
+        ({ site, tag }) => createRow(site, tag)
+    );
+
+    (data.urlRules || []).forEach(
+        ({ site, keepParams }) =>
+            createUrlRuleRow(site, keepParams)
+    );
+
+    (data.textFilters || []).forEach(
+        ({ site, filterText }) =>
+            createTextFilterRow(site, filterText)
+    );
+
+    showStatus("Imported configuration");
+}
+
+function isValidSearchPair(row) {
+    return row &&
+        typeof row.site === "string" &&
+        typeof row.tag === "string";
+}
+
+function isValidUrlRule(row) {
+    return row &&
+        typeof row.site === "string" &&
+        typeof row.keepParams === "string";
+}
+
+function isValidTextFilter(row) {
+    return row &&
+        typeof row.site === "string" &&
+        typeof row.filterText === "string";
 }
 
 function isValidImportRow(row) {
@@ -135,7 +331,7 @@ function isValidImportRow(row) {
 
 function importFromClipboard() {
     navigator.clipboard.readText()
-        .then(text => importTableFromJson(text))
+        .then(text => importFromJson(text))
         .catch(err => {
             console.error("Clipboard read failed:", err);
             showStatus("Could not read from clipboard", true);
@@ -147,6 +343,18 @@ function clearTable() {
     while (tableBody.firstChild) {
         tableBody.removeChild(tableBody.firstChild);
     }
+}
+
+function clearSearchTable() {
+    document.querySelector("#tableBody").replaceChildren();
+}
+
+function clearUrlRuleTable() {
+    document.querySelector("#urlRuleBody").replaceChildren();
+}
+
+function clearTextFilterTable() {
+    document.querySelector("#textFilterBody").replaceChildren();
 }
 
 let statusTimeout = null;
@@ -164,10 +372,46 @@ function showStatus(message, isError = false) {
     }, 3000);
 }
 
-init();
+function setupEventListeners() {
+    try {
+        const addRowBtn = document.querySelector("#addRowBtn");
+        const exportBtn = document.querySelector("#exportBtn");
+        const importBtn = document.querySelector("#importBtn");
+        const addUrlRuleBtn = document.querySelector("#addUrlRuleBtn");
+        const addTextFilterBtn = document.querySelector("#addTextFilterBtn");
 
-document.addEventListener("DOMContentLoaded", () => {
-    document.querySelector("#addRowBtn").addEventListener("click", () => createRow());
-    document.querySelector("#exportBtn").addEventListener("click", exportTableToClipboard);
-    document.querySelector("#importBtn").addEventListener("click", importFromClipboard);
-});
+        if (!addRowBtn) console.warn("addRowBtn not found");
+        if (!exportBtn) console.warn("exportBtn not found");
+        if (!importBtn) console.warn("importBtn not found");
+        if (!addUrlRuleBtn) console.warn("addUrlRuleBtn not found");
+        if (!addTextFilterBtn) console.warn("addTextFilterBtn not found");
+
+        if (addRowBtn) addRowBtn.addEventListener("click", () => createRow());
+        if (exportBtn) exportBtn.addEventListener("click", exportToClipboard);
+        if (importBtn) importBtn.addEventListener("click", importFromClipboard);
+        if (addUrlRuleBtn) addUrlRuleBtn.addEventListener("click", () => createUrlRuleRow());
+        if (addTextFilterBtn) addTextFilterBtn.addEventListener("click", () => createTextFilterRow());
+
+        console.log("Event listeners attached successfully");
+    } catch (err) {
+        console.error("Error setting up event listeners:", err);
+    }
+}
+
+if (document.readyState === "loading") {
+    document.addEventListener("DOMContentLoaded", () => {
+        try {
+            initSaveLoadEvents();
+        } catch (err) {
+            console.error("Error in initSaveLoadEvents:", err);
+        }
+        setupEventListeners();
+    });
+} else {
+    try {
+        initSaveLoadEvents();
+    } catch (err) {
+        console.error("Error in initSaveLoadEvents:", err);
+    }
+    setupEventListeners();
+}
