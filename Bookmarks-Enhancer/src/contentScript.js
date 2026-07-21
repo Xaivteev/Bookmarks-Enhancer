@@ -69,12 +69,13 @@ browser.storage.onChanged.addListener((changes, areaName) => {
 
 	if (changes[STORAGE_KEYS.urlRules]) {
 		urlRules = Array.isArray(changes[STORAGE_KEYS.urlRules].newValue) ? changes[STORAGE_KEYS.urlRules].newValue : [];
+		invalidateUrlDependentCaches();
 		needsRefresh = true;
 	}
 
 	if (changes[STORAGE_KEYS.textFilters]) {
 		textFilters = Array.isArray(changes[STORAGE_KEYS.textFilters].newValue) ? changes[STORAGE_KEYS.textFilters].newValue : [];
-		textFilterCache.clear();
+		invalidateTextFilterCache();
 		needsRefresh = true;
 	}
 
@@ -106,6 +107,7 @@ const textFilterCache = new Map(); // element -> normalized text
 let linkMap = new Map(); // normalizedHref -> [link elements]
 let linkStatusMap = new Map(); // normalizedHref -> { seen, blocked, favorited }
 let processedHrefs = new Set();
+let urlCacheGeneration = 0;
 let observer = null;
 let pendingObservedHrefs = new Set();
 let mutationDebounceTimer = null;
@@ -118,9 +120,50 @@ const statusClasses = {
 };
 const statusClassNames = Object.values(statusClasses);
 
+function removeStatusClasses(classNames) {
+	const selector = classNames.map(className => `.${className}`).join(',');
+	if (!selector) return;
+
+	for (const element of document.querySelectorAll(selector)) {
+		element.classList.remove(...classNames);
+	}
+}
+
+function invalidateUrlDependentCaches() {
+	urlCacheGeneration += 1;
+	urlNormalizationCache.clear();
+	linkMap = new Map();
+	linkStatusMap = new Map();
+	processedHrefs = new Set();
+	pendingObservedHrefs = new Set();
+
+	if (mutationDebounceTimer) {
+		clearTimeout(mutationDebounceTimer);
+		mutationDebounceTimer = null;
+	}
+
+	removeStatusClasses([
+		statusClasses.blocked,
+		statusClasses.favorited,
+		statusClasses.seen
+	]);
+}
+
+function invalidateTextFilterCache() {
+	textFilterCache.clear();
+	removeStatusClasses([statusClasses.textFiltered]);
+}
+
 function requestBookmarkStatuses(hrefs) {
 	if (!hrefs || !hrefs.length) return;
-	browser.runtime.sendMessage({ hrefs }).then(applyBookmarkStyling).catch(onError);
+	const requestGeneration = urlCacheGeneration;
+	browser.runtime.sendMessage({ hrefs })
+		.then(message => {
+			if (requestGeneration === urlCacheGeneration) {
+				applyBookmarkStyling(message);
+			}
+		})
+		.catch(onError);
 }
 
 function injectBookmarkStyles() {

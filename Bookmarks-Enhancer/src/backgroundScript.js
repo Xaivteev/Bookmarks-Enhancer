@@ -1,9 +1,12 @@
 ﻿browser.runtime.onMessage.addListener((message, sender, sendResponse) => {
 	if (message && message.hrefs) {
-		searchhrefs(message.hrefs).then(sendResponse).catch(error => {
-			onError(error);
-			sendResponse({ seen: [], blocked: [], favorited: [] });
-		});
+		settingsReady
+			.then(() => searchhrefs(message.hrefs))
+			.then(sendResponse)
+			.catch(error => {
+				onError(error);
+				sendResponse({ seen: [], blocked: [], favorited: [] });
+			});
 		return true;
 	}
 	return false;
@@ -60,7 +63,7 @@ function loadSettings() {
         });
 }
 
-loadSettings();
+const settingsReady = loadSettings().catch(onError);
 
 // Create context menu items for selection and links
 function createContextMenus() {
@@ -162,6 +165,7 @@ browser.storage.onChanged.addListener((changes, areaName) => {
 			? changes[STORAGE_KEYS.urlRules].newValue
 			: [];
 		urlNormalizationCache.clear();
+		invalidateBookmarkCaches();
 	}
 
 	if (changes[STORAGE_KEYS.textFilters]) {
@@ -176,7 +180,9 @@ const urlNormalizationCache = new Map(); // href -> normalized href
 
 let bookmarkStatusMap = new Map(); // href -> { seen, blocked, favorited }
 let bookmarkIndexPromise = null;
+let bookmarkCacheGeneration = 0;
 function searchhrefs(hrefs) {
+	const requestGeneration = bookmarkCacheGeneration;
 	// contentScript asks if links have been bookmarked
 	// Normalize hrefs and prepare lookup
 	const normalizedHrefs = hrefs.map(normalizeHrefForSearch);
@@ -189,6 +195,10 @@ function searchhrefs(hrefs) {
 	if (hrefsToSearch.length === 0) return Promise.resolve(buildStatusResponse());
 
 	return getBookmarkIndex().then(index => {
+		if (requestGeneration !== bookmarkCacheGeneration) {
+			return searchhrefs(hrefs);
+		}
+
 		for (const href of hrefsToSearch) {
 			const status = {
 				seen: null,
@@ -258,6 +268,7 @@ function buildBookmarkIndex() {
 }
 
 function invalidateBookmarkCaches() {
+	bookmarkCacheGeneration += 1;
 	bookmarkStatusMap = new Map();
 	bookmarkIndexPromise = null;
 }
@@ -317,14 +328,4 @@ browser.bookmarks.onMoved.addListener((id, moveInfo) => {
 
 browser.bookmarks.onChanged.addListener((id, changeInfo) => {
 	invalidateBookmarkCaches();
-});
-
-browser.storage.onChanged.addListener((changes, area) => {
-    if (
-        area === "local" &&
-        changes.urlRules
-    ) {
-        urlRules = changes.urlRules.newValue || [];
-        invalidateBookmarkCaches();
-    }
 });
