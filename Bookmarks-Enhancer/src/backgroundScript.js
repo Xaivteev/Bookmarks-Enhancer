@@ -14,28 +14,24 @@
 
 // trigger update styling if button is clicked
 browser.browserAction.onClicked.addListener(() => {
-	let activeTab = browser.tabs.query({
-		currentWindow: true,
-		active: true
-	});
-	activeTab.then(tabs => {
-		if (tabs.length > 0) {
-			browser.tabs.sendMessage(tabs[0].id, { refresh: true }).catch(onError);
-		}
-	}, onError);
+	sendRefreshToActiveTab("optimistic");
 });
 
 browser.pageAction.onClicked.addListener(() => {
-	let activeTab = browser.tabs.query({
+	sendRefreshToActiveTab("optimistic");
+});
+
+function sendRefreshToActiveTab(mode) {
+	return browser.tabs.query({
 		currentWindow: true,
 		active: true
-	});
-	activeTab.then(tabs => {
+	}).then(tabs => {
 		if (tabs.length > 0) {
-			browser.tabs.sendMessage(tabs[0].id, { refresh: true }).catch(onError);
+			return browser.tabs.sendMessage(tabs[0].id, { refresh: true, mode });
 		}
-	}, onError);
-});
+		return undefined;
+	}).catch(onError);
+}
 
 function onError(error) {
 	console.log(`Error: ${error}`);
@@ -85,6 +81,12 @@ function createContextMenus() {
 			title: 'Add link to Favorited bookmarks',
 			contexts: ['link']
 		});
+
+		browser.contextMenus.create({
+			id: 'authoritativeRefresh',
+			title: 'Authoritative Refresh',
+			contexts: ['browser_action', 'page_action']
+		});
 	} catch (e) {
 		console.error('Context menu creation failed', e);
 	}
@@ -106,13 +108,21 @@ function ensureFolderAndCreateBookmark(folderTitle, url, title) {
 function notifyAllTabsRefresh() {
 	return browser.tabs.query({}).then(tabs => {
 		for (const t of tabs) {
-			browser.tabs.sendMessage(t.id, { refresh: true }).catch(() => {});
+			browser.tabs.sendMessage(t.id, { refresh: true, mode: "optimistic" }).catch(() => {});
 		}
 	}).catch(() => {});
 }
 
 browser.contextMenus.onClicked.addListener((info, tab) => {
 	if (!info || !tab) return;
+
+	if (info.menuItemId === 'authoritativeRefresh') {
+		browser.tabs.sendMessage(tab.id, {
+			refresh: true,
+			mode: "authoritative"
+		}).catch(onError);
+		return;
+	}
 
 	if (info.menuItemId === 'addTextFilter') {
 		const selection = (info.selectionText || '').trim();

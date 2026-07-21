@@ -85,6 +85,9 @@ browser.storage.onChanged.addListener((changes, areaName) => {
 
 	if (changes[STORAGE_KEYS.enableTopBorder]) {
 		enableTopBorder = !!changes[STORAGE_KEYS.enableTopBorder].newValue;
+		if (!enableTopBorder) {
+			clearExtensionTopBorder();
+		}
 	}
 
 	if (changes[STORAGE_KEYS.enableDeepSearch]) {
@@ -121,6 +124,7 @@ let urlCacheGeneration = 0;
 let observer = null;
 let pendingObservedHrefs = new Set();
 let mutationDebounceTimer = null;
+let originalBodyBorderTop = null;
 const mutationDebounceDelay = 200;
 const statusClasses = {
 	blocked: 'be-bookmarks-enhancer-blocked',
@@ -206,19 +210,23 @@ function injectBookmarkStyles() {
 // Listen for explicit refresh messages from backgroundScript
 browser.runtime.onMessage.addListener(message => {
 	if (message && message.refresh) {
-		sendAllHrefs();
+		if (message.mode === "authoritative") {
+			performAuthoritativeRefresh();
+		} else {
+			sendUniqueHrefs();
+		}
 	}
 });
 
 // Build a map of normalizedHref -> [link elements], filtering invalid/hidden links
-function buildLinkMap() {
+function buildLinkMap(includeHidden = false) {
 	linkMap = new Map();
 	for (const link of document.links) {
-		collectLink(link);
+		collectLink(link, includeHidden);
 	}
 }
 
-function collectLink(link) {
+function collectLink(link, includeHidden = false) {
 	const href = link.getAttribute('href') || link.href || '';
 	if (!href) return null;
 	let normalized;
@@ -228,8 +236,10 @@ function collectLink(link) {
 
 	if (!/^https?:/.test(normalized)) return null;
 
-	const style = window.getComputedStyle(link);
-	if (style.display === 'none' || style.visibility === 'hidden' || style.opacity === '0') return null;
+	if (!includeHidden) {
+		const style = window.getComputedStyle(link);
+		if (style.display === 'none' || style.visibility === 'hidden' || style.opacity === '0') return null;
+	}
 
 	if (!linkMap.has(normalized)) linkMap.set(normalized, []);
 	linkMap.get(normalized).push(link);
@@ -240,6 +250,11 @@ function sendUniqueHrefs() {
 	if (!searchSite) return; // skip if site not relevant
 	buildLinkMap();
 	const allHrefs = Array.from(linkMap.keys());
+	for (const href of allHrefs) {
+		if (linkStatusMap.has(href)) {
+			applyCachedLinkStatus(href);
+		}
+	}
 	const newHrefs = allHrefs.filter(h => !processedHrefs.has(h));
 	if (newHrefs.length === 0) return;
 	newHrefs.forEach(h => processedHrefs.add(h));
@@ -254,7 +269,42 @@ function sendAllHrefs() {
 	requestBookmarkStatuses(allHrefs);
 }
 
-function applyBookmarkStyling(message) {
+function performAuthoritativeRefresh() {
+	if (!searchSite) return;
+
+	urlCacheGeneration += 1;
+	const refreshGeneration = urlCacheGeneration;
+	buildLinkMap(true);
+	const authoritativeLinkMap = linkMap;
+	const allHrefs = Array.from(authoritativeLinkMap.keys());
+
+	function applyAuthoritativeResults(message) {
+		if (refreshGeneration !== urlCacheGeneration) return;
+
+		linkMap = authoritativeLinkMap;
+		linkStatusMap = new Map();
+		processedHrefs = new Set(allHrefs);
+		pendingObservedHrefs = new Set();
+		textFilterCache.clear();
+		removeStatusClasses(statusClassNames);
+		clearExtensionTopBorder();
+		applyBookmarkStyling(message, true);
+
+		// Pick up any links added while the authoritative request was running.
+		sendUniqueHrefs();
+	}
+
+	if (allHrefs.length === 0) {
+		applyAuthoritativeResults({ seen: [], blocked: [], favorited: [] });
+		return;
+	}
+
+	browser.runtime.sendMessage({ hrefs: allHrefs })
+		.then(applyAuthoritativeResults)
+		.catch(onError);
+}
+
+function applyBookmarkStyling(message, includeHidden = false) {
 	if (!searchSite) return;
 
 	const bookmarkGroups = {
@@ -290,6 +340,9 @@ function applyBookmarkStyling(message) {
 		const normalizedCurrentUrl = normalizeHrefForSearch(window.location.href);
 		const currentStatus = statusLookup.get(normalizedCurrentUrl);
 		if (currentStatus) {
+			if (originalBodyBorderTop === null) {
+				originalBodyBorderTop = document.body.style.borderTop;
+			}
 			document.body.style.borderTop = currentStatus.border;
 		}
 	}
@@ -297,16 +350,17 @@ function applyBookmarkStyling(message) {
 	// Then run the existing class-based element styling for configured tags
 	for (const tag of tagsForSearch) {
 		const elements = Array.from(document.getElementsByClassName(tag)).filter(el => {
-			const style = window.getComputedStyle(el);
-			const isHidden = style.display === 'none';
-			return !isHidden && !hasStatusClass(el);
+			if (hasStatusClass(el)) return false;
+			if (includeHidden) return true;
+
+			return window.getComputedStyle(el).display !== 'none';
 		});
 
 		styleElementsForBookmarks(elements, statusLookup);
 	}
 
 	// Apply text filters on the same tags
-	applyTextFilters();
+	applyTextFilters(includeHidden);
 }
 
 function normalizeBookmarks(bookmarks) {
@@ -448,6 +502,13 @@ function getSeenStyleConfig() {
 	};
 }
 
+function clearExtensionTopBorder() {
+	if (originalBodyBorderTop === null || !document.body) return;
+
+	document.body.style.borderTop = originalBodyBorderTop;
+	originalBodyBorderTop = null;
+}
+
 function applyStatusClass(element, className) {
 	element.classList.remove(...statusClassNames);
 	element.classList.add(className);
@@ -481,28 +542,29 @@ function getMatchingTextFilters() {
 	);
 }
 
-function applyTextFilters() {
+function applyTextFilters(includeHidden = false) {
 	const matchingFilters = getMatchingTextFilters();
 	if (matchingFilters.length === 0) return;
 
 	for (const tag of tagsForSearch) {
 		const elements = Array.from(document.getElementsByClassName(tag)).filter(el => {
-			const style = window.getComputedStyle(el);
-			const isHidden = style.display === 'none';
-			return !isHidden && !hasStatusClass(el);
+			if (hasStatusClass(el)) return false;
+			if (includeHidden) return true;
+
+			return window.getComputedStyle(el).display !== 'none';
 		});
-		applyTextFiltersTo(elements, matchingFilters);
+		applyTextFiltersTo(elements, matchingFilters, includeHidden);
 	}
 }
 
-function applyTextFiltersTo(elements, matchingFilters) {
+function applyTextFiltersTo(elements, matchingFilters, includeHidden = false) {
 	if (!elements || elements.length === 0) return;
 	matchingFilters = matchingFilters || getMatchingTextFilters();
 	if (matchingFilters.length === 0) return;
 
 	for (const element of elements) {
-		const style = window.getComputedStyle(element);
-		if (style.display === 'none' || hasStatusClass(element)) continue;
+		if (hasStatusClass(element)) continue;
+		if (!includeHidden && window.getComputedStyle(element).display === 'none') continue;
 
 		let normalizedText = textFilterCache.get(element);
 		if (!normalizedText) {
@@ -592,6 +654,8 @@ function applyCachedLinkStatus(norm) {
 	if (!status) return;
 	const els = linkMap.get(norm) || [];
 	for (const el of els) {
+		if (hasStatusClass(el)) continue;
+
 		if (status.blocked) applyStatusClass(el, statusClasses.blocked);
 		else if (status.favorited) applyStatusClass(el, statusClasses.favorited);
 		else if (status.seen) applyStatusClass(el, statusClasses.seen);
