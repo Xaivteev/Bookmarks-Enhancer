@@ -1,53 +1,122 @@
-function saveOptions(e) {
-    e.preventDefault();
-    let obj = {
-		enableTopBorder: document.querySelector("#enableTopBorder").checked,
-		enableDeepSearch: document.querySelector("#enableDeepSearch").checked,
-		onlyUseSites: document.querySelector("#onlyUseSites").checked
-    };
+function mergeRowsBySite(rows, valueKey, parseValues, getValueKey = value => value) {
+    const rowsBySite = new Map();
 
+    for (const row of rows) {
+        const site = normalizeSiteForMatching(row.site);
+        if (!site) continue;
+
+        if (!rowsBySite.has(site)) {
+            rowsBySite.set(site, new Map());
+        }
+
+        const values = rowsBySite.get(site);
+        for (const value of parseValues(row[valueKey])) {
+            const key = getValueKey(value);
+            if (!values.has(key)) {
+                values.set(key, value);
+            }
+        }
+    }
+
+    return Array.from(rowsBySite, ([site, values]) => ({
+        site,
+        [valueKey]: Array.from(values.values()).join(', ')
+    })).filter(row => row[valueKey]);
+}
+
+function parseCommaSeparatedValues(value) {
+    return typeof value === "string"
+        ? value.split(',').map(item => item.trim()).filter(Boolean)
+        : [];
+}
+
+function parseClassGroups(value) {
+    return parseCommaSeparatedValues(value)
+        .map(classGroup => classGroup.split(/\s+/).filter(Boolean).join(' '))
+        .filter(Boolean);
+}
+
+function getClassGroupKey(classGroup) {
+    return classGroup.split(/\s+/).sort().join('\u0000');
+}
+
+function collectSearchPairs() {
     const rows = Array.from(document.querySelectorAll("#tableBody tr")).map(row => {
         const inputs = row.querySelectorAll("input");
         return {
-            site: inputs[0].value.trim(),
-            tag: inputs[1].value.trim()
+            site: inputs[0].value,
+            classes: inputs[1].value
         };
     });
-    obj.searchPairs = rows;
 
-    const urlRules = Array.from(
-        document.querySelectorAll("#urlRuleBody tr")
-        ).map(row => {
-            const inputs = row.querySelectorAll("input");
+    return mergeRowsBySite(rows, "classes", parseClassGroups, getClassGroupKey);
+}
 
-            return {
-                site: inputs[0].value.trim(),
-                keepParams: inputs[1].value.trim()
-            };
-        });
-    obj.urlRules = urlRules;
+function collectUrlRules() {
+    const rows = Array.from(document.querySelectorAll("#urlRuleBody tr")).map(row => {
+        const inputs = row.querySelectorAll("input");
+        return {
+            site: inputs[0].value,
+            keepParams: inputs[1].value
+        };
+    });
 
-    const textFilters = Array.from(
-        document.querySelectorAll("#textFilterBody tr")
-        ).map(row => {
-            const inputs = row.querySelectorAll("input");
+    return mergeRowsBySite(rows, "keepParams", parseCommaSeparatedValues);
+}
 
-            return {
-                site: inputs[0].value.trim(),
-                filterText: inputs[1].value.trim()
-            };
-        });
-    obj.textFilters = textFilters;
+function collectTextFilters() {
+    const rows = Array.from(document.querySelectorAll("#textFilterBody tr")).map(row => {
+        const inputs = row.querySelectorAll("input");
+        return {
+            site: inputs[0].value,
+            filterText: inputs[1].value
+        };
+    });
+
+    return mergeRowsBySite(
+        rows,
+        "filterText",
+        parseCommaSeparatedValues,
+        value => value.toLowerCase()
+    );
+}
+
+function replaceConfigurationRows(searchPairs, urlRules, textFilters) {
+    clearSearchTable();
+    clearUrlRuleTable();
+    clearTextFilterTable();
+
+    searchPairs.forEach(({ site, classes }) => createRow(site, classes));
+    urlRules.forEach(({ site, keepParams }) => createUrlRuleRow(site, keepParams));
+    textFilters.forEach(({ site, filterText }) => createTextFilterRow(site, filterText));
+}
+
+function saveOptions(e) {
+    e.preventDefault();
+    const searchPairs = collectSearchPairs();
+    const urlRules = collectUrlRules();
+    const textFilters = collectTextFilters();
+    let obj = {
+		enableTopBorder: document.querySelector("#enableTopBorder").checked,
+		enableDeepSearch: document.querySelector("#enableDeepSearch").checked,
+		onlyUseSites: document.querySelector("#onlyUseSites").checked,
+        searchPairs,
+        urlRules,
+        textFilters
+    };
 
     browser.storage.local.set(obj)
-        .then(() => showStatus("Options saved"))
+        .then(() => {
+            replaceConfigurationRows(searchPairs, urlRules, textFilters);
+            showStatus("Options saved");
+        })
         .catch(err => {
             console.error("Save failed:", err);
             showStatus("Could not save options", true);
         });
 }
 
-function createRow(site = "", tag = "") {
+function createRow(site = "", classes = "") {
     const row = document.createElement("tr");
 
     const siteCell = document.createElement("td");
@@ -56,11 +125,11 @@ function createRow(site = "", tag = "") {
     siteInput.value = site;
     siteCell.appendChild(siteInput);
 
-    const tagCell = document.createElement("td");
-    const tagInput = document.createElement("input");
-    tagInput.type = "text";
-    tagInput.value = tag;
-    tagCell.appendChild(tagInput);
+    const classesCell = document.createElement("td");
+    const classesInput = document.createElement("input");
+    classesInput.type = "text";
+    classesInput.value = classes;
+    classesCell.appendChild(classesInput);
 
     const actionCell = document.createElement("td");
     const deleteBtn = document.createElement("button");
@@ -70,7 +139,7 @@ function createRow(site = "", tag = "") {
     actionCell.appendChild(deleteBtn);
 
     row.appendChild(siteCell);
-    row.appendChild(tagCell);
+    row.appendChild(classesCell);
     row.appendChild(actionCell);
 
     document.querySelector("#tableBody").appendChild(row);
@@ -148,10 +217,12 @@ function restoreOptions() {
 
 
         if (result.searchPairs) {
-            result.searchPairs.forEach(
-                ({ site, tag }) =>
-                    createRow(site, tag)
-            );
+            result.searchPairs.forEach(pair => {
+                const classes = typeof pair.classes === "string"
+                    ? pair.classes
+                    : pair.tag;
+                createRow(pair.site, classes);
+            });
         }
 
 
@@ -188,43 +259,10 @@ function initSaveLoadEvents() {
     document.querySelector("form").addEventListener("submit", saveOptions);
 }
 function exportToClipboard() {
-    const searchPairs = Array.from(
-        document.querySelectorAll("#tableBody tr")
-    ).map(row => {
-        const inputs = row.querySelectorAll("input");
-
-        return {
-            site: inputs[0].value.trim(),
-            tag: inputs[1].value.trim()
-        };
-    });
-
-    const urlRules = Array.from(
-        document.querySelectorAll("#urlRuleBody tr")
-    ).map(row => {
-        const inputs = row.querySelectorAll("input");
-
-        return {
-            site: inputs[0].value.trim(),
-            keepParams: inputs[1].value.trim()
-        };
-    });
-
-    const textFilters = Array.from(
-        document.querySelectorAll("#textFilterBody tr")
-    ).map(row => {
-        const inputs = row.querySelectorAll("input");
-
-        return {
-            site: inputs[0].value.trim(),
-            filterText: inputs[1].value.trim()
-        };
-    });
-
     const data = {
-        searchPairs,
-        urlRules,
-        textFilters,
+        searchPairs: collectSearchPairs(),
+        urlRules: collectUrlRules(),
+        textFilters: collectTextFilters(),
         enableTopBorder: document.querySelector("#enableTopBorder").checked,
         onlyUseSites: document.querySelector("#onlyUseSites").checked,
         enableDeepSearch: document.querySelector("#enableDeepSearch").checked
@@ -306,9 +344,12 @@ function importFromJson(jsonString) {
     clearUrlRuleTable();
     clearTextFilterTable();
 
-    (data.searchPairs || []).forEach(
-        ({ site, tag }) => createRow(site, tag)
-    );
+    (data.searchPairs || []).forEach(pair => {
+        const classes = typeof pair.classes === "string"
+            ? pair.classes
+            : pair.tag;
+        createRow(pair.site, classes);
+    });
 
     (data.urlRules || []).forEach(
         ({ site, keepParams }) =>
@@ -341,7 +382,10 @@ function importFromJson(jsonString) {
 function isValidSearchPair(row) {
     return row &&
         typeof row.site === "string" &&
-        typeof row.tag === "string";
+        (
+            typeof row.classes === "string" ||
+            typeof row.tag === "string"
+        );
 }
 
 function isValidUrlRule(row) {

@@ -10,7 +10,7 @@ const STORAGE_KEYS = {
 
 // Load settings from config
 let searchPairs = [];
-let tagsForSearch = [];
+let classesForSearch = [];
 let urlRules = [];
 let preparedTextFilters = [];
 let searchSite = true;
@@ -32,18 +32,29 @@ function onError(error) {
     console.log(`Error: ${error}`);
 }
 
-function updateTagsForSearch() {
+function getConfiguredClassGroups(pairs) {
+	const classGroups = pairs.flatMap(pair => {
+		const classes = typeof pair.classes === "string"
+			? pair.classes
+			: pair.tag;
+
+		return typeof classes === "string"
+			? classes.split(',').map(group => group.trim().replace(/\s+/g, ' ')).filter(Boolean)
+			: [];
+	});
+
+	return Array.from(new Set(classGroups));
+}
+
+function updateClassesForSearch() {
 	if (onlyUseSites) {
-		searchSite = false;
-		const matchedPair = searchPairs.find(pair =>
+		const matchingPairs = searchPairs.filter(pair =>
 			hostnameMatchesSite(window.location.hostname, pair.site)
 		);
-		if (matchedPair) {
-			searchSite = true;
-			tagsForSearch = matchedPair.tag.split(',').map(tag => tag.trim()).filter(Boolean);
-		}
+		searchSite = matchingPairs.length > 0;
+		classesForSearch = getConfiguredClassGroups(matchingPairs);
 	} else {
-		tagsForSearch = searchPairs.flatMap(pair => pair.tag.split(',').map(tag => tag.trim()).filter(Boolean));
+		classesForSearch = getConfiguredClassGroups(searchPairs);
 		searchSite = true;
 	}
 }
@@ -55,7 +66,7 @@ function onGot(item) {
 	enableTopBorder = !!item[STORAGE_KEYS.enableTopBorder];
 	enableDeepSearch = !!item[STORAGE_KEYS.enableDeepSearch];
 	onlyUseSites = !!item[STORAGE_KEYS.onlyUseSites];
-	updateTagsForSearch();
+	updateClassesForSearch();
 	// Start processing links now that settings are loaded
 	try { initProcessing(); } catch (e) { /* initProcessing may be defined later */ }
 }
@@ -98,12 +109,12 @@ browser.storage.onChanged.addListener((changes, areaName) => {
 
 	if (changes[STORAGE_KEYS.onlyUseSites]) {
 		onlyUseSites = !!changes[STORAGE_KEYS.onlyUseSites].newValue;
-		updateTagsForSearch();
+		updateClassesForSearch();
 		needsRefresh = true;
 	}
 
 	if (needsRefresh && (changes[STORAGE_KEYS.searchPairs] || changes[STORAGE_KEYS.onlyUseSites])) {
-		updateTagsForSearch();
+		updateClassesForSearch();
 	}
 
 	if (needsRefresh && searchSite) {
@@ -336,9 +347,9 @@ function applyBookmarkStyling(message, includeHidden = false) {
 		}
 	}
 
-	// Then run the existing class-based element styling for configured tags
-	for (const tag of tagsForSearch) {
-		const elements = Array.from(document.getElementsByClassName(tag)).filter(el => {
+	// Then run the existing class-based element styling for configured classes
+	for (const classGroup of classesForSearch) {
+		const elements = Array.from(document.getElementsByClassName(classGroup)).filter(el => {
 			if (hasStatusClass(el)) return false;
 			if (includeHidden) return true;
 
@@ -348,7 +359,7 @@ function applyBookmarkStyling(message, includeHidden = false) {
 		styleElementsForBookmarks(elements, statusLookup);
 	}
 
-	// Apply text filters on the same tags
+	// Apply text filters on the same classes
 	applyTextFilters(includeHidden);
 }
 
@@ -532,8 +543,8 @@ function applyTextFilters(includeHidden = false) {
 	const matchingFilters = getMatchingTextFilters();
 	if (matchingFilters.length === 0) return;
 
-	for (const tag of tagsForSearch) {
-		const elements = Array.from(document.getElementsByClassName(tag)).filter(el => {
+	for (const classGroup of classesForSearch) {
+		const elements = Array.from(document.getElementsByClassName(classGroup)).filter(el => {
 			if (hasStatusClass(el)) return false;
 			if (includeHidden) return true;
 
@@ -588,13 +599,21 @@ function startMutationObserver() {
 						if (norm) pendingObservedHrefs.add(norm);
 					}
 
-					// Collect newly added elements that match configured tags for text filtering
-					if (tagsForSearch && tagsForSearch.length) {
+					// Collect newly added elements that match configured classes for text filtering
+					if (classesForSearch && classesForSearch.length) {
 						const elems = [];
-						for (const tag of tagsForSearch) {
+						for (const classGroup of classesForSearch) {
 							try {
-								if (node.classList && node.classList.contains(tag)) elems.push(node);
-								const found = node.getElementsByClassName ? node.getElementsByClassName(tag) : [];
+								const requiredClasses = classGroup.split(/\s+/).filter(Boolean);
+								if (
+									node.classList &&
+									requiredClasses.every(className => node.classList.contains(className))
+								) {
+									elems.push(node);
+								}
+								const found = node.getElementsByClassName
+									? node.getElementsByClassName(classGroup)
+									: [];
 								for (const f of found) elems.push(f);
 							} catch (e) { /* ignore DOM exceptions */ }
 						}

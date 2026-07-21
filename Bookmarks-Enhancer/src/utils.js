@@ -3,13 +3,25 @@
  * hostname matches (for example, "example.com" must not match
  * "notexample.com"). A configured domain also matches its subdomains.
  */
+function normalizeSiteForMatching(site) {
+	if (typeof site !== "string") return "";
+
+	const trimmedSite = site.trim().toLowerCase().replace(/^\*\./, "");
+	if (!trimmedSite) return "";
+
+	try {
+		const url = new URL(
+			trimmedSite.includes("://") ? trimmedSite : `http://${trimmedSite}`
+		);
+		return url.hostname.replace(/\.$/, "");
+	} catch {
+		return trimmedSite.replace(/\.$/, "");
+	}
+}
+
 function hostnameMatchesSite(hostname, site) {
-	const normalizedHostname = typeof hostname === "string"
-		? hostname.trim().toLowerCase().replace(/\.$/, "")
-		: "";
-	const normalizedSite = typeof site === "string"
-		? site.trim().toLowerCase().replace(/^\*\./, "").replace(/\.$/, "")
-		: "";
+	const normalizedHostname = normalizeSiteForMatching(hostname);
+	const normalizedSite = normalizeSiteForMatching(site);
 
 	if (!normalizedHostname || !normalizedSite) return false;
 
