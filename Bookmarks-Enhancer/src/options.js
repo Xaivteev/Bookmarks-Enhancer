@@ -11,6 +11,7 @@ function saveOptions(e) {
     e.preventDefault();
     let obj = {
 		enableTopBorder: document.querySelector("#enableTopBorder").checked,
+		enableDeepSearch: document.querySelector("#enableDeepSearch").checked,
 		onlyUseSites: document.querySelector("#onlyUseSites").checked
     };
 
@@ -148,6 +149,9 @@ function restoreOptions() {
         document.querySelector("#enableTopBorder").checked =
             !!result.enableTopBorder;
 
+        document.querySelector("#enableDeepSearch").checked =
+            !!result.enableDeepSearch;
+
         document.querySelector("#onlyUseSites").checked =
             !!result.onlyUseSites;
 
@@ -181,6 +185,7 @@ function restoreOptions() {
         "urlRules",
         "textFilters",
         "enableTopBorder",
+        "enableDeepSearch",
         "onlyUseSites"
     ])
     .then(handleStorage)
@@ -228,7 +233,8 @@ function exportToClipboard() {
     const data = {
         searchPairs,
         urlRules,
-        textFilters
+        textFilters,
+        enableDeepSearch: document.querySelector("#enableDeepSearch").checked
     };
 
     navigator.clipboard.writeText(
@@ -275,6 +281,13 @@ function importFromJson(jsonString) {
         ) {
             throw new Error("Invalid textFilters");
         }
+
+        if (
+            data.enableDeepSearch !== undefined &&
+            typeof data.enableDeepSearch !== "boolean"
+        ) {
+            throw new Error("Invalid enableDeepSearch");
+        }
     }
     catch (err) {
         console.error(err);
@@ -299,6 +312,11 @@ function importFromJson(jsonString) {
         ({ site, filterText }) =>
             createTextFilterRow(site, filterText)
     );
+
+    if (data.enableDeepSearch !== undefined) {
+        document.querySelector("#enableDeepSearch").checked =
+            data.enableDeepSearch;
+    }
 
     showStatus("Imported configuration");
 }

@@ -4,6 +4,7 @@ const STORAGE_KEYS = {
 	urlRules: "urlRules",
 	textFilters: "textFilters",
 	enableTopBorder: "enableTopBorder",
+	enableDeepSearch: "enableDeepSearch",
 	onlyUseSites: "onlyUseSites"
 };
 
@@ -11,9 +12,10 @@ const STORAGE_KEYS = {
 let searchPairs = [];
 let tagsForSearch = [];
 let urlRules = [];
-let textFilters = [];
+let preparedTextFilters = [];
 let searchSite = true;
 let enableTopBorder = false;
+let enableDeepSearch = false;
 let onlyUseSites = false;
 
 let getting = browser.storage.local.get([
@@ -21,6 +23,7 @@ let getting = browser.storage.local.get([
     STORAGE_KEYS.urlRules,
     STORAGE_KEYS.textFilters,
     STORAGE_KEYS.enableTopBorder,
+    STORAGE_KEYS.enableDeepSearch,
     STORAGE_KEYS.onlyUseSites
 ]);
 getting.then(onGot, onError);
@@ -48,8 +51,9 @@ function updateTagsForSearch() {
 function onGot(item) {
 	searchPairs = Array.isArray(item[STORAGE_KEYS.searchPairs]) ? item[STORAGE_KEYS.searchPairs] : [];
 	urlRules = Array.isArray(item[STORAGE_KEYS.urlRules]) ? item[STORAGE_KEYS.urlRules] : [];
-	textFilters = Array.isArray(item[STORAGE_KEYS.textFilters]) ? item[STORAGE_KEYS.textFilters] : [];
+	preparedTextFilters = preprocessTextFilters(item[STORAGE_KEYS.textFilters]);
 	enableTopBorder = !!item[STORAGE_KEYS.enableTopBorder];
+	enableDeepSearch = !!item[STORAGE_KEYS.enableDeepSearch];
 	onlyUseSites = !!item[STORAGE_KEYS.onlyUseSites];
 	updateTagsForSearch();
 	// Start processing links now that settings are loaded
@@ -74,13 +78,19 @@ browser.storage.onChanged.addListener((changes, areaName) => {
 	}
 
 	if (changes[STORAGE_KEYS.textFilters]) {
-		textFilters = Array.isArray(changes[STORAGE_KEYS.textFilters].newValue) ? changes[STORAGE_KEYS.textFilters].newValue : [];
+		preparedTextFilters = preprocessTextFilters(changes[STORAGE_KEYS.textFilters].newValue);
 		invalidateTextFilterCache();
 		needsRefresh = true;
 	}
 
 	if (changes[STORAGE_KEYS.enableTopBorder]) {
 		enableTopBorder = !!changes[STORAGE_KEYS.enableTopBorder].newValue;
+	}
+
+	if (changes[STORAGE_KEYS.enableDeepSearch]) {
+		enableDeepSearch = !!changes[STORAGE_KEYS.enableDeepSearch].newValue;
+		invalidateUrlDependentCaches();
+		needsRefresh = true;
 	}
 
 	if (changes[STORAGE_KEYS.onlyUseSites]) {
@@ -252,6 +262,7 @@ function applyBookmarkStyling(message) {
 		blocked: normalizeBookmarks(message.blocked),
 		favorited: normalizeBookmarks(message.favorited)
 	};
+	const statusLookup = buildBookmarkStatusLookup(bookmarkGroups);
 
 	// Store known bookmark status per normalized URL for incremental updates
 	function cacheBookmarkStatus(bookmarks, type) {
@@ -268,18 +279,20 @@ function applyBookmarkStyling(message) {
 	cacheBookmarkStatus(bookmarkGroups.blocked, 'blocked');
 	cacheBookmarkStatus(bookmarkGroups.favorited, 'favorited');
 
-	function applyLinkResults(bookmarks, styleConfig) {
-		for (const bookmark of bookmarks) {
-			const els = linkMap.get(bookmark.normalized) || [];
-			for (const el of els) {
-				applyStatusClass(el, styleConfig.className);
-			}
+	for (const [normalized, status] of statusLookup) {
+		const elements = linkMap.get(normalized) || [];
+		for (const element of elements) {
+			applyStatusClass(element, status.className);
 		}
 	}
 
-	applyLinkResults(bookmarkGroups.seen, getSeenStyleConfig());
-	applyLinkResults(bookmarkGroups.favorited, getFavoritedStyleConfig());
-	applyLinkResults(bookmarkGroups.blocked, getBlockedStyleConfig());
+	if (enableTopBorder) {
+		const normalizedCurrentUrl = normalizeHrefForSearch(window.location.href);
+		const currentStatus = statusLookup.get(normalizedCurrentUrl);
+		if (currentStatus) {
+			document.body.style.borderTop = currentStatus.border;
+		}
+	}
 
 	// Then run the existing class-based element styling for configured tags
 	for (const tag of tagsForSearch) {
@@ -289,7 +302,7 @@ function applyBookmarkStyling(message) {
 			return !isHidden && !hasStatusClass(el);
 		});
 
-		styleElementsForBookmarks(elements, bookmarkGroups);
+		styleElementsForBookmarks(elements, statusLookup);
 	}
 
 	// Apply text filters on the same tags
@@ -305,37 +318,46 @@ function normalizeBookmarks(bookmarks) {
 	}));
 }
 
-function styleElementsForBookmarks(elements, bookmarkGroups) {
+function buildBookmarkStatusLookup(bookmarkGroups) {
 	const stylePriority = [
 		{ type: 'blocked', bookmarks: bookmarkGroups.blocked, styleConfig: getBlockedStyleConfig() },
 		{ type: 'favorited', bookmarks: bookmarkGroups.favorited, styleConfig: getFavoritedStyleConfig() },
 		{ type: 'seen', bookmarks: bookmarkGroups.seen, styleConfig: getSeenStyleConfig() }
 	];
-	const normalizedCurrentUrl = normalizeHrefForSearch(window.location.href);
+	const statusLookup = new Map();
 
-	for (const group of stylePriority) {
+	// Add lower priorities first so higher-priority statuses overwrite them.
+	for (let priority = stylePriority.length - 1; priority >= 0; priority -= 1) {
+		const group = stylePriority[priority];
 		for (const bookmark of group.bookmarks) {
-			if (normalizedCurrentUrl === bookmark.normalized && enableTopBorder) {
-				document.body.style.borderTop = group.styleConfig.border;
-			}
+			statusLookup.set(bookmark.normalized, {
+				normalized: bookmark.normalized,
+				path: bookmark.path,
+				className: group.styleConfig.className,
+				border: group.styleConfig.border,
+				priority
+			});
 		}
 	}
 
-	for (const element of elements) {
-		let matchedClassName = findStatusClassFromLinks(element, stylePriority);
+	return statusLookup;
+}
 
-		if (!matchedClassName) {
+function styleElementsForBookmarks(elements, statusLookup) {
+	const statusesByPriority = enableDeepSearch
+		? Array.from(statusLookup.values()).sort((a, b) => a.priority - b.priority)
+		: [];
+
+	for (const element of elements) {
+		let matchedClassName = findStatusClassFromLinks(element, statusLookup);
+
+		if (enableDeepSearch && !matchedClassName) {
 			const text = element.textContent || "";
 			const html = element.innerHTML || "";
 
-			for (const group of stylePriority) {
-				for (const bookmark of group.bookmarks) {
-					if (elementMatchesBookmarkFallback(element, text, html, bookmark)) {
-						matchedClassName = group.styleConfig.className;
-						break;
-					}
-				}
-				if (matchedClassName) {
+			for (const bookmark of statusesByPriority) {
+				if (elementMatchesBookmarkFallback(element, text, html, bookmark)) {
+					matchedClassName = bookmark.className;
 					break;
 				}
 			}
@@ -347,19 +369,19 @@ function styleElementsForBookmarks(elements, bookmarkGroups) {
 	}
 }
 
-function findStatusClassFromLinks(element, stylePriority) {
+function findStatusClassFromLinks(element, statusLookup) {
 	const linkHrefs = getElementLinkHrefSet(element);
 	if (linkHrefs.size === 0) return null;
+	let matchedStatus = null;
 
-	for (const group of stylePriority) {
-		for (const bookmark of group.bookmarks) {
-			if (linkHrefs.has(bookmark.normalized)) {
-				return group.styleConfig.className;
-			}
+	for (const href of linkHrefs) {
+		const status = statusLookup.get(href);
+		if (status && (!matchedStatus || status.priority < matchedStatus.priority)) {
+			matchedStatus = status;
 		}
 	}
 
-	return null;
+	return matchedStatus?.className || null;
 }
 
 function getElementLinkHrefSet(element) {
@@ -436,9 +458,25 @@ function hasStatusClass(element) {
 }
 
 
+function preprocessTextFilters(filters) {
+	if (!Array.isArray(filters)) return [];
+
+	return filters.map(filter => ({
+		site: typeof filter.site === "string" ? filter.site.trim().toLowerCase() : "",
+		filterTexts: typeof filter.filterText === "string"
+			? Array.from(new Set(
+				filter.filterText
+					.split(',')
+					.map(text => text.trim().toLowerCase())
+					.filter(Boolean)
+			))
+			: []
+	})).filter(filter => filter.site && filter.filterTexts.length > 0);
+}
+
 function getMatchingTextFilters() {
 	const currentHost = window.location.hostname;
-	return textFilters.filter(filter =>
+	return preparedTextFilters.filter(filter =>
 		hostnameMatchesSite(currentHost, filter.site)
 	);
 }
@@ -473,13 +511,8 @@ function applyTextFiltersTo(elements, matchingFilters) {
 		}
 
 		for (const filter of matchingFilters) {
-			const filterTexts = filter.filterText
-				.split(',')
-				.map(text => text.trim())
-				.filter(Boolean);
-
-			for (const text of filterTexts) {
-				if (normalizedText.includes(text.toLowerCase())) {
+			for (const text of filter.filterTexts) {
+				if (normalizedText.includes(text)) {
 					applyStatusClass(element, statusClasses.textFiltered);
 					break;
 				}
