@@ -334,9 +334,9 @@ function normalizeClassPickerSite(site) {
 		const url = new URL(
 			trimmedSite.includes("://") ? trimmedSite : `http://${trimmedSite}`
 		);
-		return url.hostname.replace(/\.$/, "");
+		return url.hostname.replace(/\.$/, "").replace(/^www\./, "");
 	} catch {
-		return trimmedSite.replace(/\.$/, "");
+		return trimmedSite.replace(/\.$/, "").replace(/^www\./, "");
 	}
 }
 
