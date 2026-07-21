@@ -83,6 +83,12 @@ function createContextMenus() {
 			title: 'Authoritative Refresh',
 			contexts: ['browser_action', 'page_action']
 		});
+
+		browser.contextMenus.create({
+			id: 'selectTargetClasses',
+			title: 'Select Target Classes',
+			contexts: ['browser_action', 'page_action']
+		});
 	} catch (e) {
 		console.error('Context menu creation failed', e);
 	}
@@ -116,6 +122,13 @@ browser.contextMenus.onClicked.addListener((info, tab) => {
 		browser.tabs.sendMessage(tab.id, {
 			refresh: true,
 			mode: "authoritative"
+		}).catch(onError);
+		return;
+	}
+
+	if (info.menuItemId === 'selectTargetClasses') {
+		browser.tabs.sendMessage(tab.id, {
+			startClassPicker: true
 		}).catch(onError);
 		return;
 	}
