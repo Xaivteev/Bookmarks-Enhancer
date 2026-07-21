@@ -1,12 +1,3 @@
-function init() {
-    try {
-        initSaveLoadEvents();
-    }
-    catch (err) {
-        console.error(err);
-    }
-}
-
 function saveOptions(e) {
     e.preventDefault();
     let obj = {
@@ -365,14 +356,6 @@ function isValidTextFilter(row) {
         typeof row.filterText === "string";
 }
 
-function isValidImportRow(row) {
-    return row &&
-        typeof row === "object" &&
-        !Array.isArray(row) &&
-        typeof row.site === "string" &&
-        typeof row.tag === "string";
-}
-
 function importFromClipboard() {
     navigator.clipboard.readText()
         .then(text => importFromJson(text))
@@ -381,14 +364,6 @@ function importFromClipboard() {
             showStatus("Could not read from clipboard", true);
         });
 }
-function clearTable() {
-    const tableBody = document.querySelector("#tableBody");
-    if (!tableBody) return;
-    while (tableBody.firstChild) {
-        tableBody.removeChild(tableBody.firstChild);
-    }
-}
-
 function clearSearchTable() {
     document.querySelector("#tableBody").replaceChildren();
 }

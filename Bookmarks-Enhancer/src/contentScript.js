@@ -118,7 +118,7 @@ const textFilterCache = new Map(); // element -> normalized text
 
 // Link map state
 let linkMap = new Map(); // normalizedHref -> [link elements]
-let linkStatusMap = new Map(); // normalizedHref -> { seen, blocked, favorited }
+let linkStatusMap = new Map(); // normalizedHref -> status string
 let processedHrefs = new Set();
 let urlCacheGeneration = 0;
 let observer = null;
@@ -295,7 +295,7 @@ function performAuthoritativeRefresh() {
 	}
 
 	if (allHrefs.length === 0) {
-		applyAuthoritativeResults({ seen: [], blocked: [], favorited: [] });
+		applyAuthoritativeResults({ statuses: {} });
 		return;
 	}
 
@@ -307,27 +307,16 @@ function performAuthoritativeRefresh() {
 function applyBookmarkStyling(message, includeHidden = false) {
 	if (!searchSite) return;
 
-	const bookmarkGroups = {
-		seen: normalizeBookmarks(message.seen),
-		blocked: normalizeBookmarks(message.blocked),
-		favorited: normalizeBookmarks(message.favorited)
-	};
-	const statusLookup = buildBookmarkStatusLookup(bookmarkGroups);
+	const statuses = message && message.statuses && typeof message.statuses === "object"
+		? message.statuses
+		: {};
+	const statusLookup = buildBookmarkStatusLookup(statuses);
 
-	// Store known bookmark status per normalized URL for incremental updates
-	function cacheBookmarkStatus(bookmarks, type) {
-		if (!bookmarks) return;
-		for (const bookmark of bookmarks) {
-			const norm = bookmark.normalized;
-			const status = linkStatusMap.get(norm) || { seen: false, blocked: false, favorited: false };
-			status[type] = true;
-			linkStatusMap.set(norm, status);
+	for (const [normalized, status] of Object.entries(statuses)) {
+		if (["none", "seen", "blocked", "favorited"].includes(status)) {
+			linkStatusMap.set(normalized, status);
 		}
 	}
-
-	cacheBookmarkStatus(bookmarkGroups.seen, 'seen');
-	cacheBookmarkStatus(bookmarkGroups.blocked, 'blocked');
-	cacheBookmarkStatus(bookmarkGroups.favorited, 'favorited');
 
 	for (const [normalized, status] of statusLookup) {
 		const elements = linkMap.get(normalized) || [];
@@ -363,35 +352,32 @@ function applyBookmarkStyling(message, includeHidden = false) {
 	applyTextFilters(includeHidden);
 }
 
-function normalizeBookmarks(bookmarks) {
-	if (!bookmarks) return [];
-	return bookmarks.map(b => ({
-		url: b.url,
-		normalized: normalizeHrefForSearch(b.url),
-		path: new URL(b.url).pathname
-	}));
-}
-
-function buildBookmarkStatusLookup(bookmarkGroups) {
-	const stylePriority = [
-		{ type: 'blocked', bookmarks: bookmarkGroups.blocked, styleConfig: getBlockedStyleConfig() },
-		{ type: 'favorited', bookmarks: bookmarkGroups.favorited, styleConfig: getFavoritedStyleConfig() },
-		{ type: 'seen', bookmarks: bookmarkGroups.seen, styleConfig: getSeenStyleConfig() }
-	];
+function buildBookmarkStatusLookup(statuses) {
+	const styleByStatus = {
+		blocked: { ...getBlockedStyleConfig(), priority: 0 },
+		favorited: { ...getFavoritedStyleConfig(), priority: 1 },
+		seen: { ...getSeenStyleConfig(), priority: 2 }
+	};
 	const statusLookup = new Map();
 
-	// Add lower priorities first so higher-priority statuses overwrite them.
-	for (let priority = stylePriority.length - 1; priority >= 0; priority -= 1) {
-		const group = stylePriority[priority];
-		for (const bookmark of group.bookmarks) {
-			statusLookup.set(bookmark.normalized, {
-				normalized: bookmark.normalized,
-				path: bookmark.path,
-				className: group.styleConfig.className,
-				border: group.styleConfig.border,
-				priority
-			});
+	for (const [normalized, status] of Object.entries(statuses)) {
+		const style = styleByStatus[status];
+		if (!style) continue;
+
+		let path;
+		try {
+			path = new URL(normalized).pathname;
+		} catch {
+			continue;
 		}
+
+		statusLookup.set(normalized, {
+			normalized,
+			path,
+			className: style.className,
+			border: style.border,
+			priority: style.priority
+		});
 	}
 
 	return statusLookup;
@@ -656,9 +642,9 @@ function applyCachedLinkStatus(norm) {
 	for (const el of els) {
 		if (hasStatusClass(el)) continue;
 
-		if (status.blocked) applyStatusClass(el, statusClasses.blocked);
-		else if (status.favorited) applyStatusClass(el, statusClasses.favorited);
-		else if (status.seen) applyStatusClass(el, statusClasses.seen);
+		if (status === "blocked") applyStatusClass(el, statusClasses.blocked);
+		else if (status === "favorited") applyStatusClass(el, statusClasses.favorited);
+		else if (status === "seen") applyStatusClass(el, statusClasses.seen);
 	}
 }
 

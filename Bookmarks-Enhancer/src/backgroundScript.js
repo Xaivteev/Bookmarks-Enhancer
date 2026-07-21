@@ -5,7 +5,7 @@
 			.then(sendResponse)
 			.catch(error => {
 				onError(error);
-				sendResponse({ seen: [], blocked: [], favorited: [] });
+				sendResponse({ statuses: {} });
 			});
 		return true;
 	}
@@ -44,17 +44,13 @@ const STORAGE_KEYS = {
 };
 
 let urlRules = [];
-let textFilters = [];
 
 function loadSettings() {
     return browser.storage.local
-        .get([STORAGE_KEYS.urlRules, STORAGE_KEYS.textFilters])
+        .get([STORAGE_KEYS.urlRules])
         .then(result => {
             urlRules = Array.isArray(result[STORAGE_KEYS.urlRules])
                 ? result[STORAGE_KEYS.urlRules]
-                : [];
-            textFilters = Array.isArray(result[STORAGE_KEYS.textFilters])
-                ? result[STORAGE_KEYS.textFilters]
                 : [];
         });
 }
@@ -145,9 +141,6 @@ browser.contextMenus.onClicked.addListener((info, tab) => {
 				existing.push({ site, filterText: selNormalized });
 			}
 			return browser.storage.local.set({ textFilters: existing });
-		}).then(() => {
-			// update local cache and notify tabs
-			loadSettings();
 		}).catch(onError);
 		return;
 	}
@@ -178,11 +171,6 @@ browser.storage.onChanged.addListener((changes, areaName) => {
 		invalidateBookmarkCaches();
 	}
 
-	if (changes[STORAGE_KEYS.textFilters]) {
-		textFilters = Array.isArray(changes[STORAGE_KEYS.textFilters].newValue)
-			? changes[STORAGE_KEYS.textFilters].newValue
-			: [];
-	}
 });
 
 // Cache for URL normalization to avoid repeated calculations
@@ -212,11 +200,6 @@ function searchhrefs(hrefs) {
 		}
 
 		for (const href of hrefsToSearch) {
-			const status = {
-				seen: null,
-				blocked: null,
-				favorited: null
-			};
 			const bookmarkList = index.bookmarksByNormalizedUrl.get(href) || [];
 			const blockedBookmark = bookmarkList.find(bookmark => bookmark.parentId === index.blockedFolderId);
 			const favoritedBookmark = bookmarkList.find(bookmark => bookmark.parentId === index.favoritedFolderId);
@@ -225,9 +208,10 @@ function searchhrefs(hrefs) {
 				bookmark.parentId !== index.favoritedFolderId
 			);
 
-			if (blockedBookmark) status.blocked = blockedBookmark;
-			else if (favoritedBookmark) status.favorited = favoritedBookmark;
-			else if (seenBookmark) status.seen = seenBookmark;
+			let status = "none";
+			if (blockedBookmark) status = "blocked";
+			else if (favoritedBookmark) status = "favorited";
+			else if (seenBookmark) status = "seen";
 
 			bookmarkStatusMap.set(href, status);
 		}
@@ -237,24 +221,16 @@ function searchhrefs(hrefs) {
 }
 
 function buildStatusResponse(requestedHrefs) {
-	const savedBookmarks = [];
-	const blockedBookmarks = [];
-	const favoritedBookmarks = [];
+	const statuses = {};
 
 	for (const href of new Set(requestedHrefs)) {
 		const status = bookmarkStatusMap.get(href);
 		if (!status) continue;
 
-		if (status.seen) savedBookmarks.push(status.seen);
-		if (status.blocked) blockedBookmarks.push(status.blocked);
-		if (status.favorited) favoritedBookmarks.push(status.favorited);
+		statuses[href] = status;
 	}
 
-	return {
-		seen: savedBookmarks,
-		blocked: blockedBookmarks,
-		favorited: favoritedBookmarks
-	};
+	return { statuses };
 }
 
 function getBookmarkIndex() {
