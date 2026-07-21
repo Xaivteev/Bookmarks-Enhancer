@@ -234,6 +234,8 @@ function exportToClipboard() {
         searchPairs,
         urlRules,
         textFilters,
+        enableTopBorder: document.querySelector("#enableTopBorder").checked,
+        onlyUseSites: document.querySelector("#onlyUseSites").checked,
         enableDeepSearch: document.querySelector("#enableDeepSearch").checked
     };
 
@@ -288,6 +290,20 @@ function importFromJson(jsonString) {
         ) {
             throw new Error("Invalid enableDeepSearch");
         }
+
+        if (
+            data.enableTopBorder !== undefined &&
+            typeof data.enableTopBorder !== "boolean"
+        ) {
+            throw new Error("Invalid enableTopBorder");
+        }
+
+        if (
+            data.onlyUseSites !== undefined &&
+            typeof data.onlyUseSites !== "boolean"
+        ) {
+            throw new Error("Invalid onlyUseSites");
+        }
     }
     catch (err) {
         console.error(err);
@@ -316,6 +332,16 @@ function importFromJson(jsonString) {
     if (data.enableDeepSearch !== undefined) {
         document.querySelector("#enableDeepSearch").checked =
             data.enableDeepSearch;
+    }
+
+    if (data.enableTopBorder !== undefined) {
+        document.querySelector("#enableTopBorder").checked =
+            data.enableTopBorder;
+    }
+
+    if (data.onlyUseSites !== undefined) {
+        document.querySelector("#onlyUseSites").checked =
+            data.onlyUseSites;
     }
 
     showStatus("Imported configuration");
