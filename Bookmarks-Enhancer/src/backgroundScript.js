@@ -12,13 +12,13 @@
 	return false;
 });
 
-// trigger update styling if button is clicked
+// Full refresh when the toolbar icon is clicked
 browser.browserAction.onClicked.addListener(() => {
-	sendRefreshToActiveTab("optimistic");
+	sendRefreshToActiveTab("authoritative");
 });
 
 browser.pageAction.onClicked.addListener(() => {
-	sendRefreshToActiveTab("optimistic");
+	sendRefreshToActiveTab("authoritative");
 });
 
 function sendRefreshToActiveTab(mode) {
@@ -59,38 +59,41 @@ const settingsReady = loadSettings().catch(onError);
 
 // Create context menu items for selection and links
 function createContextMenus() {
-	try {
-		browser.contextMenus.create({
+	const menuDefinitions = [
+		{
 			id: 'addTextFilter',
 			title: 'Add selection to site blocked text',
 			contexts: ['selection']
-		});
-
-		browser.contextMenus.create({
+		},
+		{
 			id: 'addLinkBlocked',
 			title: 'Add link to Blocked bookmarks',
 			contexts: ['link']
-		});
-
-		browser.contextMenus.create({
+		},
+		{
 			id: 'addLinkFavorited',
 			title: 'Add link to Favorited bookmarks',
 			contexts: ['link']
-		});
-
-		browser.contextMenus.create({
-			id: 'authoritativeRefresh',
-			title: 'Authoritative Refresh',
-			contexts: ['browser_action', 'page_action']
-		});
-
-		browser.contextMenus.create({
+		},
+		{
 			id: 'selectTargetClasses',
 			title: 'Select Target Classes',
-			contexts: ['browser_action', 'page_action']
-		});
-	} catch (e) {
-		console.error('Context menu creation failed', e);
+			contexts: ['page', 'browser_action', 'page_action']
+		}
+	];
+
+	browser.contextMenus.remove('authoritativeRefresh').catch(() => {});
+
+	for (const definition of menuDefinitions) {
+		browser.contextMenus.remove(definition.id)
+			.catch(() => {})
+			.finally(() => {
+				try {
+					browser.contextMenus.create(definition);
+				} catch (e) {
+					console.error('Context menu creation failed', e);
+				}
+			});
 	}
 }
 
@@ -117,14 +120,6 @@ function notifyAllTabsRefresh() {
 
 browser.contextMenus.onClicked.addListener((info, tab) => {
 	if (!info || !tab) return;
-
-	if (info.menuItemId === 'authoritativeRefresh') {
-		browser.tabs.sendMessage(tab.id, {
-			refresh: true,
-			mode: "authoritative"
-		}).catch(onError);
-		return;
-	}
 
 	if (info.menuItemId === 'selectTargetClasses') {
 		browser.tabs.sendMessage(tab.id, {
