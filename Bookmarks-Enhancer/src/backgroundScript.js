@@ -192,7 +192,9 @@ function searchhrefs(hrefs) {
 
 	// Filter out hrefs that have already been processed
 	const hrefsToSearch = validHrefs.filter(href => !bookmarkStatusMap.has(href));
-	if (hrefsToSearch.length === 0) return Promise.resolve(buildStatusResponse());
+	if (hrefsToSearch.length === 0) {
+		return Promise.resolve(buildStatusResponse(validHrefs));
+	}
 
 	return getBookmarkIndex().then(index => {
 		if (requestGeneration !== bookmarkCacheGeneration) {
@@ -220,16 +222,19 @@ function searchhrefs(hrefs) {
 			bookmarkStatusMap.set(href, status);
 		}
 
-		return buildStatusResponse();
+		return buildStatusResponse(validHrefs);
 	});
 }
 
-function buildStatusResponse() {
+function buildStatusResponse(requestedHrefs) {
 	const savedBookmarks = [];
 	const blockedBookmarks = [];
 	const favoritedBookmarks = [];
 
-	for (const status of bookmarkStatusMap.values()) {
+	for (const href of new Set(requestedHrefs)) {
+		const status = bookmarkStatusMap.get(href);
+		if (!status) continue;
+
 		if (status.seen) savedBookmarks.push(status.seen);
 		if (status.blocked) blockedBookmarks.push(status.blocked);
 		if (status.favorited) favoritedBookmarks.push(status.favorited);
