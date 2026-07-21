@@ -1,4 +1,23 @@
 /**
+ * Match a configured site against a hostname without allowing partial
+ * hostname matches (for example, "example.com" must not match
+ * "notexample.com"). A configured domain also matches its subdomains.
+ */
+function hostnameMatchesSite(hostname, site) {
+	const normalizedHostname = typeof hostname === "string"
+		? hostname.trim().toLowerCase().replace(/\.$/, "")
+		: "";
+	const normalizedSite = typeof site === "string"
+		? site.trim().toLowerCase().replace(/^\*\./, "").replace(/\.$/, "")
+		: "";
+
+	if (!normalizedHostname || !normalizedSite) return false;
+
+	return normalizedHostname === normalizedSite ||
+		normalizedHostname.endsWith(`.${normalizedSite}`);
+}
+
+/**
  * Normalize URL for search/comparison
  * Applies URL rules to keep only specified parameters
  * Caches results to avoid repeated calculations
@@ -16,7 +35,7 @@ function normalizeHrefForSearch(href) {
 		if (url.protocol !== "http:" && url.protocol !== "https:") return href;
 
 		const rule = urlRules.find(rule =>
-			url.hostname.includes(rule.site)
+			hostnameMatchesSite(url.hostname, rule.site)
 		);
 
 		if (rule) {

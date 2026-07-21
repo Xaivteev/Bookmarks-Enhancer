@@ -32,7 +32,9 @@ function onError(error) {
 function updateTagsForSearch() {
 	if (onlyUseSites) {
 		searchSite = false;
-		const matchedPair = searchPairs.find(pair => window.location.href.includes(pair.site));
+		const matchedPair = searchPairs.find(pair =>
+			hostnameMatchesSite(window.location.hostname, pair.site)
+		);
 		if (matchedPair) {
 			searchSite = true;
 			tagsForSearch = matchedPair.tag.split(',').map(tag => tag.trim()).filter(Boolean);
@@ -394,7 +396,7 @@ function hasStatusClass(element) {
 function getMatchingTextFilters() {
 	const currentHost = window.location.hostname;
 	return textFilters.filter(filter =>
-		currentHost.includes(filter.site)
+		hostnameMatchesSite(currentHost, filter.site)
 	);
 }
 
