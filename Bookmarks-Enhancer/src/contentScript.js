@@ -1,14 +1,4 @@
-// Storage key constants
-const STORAGE_KEYS = {
-	searchPairs: "searchPairs",
-	urlRules: "urlRules",
-	textRules: "textRules",
-	textFilters: "textFilters",
-	styleRules: "styleRules",
-	enableTopBorder: "enableTopBorder",
-	enableDeepSearch: "enableDeepSearch",
-	onlyUseSites: "onlyUseSites"
-};
+// Storage keys: STORAGE_KEYS from utils.js
 
 // Load settings from config
 let searchPairs = [];
@@ -21,6 +11,7 @@ let enableTopBorder = false;
 let enableDeepSearch = false;
 let onlyUseSites = false;
 let managedClassNames = [];
+const urlNormalizationCache = createUrlNormalizationCache();
 
 let getting = browser.storage.local.get([
     STORAGE_KEYS.searchPairs,
@@ -186,7 +177,6 @@ function scheduleLocalAuthoritativeRefresh() {
 }
 
 // Caches for performance optimization
-const urlNormalizationCache = new Map(); // href -> normalized href
 const textFilterCache = new Map(); // element -> normalized text
 
 // Link map state

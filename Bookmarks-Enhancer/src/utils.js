@@ -1,3 +1,31 @@
+const STORAGE_KEYS = {
+	searchPairs: "searchPairs",
+	urlRules: "urlRules",
+	textRules: "textRules",
+	textFilters: "textFilters",
+	styleRules: "styleRules",
+	bookmarkRules: "bookmarkRules",
+	enableTopBorder: "enableTopBorder",
+	enableDeepSearch: "enableDeepSearch",
+	onlyUseSites: "onlyUseSites",
+	enableSeenStyling: "enableSeenStyling",
+	blockedFolderId: "blockedFolderId",
+	favoritedFolderId: "favoritedFolderId"
+};
+
+const CONFIG_REFRESH_STORAGE_KEYS = [
+	STORAGE_KEYS.searchPairs,
+	STORAGE_KEYS.urlRules,
+	STORAGE_KEYS.textRules,
+	STORAGE_KEYS.textFilters,
+	STORAGE_KEYS.styleRules,
+	STORAGE_KEYS.bookmarkRules,
+	STORAGE_KEYS.enableTopBorder,
+	STORAGE_KEYS.enableDeepSearch,
+	STORAGE_KEYS.onlyUseSites,
+	STORAGE_KEYS.enableSeenStyling
+];
+
 const DEFAULT_STYLE_RULES = [
 	{ id: "blocked", name: "Blocked", kind: "predefined", predefined: "blocked", css: "" },
 	{ id: "favorited", name: "Favorited", kind: "predefined", predefined: "favorited", css: "" },
@@ -424,15 +452,19 @@ function hostnameMatchesSite(hostname, site) {
 /**
  * Normalize URL for search/comparison
  * Applies URL rules to keep only specified parameters
- * Caches results to avoid repeated calculations
+ * Caches results with a shared LRU policy.
  *
- * Depends on: urlRules (array), urlNormalizationCache (Map)
+ * Depends on: urlRules (array), urlNormalizationCache (Map from createUrlNormalizationCache)
  * These should be defined in the calling context
  */
 const URL_NORMALIZATION_CACHE_LIMIT = 2000;
 
+function createUrlNormalizationCache() {
+	return new Map();
+}
+
 function readUrlNormalizationCache(href) {
-	if (!urlNormalizationCache.has(href)) return undefined;
+	if (!urlNormalizationCache || !urlNormalizationCache.has(href)) return undefined;
 	const value = urlNormalizationCache.get(href);
 	// Refresh LRU insertion order.
 	urlNormalizationCache.delete(href);
@@ -441,6 +473,7 @@ function readUrlNormalizationCache(href) {
 }
 
 function writeUrlNormalizationCache(href, normalized) {
+	if (!urlNormalizationCache) return;
 	if (urlNormalizationCache.has(href)) {
 		urlNormalizationCache.delete(href);
 	}

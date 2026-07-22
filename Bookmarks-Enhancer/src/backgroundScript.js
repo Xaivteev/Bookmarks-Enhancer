@@ -38,22 +38,13 @@ function onError(error) {
 	console.log(`Error: ${error}`);
 }
 
-// Storage key constants
-const STORAGE_KEYS = {
-	urlRules: "urlRules",
-	textFilters: "textFilters",
-	textRules: "textRules",
-	styleRules: "styleRules",
-	bookmarkRules: "bookmarkRules",
-	enableSeenStyling: "enableSeenStyling",
-	blockedFolderId: "blockedFolderId",
-	favoritedFolderId: "favoritedFolderId"
-};
+// Storage keys: STORAGE_KEYS from utils.js
 
 let urlRules = [];
 let bookmarkRules = [];
 let unmatchedBookmarkStyle = "";
 let styleRules = DEFAULT_STYLE_RULES.map(rule => ({ ...rule }));
+const urlNormalizationCache = createUrlNormalizationCache();
 
 function loadSettings() {
     return browser.storage.local
@@ -276,17 +267,7 @@ function scheduleConfigTabsRefresh() {
 	}, 75);
 }
 
-const CONFIG_REFRESH_STORAGE_KEYS = new Set([
-	STORAGE_KEYS.urlRules,
-	STORAGE_KEYS.bookmarkRules,
-	STORAGE_KEYS.styleRules,
-	STORAGE_KEYS.textRules,
-	STORAGE_KEYS.textFilters,
-	"searchPairs",
-	"enableDeepSearch",
-	"onlyUseSites",
-	"enableTopBorder"
-]);
+const CONFIG_REFRESH_STORAGE_KEY_SET = new Set(CONFIG_REFRESH_STORAGE_KEYS);
 
 function addSelectionAsTextRule(selection, site, styleId) {
 	const style = styleId || "blocked";
@@ -441,7 +422,7 @@ browser.storage.onChanged.addListener((changes, areaName) => {
 	}
 
 	for (const key of Object.keys(changes)) {
-		if (CONFIG_REFRESH_STORAGE_KEYS.has(key)) {
+		if (CONFIG_REFRESH_STORAGE_KEY_SET.has(key)) {
 			shouldRefreshTabs = true;
 			break;
 		}
@@ -451,9 +432,6 @@ browser.storage.onChanged.addListener((changes, areaName) => {
 		scheduleConfigTabsRefresh();
 	}
 });
-
-// Cache for URL normalization to avoid repeated calculations
-const urlNormalizationCache = new Map(); // href -> normalized href
 
 let bookmarkStatusMap = new Map(); // href -> status string
 let tabHrefSets = new Map(); // tabId -> Set of normalized hrefs seen from that tab

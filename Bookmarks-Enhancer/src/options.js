@@ -1,9 +1,9 @@
-const BOOKMARK_RULE_STORAGE_KEY = "bookmarkRules";
-const STYLE_RULE_STORAGE_KEY = "styleRules";
-const LEGACY_ENABLE_SEEN_STYLING_KEY = "enableSeenStyling";
+const BOOKMARK_RULE_STORAGE_KEY = STORAGE_KEYS.bookmarkRules;
+const STYLE_RULE_STORAGE_KEY = STORAGE_KEYS.styleRules;
+const LEGACY_ENABLE_SEEN_STYLING_KEY = STORAGE_KEYS.enableSeenStyling;
 const LEGACY_FOLDER_STORAGE_KEYS = {
-    blockedFolderId: "blockedFolderId",
-    favoritedFolderId: "favoritedFolderId"
+    blockedFolderId: STORAGE_KEYS.blockedFolderId,
+    favoritedFolderId: STORAGE_KEYS.favoritedFolderId
 };
 
 let cachedBookmarkFolders = [];
@@ -552,7 +552,7 @@ function persistOptionsFromForm({ successMessage = "Options saved" } = {}) {
             LEGACY_FOLDER_STORAGE_KEYS.blockedFolderId,
             LEGACY_FOLDER_STORAGE_KEYS.favoritedFolderId,
             LEGACY_ENABLE_SEEN_STYLING_KEY,
-            "textFilters"
+            STORAGE_KEYS.textFilters
         ]))
         .then(() => {
             replaceConfigurationRows(
@@ -731,18 +731,18 @@ function restoreOptions() {
 
 
     browser.storage.local.get([
-        "searchPairs",
-        "urlRules",
-        "textRules",
-        "textFilters",
-        STYLE_RULE_STORAGE_KEY,
-        "enableTopBorder",
-        "enableDeepSearch",
-        "onlyUseSites",
-        LEGACY_ENABLE_SEEN_STYLING_KEY,
-        BOOKMARK_RULE_STORAGE_KEY,
-        LEGACY_FOLDER_STORAGE_KEYS.blockedFolderId,
-        LEGACY_FOLDER_STORAGE_KEYS.favoritedFolderId
+        STORAGE_KEYS.searchPairs,
+        STORAGE_KEYS.urlRules,
+        STORAGE_KEYS.textRules,
+        STORAGE_KEYS.textFilters,
+        STORAGE_KEYS.styleRules,
+        STORAGE_KEYS.enableTopBorder,
+        STORAGE_KEYS.enableDeepSearch,
+        STORAGE_KEYS.onlyUseSites,
+        STORAGE_KEYS.enableSeenStyling,
+        STORAGE_KEYS.bookmarkRules,
+        STORAGE_KEYS.blockedFolderId,
+        STORAGE_KEYS.favoritedFolderId
     ])
     .then(handleStorage)
     .catch(console.error);
