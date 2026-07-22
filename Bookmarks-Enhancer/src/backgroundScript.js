@@ -51,8 +51,8 @@ const STORAGE_KEYS = {
 
 let urlRules = [];
 let bookmarkRules = [];
+let unmatchedBookmarkStyle = "";
 let styleRules = DEFAULT_STYLE_RULES.map(rule => ({ ...rule }));
-let enableSeenStyling = true;
 
 function loadSettings() {
     return browser.storage.local
@@ -68,11 +68,10 @@ function loadSettings() {
             urlRules = Array.isArray(result[STORAGE_KEYS.urlRules])
                 ? result[STORAGE_KEYS.urlRules]
                 : [];
-			bookmarkRules = normalizeBookmarkRules(
-				migrateBookmarkRulesFromStorage(result)
-			);
+			const migratedRules = migrateBookmarkRulesFromStorage(result);
+			bookmarkRules = migratedRules.filter(rule => !isUnmatchedBookmarkRule(rule));
+			unmatchedBookmarkStyle = migratedRules.find(isUnmatchedBookmarkRule)?.style || "";
 			styleRules = migrateStyleRulesFromStorage(result);
-			enableSeenStyling = result[STORAGE_KEYS.enableSeenStyling] !== false;
         });
 }
 
@@ -81,11 +80,13 @@ function normalizeStoredFolderId(value) {
 }
 
 function isValidBookmarkRule(rule) {
-	return rule &&
-		typeof rule.folderId === "string" &&
-		rule.folderId.trim() !== "" &&
-		typeof rule.style === "string" &&
-		rule.style.trim() !== "";
+	if (!rule || typeof rule.folderId !== "string" || !rule.folderId.trim()) {
+		return false;
+	}
+	if (isUnmatchedBookmarkRule(rule)) {
+		return rule.style === undefined || typeof rule.style === "string";
+	}
+	return typeof rule.style === "string" && rule.style.trim() !== "";
 }
 
 function normalizeBookmarkRules(rules) {
@@ -93,7 +94,13 @@ function normalizeBookmarkRules(rules) {
 
 	const seenFolders = new Set();
 	const normalized = [];
+	let unmatchedStyle = null;
+
 	for (const rule of rules) {
+		if (isUnmatchedBookmarkRule(rule)) {
+			unmatchedStyle = typeof rule.style === "string" ? rule.style.trim() : "";
+			continue;
+		}
 		if (!isValidBookmarkRule(rule)) continue;
 		const folderId = rule.folderId.trim();
 		if (seenFolders.has(folderId)) continue;
@@ -103,24 +110,41 @@ function normalizeBookmarkRules(rules) {
 			style: rule.style.trim()
 		});
 	}
+
+	if (unmatchedStyle !== null) {
+		normalized.push({
+			folderId: UNMATCHED_BOOKMARK_RULE_ID,
+			style: unmatchedStyle
+		});
+	}
+
 	return normalized;
 }
 
 function migrateBookmarkRulesFromStorage(result) {
+	let rules;
 	if (Array.isArray(result[STORAGE_KEYS.bookmarkRules])) {
-		return result[STORAGE_KEYS.bookmarkRules];
+		rules = result[STORAGE_KEYS.bookmarkRules].slice();
+	} else {
+		rules = [];
+		const blockedFolderId = normalizeStoredFolderId(result[STORAGE_KEYS.blockedFolderId]);
+		const favoritedFolderId = normalizeStoredFolderId(result[STORAGE_KEYS.favoritedFolderId]);
+		if (blockedFolderId) {
+			rules.push({ folderId: blockedFolderId, style: "blocked" });
+		}
+		if (favoritedFolderId) {
+			rules.push({ folderId: favoritedFolderId, style: "favorited" });
+		}
 	}
 
-	const legacyRules = [];
-	const blockedFolderId = normalizeStoredFolderId(result[STORAGE_KEYS.blockedFolderId]);
-	const favoritedFolderId = normalizeStoredFolderId(result[STORAGE_KEYS.favoritedFolderId]);
-	if (blockedFolderId) {
-		legacyRules.push({ folderId: blockedFolderId, style: "blocked" });
+	if (!rules.some(isUnmatchedBookmarkRule)) {
+		rules.push({
+			folderId: UNMATCHED_BOOKMARK_RULE_ID,
+			style: migrateUnmatchedBookmarkStyle(result)
+		});
 	}
-	if (favoritedFolderId) {
-		legacyRules.push({ folderId: favoritedFolderId, style: "favorited" });
-	}
-	return legacyRules;
+
+	return normalizeBookmarkRules(rules);
 }
 
 const settingsReady = loadSettings().catch(onError);
@@ -373,9 +397,11 @@ browser.storage.onChanged.addListener((changes, areaName) => {
 	}
 
 	if (changes[STORAGE_KEYS.bookmarkRules]) {
-		bookmarkRules = normalizeBookmarkRules(
-			changes[STORAGE_KEYS.bookmarkRules].newValue
-		);
+		const migratedRules = migrateBookmarkRulesFromStorage({
+			bookmarkRules: changes[STORAGE_KEYS.bookmarkRules].newValue
+		});
+		bookmarkRules = migratedRules.filter(rule => !isUnmatchedBookmarkRule(rule));
+		unmatchedBookmarkStyle = migratedRules.find(isUnmatchedBookmarkRule)?.style || "";
 		invalidateBookmarkCaches();
 		refreshRuleFolderContextMenus();
 	}
@@ -389,8 +415,13 @@ browser.storage.onChanged.addListener((changes, areaName) => {
 	}
 
 	if (changes[STORAGE_KEYS.enableSeenStyling]) {
-		enableSeenStyling = changes[STORAGE_KEYS.enableSeenStyling].newValue !== false;
-		invalidateBookmarkCaches();
+		// Legacy key: keep unmatched style in sync until options are re-saved.
+		if (!Array.isArray(changes[STORAGE_KEYS.bookmarkRules]?.newValue)) {
+			unmatchedBookmarkStyle = changes[STORAGE_KEYS.enableSeenStyling].newValue === false
+				? ""
+				: "seen";
+			invalidateBookmarkCaches();
+		}
 	}
 
 	if (
@@ -461,11 +492,11 @@ function searchhrefs(hrefs) {
 
 			if (
 				status === "none" &&
-				index.enableSeenStyling &&
+				index.unmatchedBookmarkStyle &&
 				bookmarkList.length > 0 &&
-				index.stylePriorityById.has("seen")
+				index.stylePriorityById.has(index.unmatchedBookmarkStyle)
 			) {
-				status = "seen";
+				status = index.unmatchedBookmarkStyle;
 			}
 
 			bookmarkStatusMap.set(href, status);
@@ -506,7 +537,7 @@ function buildBookmarkIndex() {
 		const { bookmarksByNormalizedUrl, parentById } = buildBookmarkMaps(bookmarkTree);
 		return {
 			rules,
-			enableSeenStyling,
+			unmatchedBookmarkStyle,
 			stylePriorityById: getStyleRulePriorityMap(styleRules),
 			bookmarksByNormalizedUrl,
 			parentById

@@ -176,11 +176,6 @@
                 <input type="checkbox" id="onlyUseSites">
                 <label for="onlyUseSites">Only Use Specified Sites</label>
             </div>
-            <div class="settingRow">
-                <input type="checkbox" id="enableSeenStyling" checked>
-                <label for="enableSeenStyling">Enable Seen Styling</label>
-            </div>
-            <p class="hint">When enabled, bookmarks outside rule folders get the “Seen” style rule (id: seen).</p>
         </section>
 
         <section
@@ -219,7 +214,10 @@
             data-tab-panel="bookmarkRules"
             hidden
         >
-            <p class="hint">Each rule maps a bookmark folder (including nested folders) to a style rule.</p>
+            <p class="hint">
+                Each rule maps a bookmark folder (including nested folders) to a style rule.
+                The last row styles bookmarks that are not under any folder rule. Choose None to leave them unstyled.
+            </p>
             <table id="bookmarkRuleTable">
                 <thead>
                     <tr>

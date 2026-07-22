@@ -4,6 +4,37 @@ const DEFAULT_STYLE_RULES = [
 	{ id: "seen", name: "Seen", kind: "predefined", predefined: "seen", css: "" }
 ];
 
+const UNMATCHED_BOOKMARK_RULE_ID = "__unmatched__";
+
+function isUnmatchedBookmarkRule(rule) {
+	return !!rule && rule.folderId === UNMATCHED_BOOKMARK_RULE_ID;
+}
+
+function migrateUnmatchedBookmarkStyle(result) {
+	const rules = Array.isArray(result?.bookmarkRules) ? result.bookmarkRules : null;
+	if (rules) {
+		const unmatched = rules.find(isUnmatchedBookmarkRule);
+		if (unmatched) {
+			return typeof unmatched.style === "string" ? unmatched.style.trim() : "";
+		}
+		// Existing folder rules without an unmatched row: migrate from the old checkbox.
+		if (result.enableSeenStyling === false) return "";
+		return "seen";
+	}
+
+	if (result?.enableSeenStyling === false) return "";
+	if (
+		result?.enableSeenStyling === true ||
+		typeof result?.blockedFolderId === "string" ||
+		typeof result?.favoritedFolderId === "string"
+	) {
+		return "seen";
+	}
+
+	// Fresh install: equivalent to the old checkbox being off.
+	return "";
+}
+
 const PREDEFINED_STYLE_CSS = {
 	blocked: "display: none !important;",
 	favorited: "text-decoration-line: underline !important; text-decoration-style: double !important;",

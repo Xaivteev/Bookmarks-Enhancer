@@ -1,6 +1,6 @@
 const BOOKMARK_RULE_STORAGE_KEY = "bookmarkRules";
 const STYLE_RULE_STORAGE_KEY = "styleRules";
-const ENABLE_SEEN_STYLING_KEY = "enableSeenStyling";
+const LEGACY_ENABLE_SEEN_STYLING_KEY = "enableSeenStyling";
 const LEGACY_FOLDER_STORAGE_KEYS = {
     blockedFolderId: "blockedFolderId",
     favoritedFolderId: "favoritedFolderId"
@@ -16,11 +16,23 @@ function getAvailableStyleRules() {
     return DEFAULT_STYLE_RULES.map(rule => ({ ...rule }));
 }
 
-function populateStyleSelect(select, selectedId = "blocked") {
+function populateStyleSelect(select, selectedId = "blocked", { includeNone = false } = {}) {
     const styleRules = getAvailableStyleRules();
     select.replaceChildren();
 
     let selectedExists = false;
+
+    if (includeNone) {
+        const noneOption = document.createElement("option");
+        noneOption.value = "";
+        noneOption.textContent = "None";
+        if (!selectedId) {
+            noneOption.selected = true;
+            selectedExists = true;
+        }
+        select.appendChild(noneOption);
+    }
+
     for (const rule of styleRules) {
         const option = document.createElement("option");
         option.value = rule.id;
@@ -40,14 +52,19 @@ function populateStyleSelect(select, selectedId = "blocked") {
         select.appendChild(missingOption);
     }
 
-    if (!selectedId && select.options.length > 0) {
+    if (!selectedExists && select.options.length > 0) {
         select.selectedIndex = 0;
     }
 }
 
 function refreshAllStyleSelects() {
     for (const select of document.querySelectorAll(".bookmarkRuleStyle, .textRuleStyle")) {
-        populateStyleSelect(select, select.value || "blocked");
+        const includeNone = select.dataset.includeNone === "true";
+        populateStyleSelect(
+            select,
+            select.value || (includeNone ? "" : "blocked"),
+            { includeNone }
+        );
     }
 }
 
@@ -299,11 +316,7 @@ function replaceConfigurationRows(searchPairs, urlRules, textRules, bookmarkRule
     } else {
         textRules.forEach(rule => createTextRuleRow(rule.site, rule.text, rule.style));
     }
-    if (!bookmarkRules || bookmarkRules.length === 0) {
-        createBookmarkRuleRow("", "blocked");
-    } else {
-        bookmarkRules.forEach(rule => createBookmarkRuleRow(rule.folderId, rule.style));
-    }
+    // Bookmark rows are rebuilt by loadBookmarkRuleRows (includes the permanent unmatched row).
 }
 
 function flattenBookmarkFolders(nodes, path = "") {
@@ -384,18 +397,72 @@ function createBookmarkRuleRow(folderId = "", style = "blocked") {
     actionCell.appendChild(deleteBtn);
 
     row.append(folderCell, styleCell, actionCell);
-    document.querySelector("#bookmarkRuleBody").appendChild(row);
+
+    const body = document.querySelector("#bookmarkRuleBody");
+    const unmatchedRow = body?.querySelector("tr.unmatchedBookmarkRule");
+    if (unmatchedRow) {
+        body.insertBefore(row, unmatchedRow);
+    } else {
+        body.appendChild(row);
+    }
+}
+
+function createUnmatchedBookmarkRuleRow(style = "") {
+    const body = document.querySelector("#bookmarkRuleBody");
+    const existing = body?.querySelector("tr.unmatchedBookmarkRule");
+    if (existing) existing.remove();
+
+    const row = document.createElement("tr");
+    row.className = "unmatchedBookmarkRule";
+    row.dataset.folderId = UNMATCHED_BOOKMARK_RULE_ID;
+
+    const folderCell = document.createElement("td");
+    const label = document.createElement("span");
+    label.textContent = "Bookmarks outside rule folders";
+    label.className = "unmatchedBookmarkLabel";
+    folderCell.appendChild(label);
+
+    const styleCell = document.createElement("td");
+    const styleSelect = document.createElement("select");
+    styleSelect.className = "bookmarkRuleStyle";
+    styleSelect.dataset.includeNone = "true";
+    populateStyleSelect(styleSelect, style || "", { includeNone: true });
+    styleCell.appendChild(styleSelect);
+
+    const actionCell = document.createElement("td");
+    const note = document.createElement("span");
+    note.textContent = "Always applied last";
+    note.className = "hint";
+    actionCell.appendChild(note);
+
+    row.append(folderCell, styleCell, actionCell);
+    body.appendChild(row);
 }
 
 function collectBookmarkRules() {
-    return Array.from(document.querySelectorAll("#bookmarkRuleBody tr")).map(row => {
+    const rules = [];
+
+    for (const row of document.querySelectorAll("#bookmarkRuleBody tr")) {
+        if (row.classList.contains("unmatchedBookmarkRule")) {
+            const styleSelect = row.querySelector(".bookmarkRuleStyle");
+            rules.push({
+                folderId: UNMATCHED_BOOKMARK_RULE_ID,
+                style: styleSelect?.value || ""
+            });
+            continue;
+        }
+
         const folderSelect = row.querySelector(".bookmarkRuleFolder");
         const styleSelect = row.querySelector(".bookmarkRuleStyle");
-        return {
-            folderId: folderSelect?.value || "",
+        const folderId = folderSelect?.value || "";
+        if (!folderId) continue;
+        rules.push({
+            folderId,
             style: styleSelect?.value || "blocked"
-        };
-    }).filter(rule => rule.folderId);
+        });
+    }
+
+    return rules;
 }
 
 function normalizeBookmarkRules(rules) {
@@ -403,8 +470,13 @@ function normalizeBookmarkRules(rules) {
 
     const seenFolders = new Set();
     const normalized = [];
+    let unmatchedStyle = null;
 
     for (const rule of rules) {
+        if (isUnmatchedBookmarkRule(rule)) {
+            unmatchedStyle = typeof rule.style === "string" ? rule.style.trim() : "";
+            continue;
+        }
         if (!isValidBookmarkRule(rule)) continue;
         if (seenFolders.has(rule.folderId)) continue;
         seenFolders.add(rule.folderId);
@@ -416,22 +488,38 @@ function normalizeBookmarkRules(rules) {
         });
     }
 
+    if (unmatchedStyle !== null) {
+        normalized.push({
+            folderId: UNMATCHED_BOOKMARK_RULE_ID,
+            style: unmatchedStyle
+        });
+    }
+
     return normalized;
 }
 
 function migrateBookmarkRulesFromStorage(result) {
+    let rules;
     if (Array.isArray(result.bookmarkRules)) {
-        return normalizeBookmarkRules(result.bookmarkRules);
+        rules = result.bookmarkRules.slice();
+    } else {
+        rules = [];
+        if (typeof result.blockedFolderId === "string" && result.blockedFolderId) {
+            rules.push({ folderId: result.blockedFolderId, style: "blocked" });
+        }
+        if (typeof result.favoritedFolderId === "string" && result.favoritedFolderId) {
+            rules.push({ folderId: result.favoritedFolderId, style: "favorited" });
+        }
     }
 
-    const legacyRules = [];
-    if (typeof result.blockedFolderId === "string" && result.blockedFolderId) {
-        legacyRules.push({ folderId: result.blockedFolderId, style: "blocked" });
+    if (!rules.some(isUnmatchedBookmarkRule)) {
+        rules.push({
+            folderId: UNMATCHED_BOOKMARK_RULE_ID,
+            style: migrateUnmatchedBookmarkStyle(result)
+        });
     }
-    if (typeof result.favoritedFolderId === "string" && result.favoritedFolderId) {
-        legacyRules.push({ folderId: result.favoritedFolderId, style: "favorited" });
-    }
-    return normalizeBookmarkRules(legacyRules);
+
+    return normalizeBookmarkRules(rules);
 }
 
 function loadBookmarkRuleRows(rules) {
@@ -439,11 +527,18 @@ function loadBookmarkRuleRows(rules) {
         cachedBookmarkFolders = flattenBookmarkFolders(tree);
         clearBookmarkRuleTable();
         const normalizedRules = normalizeBookmarkRules(rules);
-        if (normalizedRules.length === 0) {
+        const folderRules = normalizedRules.filter(rule => !isUnmatchedBookmarkRule(rule));
+        const unmatchedRule = normalizedRules.find(isUnmatchedBookmarkRule);
+        const unmatchedStyle = unmatchedRule
+            ? unmatchedRule.style
+            : migrateUnmatchedBookmarkStyle({ bookmarkRules: rules });
+
+        if (folderRules.length === 0) {
             createBookmarkRuleRow("", "blocked");
-            return;
+        } else {
+            folderRules.forEach(rule => createBookmarkRuleRow(rule.folderId, rule.style));
         }
-        normalizedRules.forEach(rule => createBookmarkRuleRow(rule.folderId, rule.style));
+        createUnmatchedBookmarkRuleRow(unmatchedStyle || "");
     }).catch(err => {
         console.error("Could not load bookmark folders:", err);
         showStatus("Could not load bookmark folders", true);
@@ -467,7 +562,6 @@ function saveOptions(e) {
 		enableTopBorder: document.querySelector("#enableTopBorder").checked,
 		enableDeepSearch: document.querySelector("#enableDeepSearch").checked,
 		onlyUseSites: document.querySelector("#onlyUseSites").checked,
-        [ENABLE_SEEN_STYLING_KEY]: document.querySelector("#enableSeenStyling").checked,
         [STYLE_RULE_STORAGE_KEY]: styleRules,
         searchPairs,
         urlRules,
@@ -479,6 +573,7 @@ function saveOptions(e) {
         .then(() => browser.storage.local.remove([
             LEGACY_FOLDER_STORAGE_KEYS.blockedFolderId,
             LEGACY_FOLDER_STORAGE_KEYS.favoritedFolderId,
+            LEGACY_ENABLE_SEEN_STYLING_KEY,
             "textFilters"
         ]))
         .then(() => {
@@ -596,9 +691,6 @@ function restoreOptions() {
         document.querySelector("#onlyUseSites").checked =
             !!result.onlyUseSites;
 
-        document.querySelector("#enableSeenStyling").checked =
-            result.enableSeenStyling !== false;
-
         loadStyleRuleRows(migrateStyleRulesFromStorage(result));
 
         if (result.searchPairs) {
@@ -646,7 +738,7 @@ function restoreOptions() {
         "enableTopBorder",
         "enableDeepSearch",
         "onlyUseSites",
-        ENABLE_SEEN_STYLING_KEY,
+        LEGACY_ENABLE_SEEN_STYLING_KEY,
         BOOKMARK_RULE_STORAGE_KEY,
         LEGACY_FOLDER_STORAGE_KEYS.blockedFolderId,
         LEGACY_FOLDER_STORAGE_KEYS.favoritedFolderId
@@ -668,7 +760,6 @@ function exportToClipboard() {
         enableTopBorder: document.querySelector("#enableTopBorder").checked,
         onlyUseSites: document.querySelector("#onlyUseSites").checked,
         enableDeepSearch: document.querySelector("#enableDeepSearch").checked,
-        enableSeenStyling: document.querySelector("#enableSeenStyling").checked,
         bookmarkRules: normalizeBookmarkRules(collectBookmarkRules())
     };
 
@@ -840,11 +931,6 @@ function importFromJson(jsonString) {
             data.onlyUseSites;
     }
 
-    if (data.enableSeenStyling !== undefined) {
-        document.querySelector("#enableSeenStyling").checked =
-            data.enableSeenStyling;
-    }
-
     loadBookmarkRuleRows(migrateBookmarkRulesFromStorage(data)).then(() => {
         showStatus("Imported configuration");
     });
@@ -884,11 +970,13 @@ function isValidTextRule(row) {
 }
 
 function isValidBookmarkRule(row) {
-    return row &&
-        typeof row.folderId === "string" &&
-        row.folderId.trim() !== "" &&
-        typeof row.style === "string" &&
-        row.style.trim() !== "";
+    if (!row || typeof row.folderId !== "string" || !row.folderId.trim()) {
+        return false;
+    }
+    if (isUnmatchedBookmarkRule(row)) {
+        return row.style === undefined || typeof row.style === "string";
+    }
+    return typeof row.style === "string" && row.style.trim() !== "";
 }
 
 function importFromClipboard() {
