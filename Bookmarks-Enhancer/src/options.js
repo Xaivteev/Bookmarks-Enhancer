@@ -673,8 +673,64 @@ function showStatus(message, isError = false) {
     }, 3000);
 }
 
+function activateOptionsTab(tabId) {
+    const tabs = Array.from(document.querySelectorAll('[role="tab"][data-tab]'));
+    const panels = Array.from(document.querySelectorAll("[data-tab-panel]"));
+
+    for (const tab of tabs) {
+        const selected = tab.dataset.tab === tabId;
+        tab.setAttribute("aria-selected", selected ? "true" : "false");
+        tab.tabIndex = selected ? 0 : -1;
+    }
+
+    for (const panel of panels) {
+        const selected = panel.dataset.tabPanel === tabId;
+        panel.classList.toggle("active", selected);
+        panel.hidden = !selected;
+    }
+}
+
+function setupOptionsTabs() {
+    const tabs = Array.from(document.querySelectorAll('[role="tab"][data-tab]'));
+    if (tabs.length === 0) return;
+
+    for (const tab of tabs) {
+        tab.addEventListener("click", () => {
+            activateOptionsTab(tab.dataset.tab);
+        });
+
+        tab.addEventListener("keydown", event => {
+            const currentIndex = tabs.indexOf(tab);
+            let nextIndex = currentIndex;
+
+            if (event.key === "ArrowRight" || event.key === "ArrowDown") {
+                nextIndex = (currentIndex + 1) % tabs.length;
+            } else if (event.key === "ArrowLeft" || event.key === "ArrowUp") {
+                nextIndex = (currentIndex - 1 + tabs.length) % tabs.length;
+            } else if (event.key === "Home") {
+                nextIndex = 0;
+            } else if (event.key === "End") {
+                nextIndex = tabs.length - 1;
+            } else {
+                return;
+            }
+
+            event.preventDefault();
+            const nextTab = tabs[nextIndex];
+            activateOptionsTab(nextTab.dataset.tab);
+            nextTab.focus();
+        });
+    }
+
+    const initiallySelected =
+        tabs.find(tab => tab.getAttribute("aria-selected") === "true") || tabs[0];
+    activateOptionsTab(initiallySelected.dataset.tab);
+}
+
 function setupEventListeners() {
     try {
+        setupOptionsTabs();
+
         const addRowBtn = document.querySelector("#addRowBtn");
         const exportBtn = document.querySelector("#exportBtn");
         const importBtn = document.querySelector("#importBtn");
