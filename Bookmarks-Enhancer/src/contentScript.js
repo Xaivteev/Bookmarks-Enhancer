@@ -4,6 +4,7 @@ const STORAGE_KEYS = {
 	urlRules: "urlRules",
 	textRules: "textRules",
 	textFilters: "textFilters",
+	styleRules: "styleRules",
 	enableTopBorder: "enableTopBorder",
 	enableDeepSearch: "enableDeepSearch",
 	onlyUseSites: "onlyUseSites"
@@ -13,17 +14,20 @@ const STORAGE_KEYS = {
 let searchPairs = [];
 let classesForSearch = [];
 let urlRules = [];
+let preparedStyleRules = DEFAULT_STYLE_RULES.map(rule => ({ ...rule }));
 let preparedTextRules = [];
 let searchSite = true;
 let enableTopBorder = false;
 let enableDeepSearch = false;
 let onlyUseSites = false;
+let managedClassNames = [];
 
 let getting = browser.storage.local.get([
     STORAGE_KEYS.searchPairs,
     STORAGE_KEYS.urlRules,
     STORAGE_KEYS.textRules,
     STORAGE_KEYS.textFilters,
+    STORAGE_KEYS.styleRules,
     STORAGE_KEYS.enableTopBorder,
     STORAGE_KEYS.enableDeepSearch,
     STORAGE_KEYS.onlyUseSites
@@ -32,6 +36,24 @@ getting.then(onGot, onError);
 
 function onError(error) {
     console.log(`Error: ${error}`);
+}
+
+function refreshManagedClassNames() {
+	managedClassNames = [
+		...preparedStyleRules.map(rule => styleRuleClassName(rule)),
+		...LEGACY_MANAGED_CLASS_NAMES
+	];
+}
+
+function getStyleConfigById(styleId) {
+	const index = preparedStyleRules.findIndex(rule => rule.id === styleId);
+	if (index < 0) return null;
+	const rule = preparedStyleRules[index];
+	return {
+		className: styleRuleClassName(rule),
+		border: getStyleRuleBorder(rule),
+		priority: index
+	};
 }
 
 function getConfiguredClassGroups(pairs) {
@@ -64,6 +86,8 @@ function updateClassesForSearch() {
 function onGot(item) {
 	searchPairs = Array.isArray(item[STORAGE_KEYS.searchPairs]) ? item[STORAGE_KEYS.searchPairs] : [];
 	urlRules = Array.isArray(item[STORAGE_KEYS.urlRules]) ? item[STORAGE_KEYS.urlRules] : [];
+	preparedStyleRules = migrateStyleRulesFromStorage(item);
+	refreshManagedClassNames();
 	preparedTextRules = preprocessTextRules(migrateTextRulesFromStorage(item));
 	enableTopBorder = !!item[STORAGE_KEYS.enableTopBorder];
 	enableDeepSearch = !!item[STORAGE_KEYS.enableDeepSearch];
@@ -86,6 +110,27 @@ browser.storage.onChanged.addListener((changes, areaName) => {
 
 	if (changes[STORAGE_KEYS.urlRules]) {
 		urlRules = Array.isArray(changes[STORAGE_KEYS.urlRules].newValue) ? changes[STORAGE_KEYS.urlRules].newValue : [];
+		invalidateUrlDependentCaches();
+		needsRefresh = true;
+	}
+
+	if (changes[STORAGE_KEYS.styleRules]) {
+		removeStatusClasses(managedClassNames);
+		preparedStyleRules = migrateStyleRulesFromStorage({
+			styleRules: changes[STORAGE_KEYS.styleRules].newValue
+		});
+		refreshManagedClassNames();
+		injectBookmarkStyles();
+		browser.storage.local.get([
+			STORAGE_KEYS.textRules,
+			STORAGE_KEYS.textFilters
+		]).then(result => {
+			preparedTextRules = preprocessTextRules(migrateTextRulesFromStorage(result));
+			invalidateTextFilterCache();
+			if (searchSite) {
+				applyTextFilters();
+			}
+		}).catch(onError);
 		invalidateUrlDependentCaches();
 		needsRefresh = true;
 	}
@@ -146,27 +191,14 @@ let pendingObservedHrefs = new Set();
 let mutationDebounceTimer = null;
 let originalBodyBorderTop = null;
 const mutationDebounceDelay = 200;
-const statusClasses = {
-	blocked: 'be-bookmarks-enhancer-blocked',
-	favorited: 'be-bookmarks-enhancer-favorited',
-	seen: 'be-bookmarks-enhancer-seen',
-	textFiltered: 'be-bookmarks-enhancer-text-filtered'
-};
-const textRuleClasses = {
-	blocked: 'be-bookmarks-enhancer-text-blocked',
-	favorited: 'be-bookmarks-enhancer-text-favorited',
-	seen: 'be-bookmarks-enhancer-text-seen'
-};
-const statusClassNames = Object.values(statusClasses);
-const textRuleClassNames = Object.values(textRuleClasses);
-const managedClassNames = [...statusClassNames, ...textRuleClassNames];
 
 function removeStatusClasses(classNames) {
-	const selector = classNames.map(className => `.${className}`).join(',');
+	const names = (classNames || []).filter(Boolean);
+	const selector = names.map(className => `.${className}`).join(',');
 	if (!selector) return;
 
 	for (const element of document.querySelectorAll(selector)) {
-		element.classList.remove(...classNames);
+		element.classList.remove(...names);
 	}
 }
 
@@ -183,17 +215,12 @@ function invalidateUrlDependentCaches() {
 		mutationDebounceTimer = null;
 	}
 
-	removeStatusClasses([
-		statusClasses.blocked,
-		statusClasses.favorited,
-		statusClasses.seen
-	]);
+	removeStatusClasses(managedClassNames);
 }
 
 function invalidateTextFilterCache() {
 	textFilterCache.clear();
-	removeStatusClasses(textRuleClassNames);
-	removeStatusClasses([statusClasses.textFiltered]);
+	removeStatusClasses(managedClassNames);
 }
 
 function requestBookmarkStatuses(hrefs) {
@@ -209,44 +236,13 @@ function requestBookmarkStatuses(hrefs) {
 }
 
 function injectBookmarkStyles() {
-	if (document.getElementById('bookmarks-enhancer-styles')) return;
-
-	const style = document.createElement('style');
-	style.id = 'bookmarks-enhancer-styles';
-	style.textContent = `
-		.${statusClasses.blocked} {
-			display: none !important;
-		}
-
-		.${statusClasses.favorited} {
-			text-decoration-line: underline !important;
-			text-decoration-style: double !important;
-		}
-
-		.${statusClasses.seen} {
-			text-decoration-line: underline !important;
-			text-decoration-style: dashed !important;
-		}
-
-		.${statusClasses.textFiltered} {
-			display: none !important;
-		}
-
-		.${textRuleClasses.blocked} {
-			display: none !important;
-		}
-
-		.${textRuleClasses.favorited} {
-			text-decoration-line: underline !important;
-			text-decoration-style: double !important;
-		}
-
-		.${textRuleClasses.seen} {
-			text-decoration-line: underline !important;
-			text-decoration-style: dashed !important;
-		}
-	`;
-	(document.head || document.documentElement).appendChild(style);
+	let style = document.getElementById('bookmarks-enhancer-styles');
+	if (!style) {
+		style = document.createElement('style');
+		style.id = 'bookmarks-enhancer-styles';
+		(document.head || document.documentElement).appendChild(style);
+	}
+	style.textContent = buildStyleRulesCss(preparedStyleRules);
 }
 
 // Listen for explicit refresh messages from backgroundScript
@@ -355,7 +351,7 @@ function applyBookmarkStyling(message, includeHidden = false) {
 	const statusLookup = buildBookmarkStatusLookup(statuses);
 
 	for (const [normalized, status] of Object.entries(statuses)) {
-		if (["none", "seen", "blocked", "favorited"].includes(status)) {
+		if (status === "none" || getStyleConfigById(status)) {
 			linkStatusMap.set(normalized, status);
 		}
 	}
@@ -395,15 +391,10 @@ function applyBookmarkStyling(message, includeHidden = false) {
 }
 
 function buildBookmarkStatusLookup(statuses) {
-	const styleByStatus = {
-		blocked: { ...getBlockedStyleConfig(), priority: 0 },
-		favorited: { ...getFavoritedStyleConfig(), priority: 1 },
-		seen: { ...getSeenStyleConfig(), priority: 2 }
-	};
 	const statusLookup = new Map();
 
 	for (const [normalized, status] of Object.entries(statuses)) {
-		const style = styleByStatus[status];
+		const style = getStyleConfigById(status);
 		if (!style) continue;
 
 		let path;
@@ -509,27 +500,6 @@ function elementMatchesBookmarkFallback(element, text, html, bookmark) {
 }
 
 
-function getBlockedStyleConfig() {
-	return {
-		className: statusClasses.blocked,
-		border: "dashed red"
-	};
-}
-
-function getFavoritedStyleConfig() {
-	return {
-		className: statusClasses.favorited,
-		border: "double white"
-	};
-}
-
-function getSeenStyleConfig() {
-	return {
-		className: statusClasses.seen,
-		border: "dashed white"
-	};
-}
-
 function clearExtensionTopBorder() {
 	if (originalBodyBorderTop === null || !document.body) return;
 
@@ -538,7 +508,10 @@ function clearExtensionTopBorder() {
 }
 
 function applyStatusClass(element, className) {
-	element.classList.remove(...managedClassNames);
+	if (!className) return;
+	if (managedClassNames.length) {
+		element.classList.remove(...managedClassNames);
+	}
 	element.classList.add(className);
 }
 
@@ -572,21 +545,22 @@ function migrateTextRulesFromStorage(result) {
 function preprocessTextRules(rules) {
 	if (!Array.isArray(rules)) return [];
 
-	const stylePriority = { blocked: 0, favorited: 1, seen: 2 };
 	return rules.map(rule => {
 		const text = typeof rule.text === "string" ? rule.text.trim().toLowerCase() : "";
 		const site = typeof rule.site === "string" ? rule.site.trim() : "";
-		const style = rule.style === "favorited" || rule.style === "seen"
-			? rule.style
+		const styleId = typeof rule.style === "string" && rule.style.trim()
+			? rule.style.trim()
 			: "blocked";
+		const style = getStyleConfigById(styleId);
+		if (!style) return null;
 		return {
 			site,
 			text,
-			style,
-			priority: stylePriority[style],
-			className: textRuleClasses[style]
+			styleId,
+			priority: style.priority,
+			className: style.className
 		};
-	}).filter(rule => rule.site && rule.text)
+	}).filter(rule => rule && rule.site && rule.text)
 		.sort((a, b) => a.priority - b.priority);
 }
 
@@ -714,14 +688,14 @@ function processObservedHrefs() {
 
 function applyCachedLinkStatus(norm) {
 	const status = linkStatusMap.get(norm);
-	if (!status) return;
+	if (!status || status === "none") return;
+	const style = getStyleConfigById(status);
+	if (!style) return;
+
 	const els = linkMap.get(norm) || [];
 	for (const el of els) {
 		if (hasStatusClass(el)) continue;
-
-		if (status === "blocked") applyStatusClass(el, statusClasses.blocked);
-		else if (status === "favorited") applyStatusClass(el, statusClasses.favorited);
-		else if (status === "seen") applyStatusClass(el, statusClasses.seen);
+		applyStatusClass(el, style.className);
 	}
 }
 

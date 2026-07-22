@@ -1,4 +1,5 @@
 const BOOKMARK_RULE_STORAGE_KEY = "bookmarkRules";
+const STYLE_RULE_STORAGE_KEY = "styleRules";
 const ENABLE_SEEN_STYLING_KEY = "enableSeenStyling";
 const LEGACY_FOLDER_STORAGE_KEYS = {
     blockedFolderId: "blockedFolderId",
@@ -6,6 +7,160 @@ const LEGACY_FOLDER_STORAGE_KEYS = {
 };
 
 let cachedBookmarkFolders = [];
+let cachedStyleRules = DEFAULT_STYLE_RULES.map(rule => ({ ...rule }));
+
+function getAvailableStyleRules() {
+    const fromDom = collectStyleRules();
+    if (fromDom.length > 0) return fromDom;
+    if (cachedStyleRules.length > 0) return cachedStyleRules;
+    return DEFAULT_STYLE_RULES.map(rule => ({ ...rule }));
+}
+
+function populateStyleSelect(select, selectedId = "blocked") {
+    const styleRules = getAvailableStyleRules();
+    select.replaceChildren();
+
+    let selectedExists = false;
+    for (const rule of styleRules) {
+        const option = document.createElement("option");
+        option.value = rule.id;
+        option.textContent = rule.name;
+        if (rule.id === selectedId) {
+            option.selected = true;
+            selectedExists = true;
+        }
+        select.appendChild(option);
+    }
+
+    if (selectedId && !selectedExists) {
+        const missingOption = document.createElement("option");
+        missingOption.value = selectedId;
+        missingOption.textContent = `Missing style (${selectedId})`;
+        missingOption.selected = true;
+        select.appendChild(missingOption);
+    }
+
+    if (!selectedId && select.options.length > 0) {
+        select.selectedIndex = 0;
+    }
+}
+
+function refreshAllStyleSelects() {
+    for (const select of document.querySelectorAll(".bookmarkRuleStyle, .textRuleStyle")) {
+        populateStyleSelect(select, select.value || "blocked");
+    }
+}
+
+function collectStyleRules() {
+    return Array.from(document.querySelectorAll("#styleRuleBody tr")).map(row => {
+        const nameInput = row.querySelector(".styleRuleName");
+        const kindSelect = row.querySelector(".styleRuleKind");
+        const cssInput = row.querySelector(".styleRuleCss");
+        const kind = kindSelect?.value === "custom" ? "custom" : "predefined";
+        const predefined = kind === "predefined" ? (kindSelect?.value || "blocked") : "";
+        return {
+            id: row.dataset.styleId || createStyleRuleId(),
+            name: nameInput?.value.trim() || "",
+            kind,
+            predefined: predefined === "favorited" || predefined === "seen" ? predefined : (kind === "predefined" ? "blocked" : ""),
+            css: cssInput?.value || ""
+        };
+    }).filter(rule => rule.name);
+}
+
+function clearStyleRuleTable() {
+    document.querySelector("#styleRuleBody")?.replaceChildren();
+}
+
+function updateStyleRuleRowVisibility(row) {
+    const kindSelect = row.querySelector(".styleRuleKind");
+    const cssInput = row.querySelector(".styleRuleCss");
+    if (!kindSelect || !cssInput) return;
+    const isCustom = kindSelect.value === "custom";
+    cssInput.hidden = !isCustom;
+}
+
+function createStyleRuleRow(rule = null) {
+    const styleRule = rule || {
+        id: createStyleRuleId(),
+        name: "",
+        kind: "predefined",
+        predefined: "blocked",
+        css: ""
+    };
+
+    const row = document.createElement("tr");
+    row.dataset.styleId = styleRule.id;
+
+    const nameCell = document.createElement("td");
+    const nameInput = document.createElement("input");
+    nameInput.type = "text";
+    nameInput.className = "styleRuleName";
+    nameInput.value = styleRule.name || "";
+    nameInput.placeholder = "Style name";
+    nameInput.addEventListener("input", refreshAllStyleSelects);
+    nameCell.appendChild(nameInput);
+
+    const kindCell = document.createElement("td");
+    const kindSelect = document.createElement("select");
+    kindSelect.className = "styleRuleKind";
+    for (const [value, label] of [
+        ["blocked", "Blocked (hide)"],
+        ["favorited", "Favorited (double underline)"],
+        ["seen", "Seen (dashed underline)"],
+        ["custom", "Custom CSS"]
+    ]) {
+        const option = document.createElement("option");
+        option.value = value;
+        option.textContent = label;
+        if (styleRule.kind === "custom") {
+            option.selected = value === "custom";
+        } else {
+            option.selected = value === (styleRule.predefined || "blocked");
+        }
+        kindSelect.appendChild(option);
+    }
+    kindSelect.addEventListener("change", () => {
+        updateStyleRuleRowVisibility(row);
+        refreshAllStyleSelects();
+    });
+    kindCell.appendChild(kindSelect);
+
+    const cssCell = document.createElement("td");
+    const cssInput = document.createElement("textarea");
+    cssInput.className = "styleRuleCss";
+    cssInput.value = styleRule.css || "";
+    cssInput.placeholder = "color: red;\noutline: 2px solid blue;";
+    cssInput.setAttribute("aria-label", "Custom CSS declarations");
+    cssCell.appendChild(cssInput);
+
+    const actionCell = document.createElement("td");
+    const deleteBtn = document.createElement("button");
+    deleteBtn.textContent = "Delete";
+    deleteBtn.type = "button";
+    deleteBtn.addEventListener("click", () => {
+        row.remove();
+        refreshAllStyleSelects();
+    });
+    actionCell.appendChild(deleteBtn);
+
+    row.append(nameCell, kindCell, cssCell, actionCell);
+    document.querySelector("#styleRuleBody").appendChild(row);
+    updateStyleRuleRowVisibility(row);
+}
+
+function loadStyleRuleRows(rules) {
+    clearStyleRuleTable();
+    cachedStyleRules = normalizeStyleRules(rules);
+    if (cachedStyleRules.length === 0) {
+        for (const rule of DEFAULT_STYLE_RULES) {
+            createStyleRuleRow(rule);
+        }
+    } else {
+        cachedStyleRules.forEach(rule => createStyleRuleRow(rule));
+    }
+    refreshAllStyleSelects();
+}
 
 function mergeRowsBySite(rows, valueKey, parseValues, getValueKey = value => value) {
     const rowsBySite = new Map();
@@ -78,11 +233,10 @@ function collectTextRules() {
         const siteInput = row.querySelector(".textRuleSite");
         const textInput = row.querySelector(".textRuleText");
         const styleSelect = row.querySelector(".textRuleStyle");
-        const style = styleSelect?.value;
         return {
             site: siteInput?.value.trim() || "",
             text: textInput?.value.trim() || "",
-            style: style === "favorited" || style === "seen" ? style : "blocked"
+            style: styleSelect?.value || "blocked"
         };
     }).filter(rule => rule.site && rule.text);
 }
@@ -97,8 +251,8 @@ function normalizeTextRules(rules) {
         const text = rule.text.trim();
         const site = normalizeSiteForMatching(rule.site.trim()) || rule.site.trim();
         if (!site) continue;
-        const style = rule.style === "favorited" || rule.style === "seen"
-            ? rule.style
+        const style = typeof rule.style === "string" && rule.style.trim()
+            ? rule.style.trim()
             : "blocked";
         const key = [site.toLowerCase(), text.toLowerCase(), style].join("\u0000");
         if (seen.has(key)) continue;
@@ -131,11 +285,12 @@ function migrateTextRulesFromStorage(result) {
     return normalizeTextRules(migrated);
 }
 
-function replaceConfigurationRows(searchPairs, urlRules, textRules, bookmarkRules) {
+function replaceConfigurationRows(searchPairs, urlRules, textRules, bookmarkRules, styleRules) {
     clearSearchTable();
     clearUrlRuleTable();
     clearTextRuleTable();
     clearBookmarkRuleTable();
+    loadStyleRuleRows(styleRules);
 
     searchPairs.forEach(({ site, classes }) => createRow(site, classes));
     urlRules.forEach(({ site, keepParams }) => createUrlRuleRow(site, keepParams));
@@ -218,18 +373,7 @@ function createBookmarkRuleRow(folderId = "", style = "blocked") {
     const styleCell = document.createElement("td");
     const styleSelect = document.createElement("select");
     styleSelect.className = "bookmarkRuleStyle";
-
-    const blockedOption = document.createElement("option");
-    blockedOption.value = "blocked";
-    blockedOption.textContent = "Blocked (hide)";
-    blockedOption.selected = style !== "favorited";
-
-    const favoritedOption = document.createElement("option");
-    favoritedOption.value = "favorited";
-    favoritedOption.textContent = "Favorited (double underline)";
-    favoritedOption.selected = style === "favorited";
-
-    styleSelect.append(blockedOption, favoritedOption);
+    populateStyleSelect(styleSelect, style || "blocked");
     styleCell.appendChild(styleSelect);
 
     const actionCell = document.createElement("td");
@@ -249,7 +393,7 @@ function collectBookmarkRules() {
         const styleSelect = row.querySelector(".bookmarkRuleStyle");
         return {
             folderId: folderSelect?.value || "",
-            style: styleSelect?.value === "favorited" ? "favorited" : "blocked"
+            style: styleSelect?.value || "blocked"
         };
     }).filter(rule => rule.folderId);
 }
@@ -266,7 +410,9 @@ function normalizeBookmarkRules(rules) {
         seenFolders.add(rule.folderId);
         normalized.push({
             folderId: rule.folderId,
-            style: rule.style === "favorited" ? "favorited" : "blocked"
+            style: typeof rule.style === "string" && rule.style.trim()
+                ? rule.style.trim()
+                : "blocked"
         });
     }
 
@@ -310,6 +456,8 @@ function clearBookmarkRuleTable() {
 
 function saveOptions(e) {
     e.preventDefault();
+    const styleRules = normalizeStyleRules(collectStyleRules());
+    cachedStyleRules = styleRules;
     const searchPairs = collectSearchPairs();
     const urlRules = collectUrlRules();
     const textRules = normalizeTextRules(collectTextRules());
@@ -320,6 +468,7 @@ function saveOptions(e) {
 		enableDeepSearch: document.querySelector("#enableDeepSearch").checked,
 		onlyUseSites: document.querySelector("#onlyUseSites").checked,
         [ENABLE_SEEN_STYLING_KEY]: document.querySelector("#enableSeenStyling").checked,
+        [STYLE_RULE_STORAGE_KEY]: styleRules,
         searchPairs,
         urlRules,
         textRules,
@@ -333,9 +482,10 @@ function saveOptions(e) {
             "textFilters"
         ]))
         .then(() => {
-            replaceConfigurationRows(searchPairs, urlRules, textRules, bookmarkRules);
-            showStatus("Options saved");
+            replaceConfigurationRows(searchPairs, urlRules, textRules, bookmarkRules, styleRules);
+            return loadBookmarkRuleRows(bookmarkRules);
         })
+        .then(() => showStatus("Options saved"))
         .catch(err => {
             console.error("Save failed:", err);
             showStatus("Could not save options", true);
@@ -420,17 +570,7 @@ function createTextRuleRow(site = "", text = "", style = "blocked") {
     const styleCell = document.createElement("td");
     const styleSelect = document.createElement("select");
     styleSelect.className = "textRuleStyle";
-    for (const [value, label] of [
-        ["blocked", "Blocked (hide)"],
-        ["favorited", "Favorited (double underline)"],
-        ["seen", "Seen (dashed underline)"]
-    ]) {
-        const option = document.createElement("option");
-        option.value = value;
-        option.textContent = label;
-        option.selected = style === value;
-        styleSelect.appendChild(option);
-    }
+    populateStyleSelect(styleSelect, style || "blocked");
     styleCell.appendChild(styleSelect);
 
     const actionCell = document.createElement("td");
@@ -459,6 +599,7 @@ function restoreOptions() {
         document.querySelector("#enableSeenStyling").checked =
             result.enableSeenStyling !== false;
 
+        loadStyleRuleRows(migrateStyleRulesFromStorage(result));
 
         if (result.searchPairs) {
             result.searchPairs.forEach(pair => {
@@ -501,6 +642,7 @@ function restoreOptions() {
         "urlRules",
         "textRules",
         "textFilters",
+        STYLE_RULE_STORAGE_KEY,
         "enableTopBorder",
         "enableDeepSearch",
         "onlyUseSites",
@@ -522,6 +664,7 @@ function exportToClipboard() {
         searchPairs: collectSearchPairs(),
         urlRules: collectUrlRules(),
         textRules: normalizeTextRules(collectTextRules()),
+        styleRules: normalizeStyleRules(collectStyleRules()),
         enableTopBorder: document.querySelector("#enableTopBorder").checked,
         onlyUseSites: document.querySelector("#onlyUseSites").checked,
         enableDeepSearch: document.querySelector("#enableDeepSearch").checked,
@@ -565,6 +708,16 @@ function importFromJson(jsonString) {
             !data.urlRules.every(isValidUrlRule)
         ) {
             throw new Error("Invalid urlRules");
+        }
+
+        if (
+            data.styleRules !== undefined &&
+            (
+                !Array.isArray(data.styleRules) ||
+                !data.styleRules.every(isValidStyleRule)
+            )
+        ) {
+            throw new Error("Invalid styleRules");
         }
 
         if (
@@ -647,6 +800,7 @@ function importFromJson(jsonString) {
     clearSearchTable();
     clearUrlRuleTable();
     clearTextRuleTable();
+    loadStyleRuleRows(migrateStyleRulesFromStorage(data));
 
     (data.searchPairs || []).forEach(pair => {
         const classes = typeof pair.classes === "string"
@@ -725,9 +879,7 @@ function isValidTextRule(row) {
         row.text.trim() !== "" &&
         (
             row.style === undefined ||
-            row.style === "blocked" ||
-            row.style === "favorited" ||
-            row.style === "seen"
+            (typeof row.style === "string" && row.style.trim() !== "")
         );
 }
 
@@ -735,7 +887,8 @@ function isValidBookmarkRule(row) {
     return row &&
         typeof row.folderId === "string" &&
         row.folderId.trim() !== "" &&
-        (row.style === "blocked" || row.style === "favorited");
+        typeof row.style === "string" &&
+        row.style.trim() !== "";
 }
 
 function importFromClipboard() {
@@ -788,6 +941,10 @@ function activateOptionsTab(tabId) {
         panel.classList.toggle("active", selected);
         panel.hidden = !selected;
     }
+
+    if (tabId === "bookmarkRules" || tabId === "textRules") {
+        refreshAllStyleSelects();
+    }
 }
 
 function setupOptionsTabs() {
@@ -837,6 +994,7 @@ function setupEventListeners() {
         const addUrlRuleBtn = document.querySelector("#addUrlRuleBtn");
         const addTextRuleBtn = document.querySelector("#addTextRuleBtn");
         const addBookmarkRuleBtn = document.querySelector("#addBookmarkRuleBtn");
+        const addStyleRuleBtn = document.querySelector("#addStyleRuleBtn");
 
         if (!addRowBtn) console.warn("addRowBtn not found");
         if (!exportBtn) console.warn("exportBtn not found");
@@ -844,6 +1002,7 @@ function setupEventListeners() {
         if (!addUrlRuleBtn) console.warn("addUrlRuleBtn not found");
         if (!addTextRuleBtn) console.warn("addTextRuleBtn not found");
         if (!addBookmarkRuleBtn) console.warn("addBookmarkRuleBtn not found");
+        if (!addStyleRuleBtn) console.warn("addStyleRuleBtn not found");
 
         if (addRowBtn) addRowBtn.addEventListener("click", () => createRow());
         if (exportBtn) exportBtn.addEventListener("click", exportToClipboard);
@@ -852,6 +1011,12 @@ function setupEventListeners() {
         if (addTextRuleBtn) addTextRuleBtn.addEventListener("click", () => createTextRuleRow());
         if (addBookmarkRuleBtn) {
             addBookmarkRuleBtn.addEventListener("click", () => createBookmarkRuleRow());
+        }
+        if (addStyleRuleBtn) {
+            addStyleRuleBtn.addEventListener("click", () => {
+                createStyleRuleRow();
+                refreshAllStyleSelects();
+            });
         }
 
         console.log("Event listeners attached successfully");

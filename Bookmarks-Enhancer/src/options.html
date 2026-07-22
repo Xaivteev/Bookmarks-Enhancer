@@ -121,8 +121,19 @@
             transform: translateY(0);
         }
 
-        #statusToast.error {
+            #statusToast.error {
             background: #9f1d1d;
+        }
+
+        .styleRuleCss {
+            width: 100%;
+            min-height: 4.5rem;
+            font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+            font-size: 12px;
+        }
+
+        .styleRuleCss[hidden] {
+            display: none;
         }
     </style>
 </head>
@@ -131,6 +142,9 @@
         <div class="tabList" role="tablist" aria-label="Options sections">
             <button type="button" role="tab" id="tabGeneral" aria-controls="panelGeneral" aria-selected="true" data-tab="general">
                 General
+            </button>
+            <button type="button" role="tab" id="tabStyleRules" aria-controls="panelStyleRules" aria-selected="false" data-tab="styleRules">
+                Style Rules
             </button>
             <button type="button" role="tab" id="tabBookmarkRules" aria-controls="panelBookmarkRules" aria-selected="false" data-tab="bookmarkRules">
                 Bookmark Rules
@@ -166,7 +180,35 @@
                 <input type="checkbox" id="enableSeenStyling" checked>
                 <label for="enableSeenStyling">Enable Seen Styling</label>
             </div>
-            <p class="hint">When enabled, bookmarks outside rule folders get the dashed underline “seen” style.</p>
+            <p class="hint">When enabled, bookmarks outside rule folders get the “Seen” style rule (id: seen).</p>
+        </section>
+
+        <section
+            id="panelStyleRules"
+            class="tabPanel"
+            role="tabpanel"
+            aria-labelledby="tabStyleRules"
+            data-tab-panel="styleRules"
+            hidden
+        >
+            <p class="hint">
+                Define named styles used by Bookmark Rules and Text Rules.
+                Choose a predefined look (Blocked / Favorited / Seen) or Custom CSS
+                declarations applied to matching elements.
+            </p>
+            <table id="styleRuleTable">
+                <thead>
+                    <tr>
+                        <th>Name</th>
+                        <th>Style</th>
+                        <th>Custom CSS</th>
+                        <th>Actions</th>
+                    </tr>
+                </thead>
+                <tbody id="styleRuleBody">
+                </tbody>
+            </table>
+            <button type="button" id="addStyleRuleBtn">Add Style Rule</button>
         </section>
 
         <section
@@ -177,7 +219,7 @@
             data-tab-panel="bookmarkRules"
             hidden
         >
-            <p class="hint">Each rule maps a bookmark folder (including nested folders) to blocked or favorited styling.</p>
+            <p class="hint">Each rule maps a bookmark folder (including nested folders) to a style rule.</p>
             <table id="bookmarkRuleTable">
                 <thead>
                     <tr>
@@ -201,8 +243,8 @@
             hidden
         >
             <p class="hint">
-                Match text inside Search Pairs targeted classes and apply blocked,
-                favorited, or seen styling. Requires a site.
+                Match text inside Search Pairs targeted classes and apply a style rule.
+                Requires a site.
             </p>
             <table id="textRuleTable">
                 <thead>
