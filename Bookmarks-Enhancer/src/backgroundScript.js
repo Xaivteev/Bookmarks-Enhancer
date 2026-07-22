@@ -41,6 +41,8 @@ function onError(error) {
 const STORAGE_KEYS = {
 	urlRules: "urlRules",
 	textFilters: "textFilters",
+	bookmarkRules: "bookmarkRules",
+	enableSeenStyling: "enableSeenStyling",
 	blockedFolderId: "blockedFolderId",
 	favoritedFolderId: "favoritedFolderId"
 };
@@ -51,13 +53,15 @@ const DEFAULT_FOLDER_TITLES = {
 };
 
 let urlRules = [];
-let blockedFolderId = null;
-let favoritedFolderId = null;
+let bookmarkRules = [];
+let enableSeenStyling = true;
 
 function loadSettings() {
     return browser.storage.local
         .get([
 			STORAGE_KEYS.urlRules,
+			STORAGE_KEYS.bookmarkRules,
+			STORAGE_KEYS.enableSeenStyling,
 			STORAGE_KEYS.blockedFolderId,
 			STORAGE_KEYS.favoritedFolderId
 		])
@@ -65,17 +69,57 @@ function loadSettings() {
             urlRules = Array.isArray(result[STORAGE_KEYS.urlRules])
                 ? result[STORAGE_KEYS.urlRules]
                 : [];
-			blockedFolderId = normalizeStoredFolderId(
-				result[STORAGE_KEYS.blockedFolderId]
+			bookmarkRules = normalizeBookmarkRules(
+				migrateBookmarkRulesFromStorage(result)
 			);
-			favoritedFolderId = normalizeStoredFolderId(
-				result[STORAGE_KEYS.favoritedFolderId]
-			);
+			enableSeenStyling = result[STORAGE_KEYS.enableSeenStyling] !== false;
         });
 }
 
 function normalizeStoredFolderId(value) {
 	return typeof value === "string" && value.trim() ? value.trim() : null;
+}
+
+function isValidBookmarkRule(rule) {
+	return rule &&
+		typeof rule.folderId === "string" &&
+		rule.folderId.trim() !== "" &&
+		(rule.style === "blocked" || rule.style === "favorited");
+}
+
+function normalizeBookmarkRules(rules) {
+	if (!Array.isArray(rules)) return [];
+
+	const seenFolders = new Set();
+	const normalized = [];
+	for (const rule of rules) {
+		if (!isValidBookmarkRule(rule)) continue;
+		const folderId = rule.folderId.trim();
+		if (seenFolders.has(folderId)) continue;
+		seenFolders.add(folderId);
+		normalized.push({
+			folderId,
+			style: rule.style === "favorited" ? "favorited" : "blocked"
+		});
+	}
+	return normalized;
+}
+
+function migrateBookmarkRulesFromStorage(result) {
+	if (Array.isArray(result[STORAGE_KEYS.bookmarkRules])) {
+		return result[STORAGE_KEYS.bookmarkRules];
+	}
+
+	const legacyRules = [];
+	const blockedFolderId = normalizeStoredFolderId(result[STORAGE_KEYS.blockedFolderId]);
+	const favoritedFolderId = normalizeStoredFolderId(result[STORAGE_KEYS.favoritedFolderId]);
+	if (blockedFolderId) {
+		legacyRules.push({ folderId: blockedFolderId, style: "blocked" });
+	}
+	if (favoritedFolderId) {
+		legacyRules.push({ folderId: favoritedFolderId, style: "favorited" });
+	}
+	return legacyRules;
 }
 
 const settingsReady = loadSettings().catch(onError);
@@ -124,7 +168,7 @@ createContextMenus();
 
 // Helper: ensure configured/default folder exists then create bookmark inside it
 function ensureFolderAndCreateBookmark(folderRole, url, title) {
-	return resolveManagedFolderId(folderRole).then(folderId => {
+	return resolveFolderIdForStyle(folderRole).then(folderId => {
 		return browser.bookmarks.create({
 			parentId: folderId,
 			title: title || url,
@@ -133,45 +177,50 @@ function ensureFolderAndCreateBookmark(folderRole, url, title) {
 	});
 }
 
-function resolveManagedFolderId(folderRole) {
-	const storageKey = folderRole === "blocked"
-		? STORAGE_KEYS.blockedFolderId
-		: STORAGE_KEYS.favoritedFolderId;
-	const configuredId = folderRole === "blocked"
-		? blockedFolderId
-		: favoritedFolderId;
-	const defaultTitle = DEFAULT_FOLDER_TITLES[folderRole];
+function getValidFolderId(folderId) {
+	if (!folderId) return Promise.resolve(null);
+	return browser.bookmarks.get(folderId).then(nodes => {
+		const folder = nodes.find(node => node.type === "folder");
+		return folder ? folder.id : null;
+	}).catch(() => null);
+}
 
-	return Promise.resolve()
-		.then(() => {
-			if (!configuredId) return null;
-			return browser.bookmarks.get(configuredId).then(nodes => {
-				const folder = nodes.find(node => node.type === "folder");
-				return folder ? folder.id : null;
-			}).catch(() => null);
-		})
-		.then(validConfiguredId => {
-			if (validConfiguredId) return validConfiguredId;
+function findOrCreateFolderByTitle(title) {
+	return browser.bookmarks.search({ title }).then(nodes => {
+		const folder = nodes.find(
+			node => node.title === title && node.type === "folder"
+		);
+		if (folder) return folder.id;
+		return browser.bookmarks.create({ title }).then(created => created.id);
+	});
+}
 
-			return browser.bookmarks.search({ title: defaultTitle }).then(nodes => {
-				const folder = nodes.find(
-					node => node.title === defaultTitle && node.type === "folder"
-				);
-				if (folder) return folder.id;
-				return browser.bookmarks.create({ title: defaultTitle }).then(f => f.id);
-			});
-		})
-		.then(folderId => {
-			if (folderRole === "blocked") blockedFolderId = folderId;
-			else favoritedFolderId = folderId;
+function persistBookmarkRules(rules) {
+	bookmarkRules = normalizeBookmarkRules(rules);
+	return browser.storage.local.set({
+		[STORAGE_KEYS.bookmarkRules]: bookmarkRules
+	}).then(() => browser.storage.local.remove([
+		STORAGE_KEYS.blockedFolderId,
+		STORAGE_KEYS.favoritedFolderId
+	])).then(() => bookmarkRules);
+}
 
-			if (configuredId !== folderId) {
-				return browser.storage.local
-					.set({ [storageKey]: folderId })
-					.then(() => folderId);
-			}
-			return folderId;
+function resolveFolderIdForStyle(style) {
+	const defaultTitle = DEFAULT_FOLDER_TITLES[style] || DEFAULT_FOLDER_TITLES.blocked;
+	const existingRule = bookmarkRules.find(rule => rule.style === style);
+
+	return getValidFolderId(existingRule?.folderId).then(validFolderId => {
+		if (validFolderId) return validFolderId;
+
+		return findOrCreateFolderByTitle(defaultTitle).then(folderId => {
+			const nextRules = bookmarkRules.filter(rule =>
+				rule.folderId !== existingRule?.folderId &&
+				rule.folderId !== folderId
+			);
+			nextRules.push({ folderId, style });
+			return persistBookmarkRules(nextRules).then(() => folderId);
 		});
+	});
 }
 
 function notifyAllTabsRefresh() {
@@ -246,18 +295,33 @@ browser.storage.onChanged.addListener((changes, areaName) => {
 		invalidateBookmarkCaches();
 	}
 
-	if (changes[STORAGE_KEYS.blockedFolderId]) {
-		blockedFolderId = normalizeStoredFolderId(
-			changes[STORAGE_KEYS.blockedFolderId].newValue
+	if (changes[STORAGE_KEYS.bookmarkRules]) {
+		bookmarkRules = normalizeBookmarkRules(
+			changes[STORAGE_KEYS.bookmarkRules].newValue
 		);
 		invalidateBookmarkCaches();
 	}
 
-	if (changes[STORAGE_KEYS.favoritedFolderId]) {
-		favoritedFolderId = normalizeStoredFolderId(
-			changes[STORAGE_KEYS.favoritedFolderId].newValue
-		);
+	if (changes[STORAGE_KEYS.enableSeenStyling]) {
+		enableSeenStyling = changes[STORAGE_KEYS.enableSeenStyling].newValue !== false;
 		invalidateBookmarkCaches();
+	}
+
+	if (
+		changes[STORAGE_KEYS.blockedFolderId] ||
+		changes[STORAGE_KEYS.favoritedFolderId]
+	) {
+		browser.storage.local.get([
+			STORAGE_KEYS.bookmarkRules,
+			STORAGE_KEYS.blockedFolderId,
+			STORAGE_KEYS.favoritedFolderId
+		]).then(result => {
+			if (Array.isArray(result[STORAGE_KEYS.bookmarkRules])) return;
+			bookmarkRules = normalizeBookmarkRules(
+				migrateBookmarkRulesFromStorage(result)
+			);
+			invalidateBookmarkCaches();
+		}).catch(onError);
 	}
 
 });
@@ -290,21 +354,30 @@ function searchhrefs(hrefs) {
 
 		for (const href of hrefsToSearch) {
 			const bookmarkList = index.bookmarksByNormalizedUrl.get(href) || [];
-			const blockedBookmark = bookmarkList.find(bookmark =>
-				isBookmarkUnderFolder(bookmark, index.blockedFolderId, index.parentById)
-			);
-			const favoritedBookmark = bookmarkList.find(bookmark =>
-				isBookmarkUnderFolder(bookmark, index.favoritedFolderId, index.parentById)
-			);
-			const seenBookmark = bookmarkList.find(bookmark =>
-				!isBookmarkUnderFolder(bookmark, index.blockedFolderId, index.parentById) &&
-				!isBookmarkUnderFolder(bookmark, index.favoritedFolderId, index.parentById)
-			);
-
 			let status = "none";
-			if (blockedBookmark) status = "blocked";
-			else if (favoritedBookmark) status = "favorited";
-			else if (seenBookmark) status = "seen";
+
+			for (const bookmark of bookmarkList) {
+				const matchedStyle = findMatchingRuleStyle(
+					bookmark,
+					index.rules,
+					index.parentById
+				);
+				if (matchedStyle === "blocked") {
+					status = "blocked";
+					break;
+				}
+				if (matchedStyle === "favorited" && status !== "blocked") {
+					status = "favorited";
+				}
+			}
+
+			if (
+				status === "none" &&
+				index.enableSeenStyling &&
+				bookmarkList.length > 0
+			) {
+				status = "seen";
+			}
 
 			bookmarkStatusMap.set(href, status);
 		}
@@ -338,24 +411,43 @@ function getBookmarkIndex() {
 
 function buildBookmarkIndex() {
 	return Promise.all([
-		resolveManagedFolderId("blocked"),
-		resolveManagedFolderId("favorited"),
+		resolveConfiguredRules(bookmarkRules),
 		browser.bookmarks.getTree()
-	]).then(([resolvedBlockedFolderId, resolvedFavoritedFolderId, bookmarkTree]) => {
+	]).then(([rules, bookmarkTree]) => {
 		const { bookmarksByNormalizedUrl, parentById } = buildBookmarkMaps(bookmarkTree);
 		return {
-			blockedFolderId: resolvedBlockedFolderId,
-			favoritedFolderId: resolvedFavoritedFolderId,
+			rules,
+			enableSeenStyling,
 			bookmarksByNormalizedUrl,
 			parentById
 		};
 	});
 }
 
+function resolveConfiguredRules(rules) {
+	return Promise.all(
+		normalizeBookmarkRules(rules).map(rule =>
+			getValidFolderId(rule.folderId).then(folderId => (
+				folderId ? { folderId, style: rule.style } : null
+			))
+		)
+	).then(resolved => resolved.filter(Boolean));
+}
+
 function invalidateBookmarkCaches() {
 	bookmarkCacheGeneration += 1;
 	bookmarkStatusMap = new Map();
 	bookmarkIndexPromise = null;
+}
+
+function findMatchingRuleStyle(bookmark, rules, parentById) {
+	let matchedStyle = null;
+	for (const rule of rules) {
+		if (!isBookmarkUnderFolder(bookmark, rule.folderId, parentById)) continue;
+		if (rule.style === "blocked") return "blocked";
+		if (rule.style === "favorited") matchedStyle = "favorited";
+	}
+	return matchedStyle;
 }
 
 function isBookmarkUnderFolder(bookmark, folderId, parentById) {

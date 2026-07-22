@@ -1,7 +1,11 @@
-const FOLDER_STORAGE_KEYS = {
+const BOOKMARK_RULE_STORAGE_KEY = "bookmarkRules";
+const ENABLE_SEEN_STYLING_KEY = "enableSeenStyling";
+const LEGACY_FOLDER_STORAGE_KEYS = {
     blockedFolderId: "blockedFolderId",
     favoritedFolderId: "favoritedFolderId"
 };
+
+let cachedBookmarkFolders = [];
 
 function mergeRowsBySite(rows, valueKey, parseValues, getValueKey = value => value) {
     const rowsBySite = new Map();
@@ -86,19 +90,20 @@ function collectTextFilters() {
     );
 }
 
-function replaceConfigurationRows(searchPairs, urlRules, textFilters) {
+function replaceConfigurationRows(searchPairs, urlRules, textFilters, bookmarkRules) {
     clearSearchTable();
     clearUrlRuleTable();
     clearTextFilterTable();
+    clearBookmarkRuleTable();
 
     searchPairs.forEach(({ site, classes }) => createRow(site, classes));
     urlRules.forEach(({ site, keepParams }) => createUrlRuleRow(site, keepParams));
     textFilters.forEach(({ site, filterText }) => createTextFilterRow(site, filterText));
-}
-
-function collectFolderSelection(selectId) {
-    const value = document.querySelector(selectId)?.value;
-    return value || null;
+    if (!bookmarkRules || bookmarkRules.length === 0) {
+        createBookmarkRuleRow("", "blocked");
+    } else {
+        bookmarkRules.forEach(rule => createBookmarkRuleRow(rule.folderId, rule.style));
+    }
 }
 
 function flattenBookmarkFolders(nodes, path = "") {
@@ -130,10 +135,10 @@ function flattenBookmarkFolders(nodes, path = "") {
 function populateFolderSelect(select, folders, selectedId) {
     select.replaceChildren();
 
-    const defaultOption = document.createElement("option");
-    defaultOption.value = "";
-    defaultOption.textContent = "Default (find or create by name)";
-    select.appendChild(defaultOption);
+    const placeholder = document.createElement("option");
+    placeholder.value = "";
+    placeholder.textContent = "Select a folder";
+    select.appendChild(placeholder);
 
     let selectedExists = false;
     for (const folder of folders) {
@@ -156,27 +161,106 @@ function populateFolderSelect(select, folders, selectedId) {
     }
 }
 
-function loadFolderSelectors(selectedIds = {}) {
-    const blockedSelect = document.querySelector("#blockedFolderId");
-    const favoritedSelect = document.querySelector("#favoritedFolderId");
-    if (!blockedSelect || !favoritedSelect) return Promise.resolve();
+function createBookmarkRuleRow(folderId = "", style = "blocked") {
+    const row = document.createElement("tr");
 
+    const folderCell = document.createElement("td");
+    const folderSelect = document.createElement("select");
+    folderSelect.className = "bookmarkRuleFolder";
+    populateFolderSelect(folderSelect, cachedBookmarkFolders, folderId || "");
+    folderCell.appendChild(folderSelect);
+
+    const styleCell = document.createElement("td");
+    const styleSelect = document.createElement("select");
+    styleSelect.className = "bookmarkRuleStyle";
+
+    const blockedOption = document.createElement("option");
+    blockedOption.value = "blocked";
+    blockedOption.textContent = "Blocked (hide)";
+    blockedOption.selected = style !== "favorited";
+
+    const favoritedOption = document.createElement("option");
+    favoritedOption.value = "favorited";
+    favoritedOption.textContent = "Favorited (double underline)";
+    favoritedOption.selected = style === "favorited";
+
+    styleSelect.append(blockedOption, favoritedOption);
+    styleCell.appendChild(styleSelect);
+
+    const actionCell = document.createElement("td");
+    const deleteBtn = document.createElement("button");
+    deleteBtn.textContent = "Delete";
+    deleteBtn.type = "button";
+    deleteBtn.addEventListener("click", () => row.remove());
+    actionCell.appendChild(deleteBtn);
+
+    row.append(folderCell, styleCell, actionCell);
+    document.querySelector("#bookmarkRuleBody").appendChild(row);
+}
+
+function collectBookmarkRules() {
+    return Array.from(document.querySelectorAll("#bookmarkRuleBody tr")).map(row => {
+        const folderSelect = row.querySelector(".bookmarkRuleFolder");
+        const styleSelect = row.querySelector(".bookmarkRuleStyle");
+        return {
+            folderId: folderSelect?.value || "",
+            style: styleSelect?.value === "favorited" ? "favorited" : "blocked"
+        };
+    }).filter(rule => rule.folderId);
+}
+
+function normalizeBookmarkRules(rules) {
+    if (!Array.isArray(rules)) return [];
+
+    const seenFolders = new Set();
+    const normalized = [];
+
+    for (const rule of rules) {
+        if (!isValidBookmarkRule(rule)) continue;
+        if (seenFolders.has(rule.folderId)) continue;
+        seenFolders.add(rule.folderId);
+        normalized.push({
+            folderId: rule.folderId,
+            style: rule.style === "favorited" ? "favorited" : "blocked"
+        });
+    }
+
+    return normalized;
+}
+
+function migrateBookmarkRulesFromStorage(result) {
+    if (Array.isArray(result.bookmarkRules)) {
+        return normalizeBookmarkRules(result.bookmarkRules);
+    }
+
+    const legacyRules = [];
+    if (typeof result.blockedFolderId === "string" && result.blockedFolderId) {
+        legacyRules.push({ folderId: result.blockedFolderId, style: "blocked" });
+    }
+    if (typeof result.favoritedFolderId === "string" && result.favoritedFolderId) {
+        legacyRules.push({ folderId: result.favoritedFolderId, style: "favorited" });
+    }
+    return normalizeBookmarkRules(legacyRules);
+}
+
+function loadBookmarkRuleRows(rules) {
     return browser.bookmarks.getTree().then(tree => {
-        const folders = flattenBookmarkFolders(tree);
-        populateFolderSelect(
-            blockedSelect,
-            folders,
-            selectedIds.blockedFolderId || ""
-        );
-        populateFolderSelect(
-            favoritedSelect,
-            folders,
-            selectedIds.favoritedFolderId || ""
-        );
+        cachedBookmarkFolders = flattenBookmarkFolders(tree);
+        clearBookmarkRuleTable();
+        const normalizedRules = normalizeBookmarkRules(rules);
+        if (normalizedRules.length === 0) {
+            createBookmarkRuleRow("", "blocked");
+            return;
+        }
+        normalizedRules.forEach(rule => createBookmarkRuleRow(rule.folderId, rule.style));
     }).catch(err => {
         console.error("Could not load bookmark folders:", err);
         showStatus("Could not load bookmark folders", true);
     });
+}
+
+function clearBookmarkRuleTable() {
+    document.querySelector("#bookmarkRuleBody")?.replaceChildren();
 }
 
 function saveOptions(e) {
@@ -184,32 +268,26 @@ function saveOptions(e) {
     const searchPairs = collectSearchPairs();
     const urlRules = collectUrlRules();
     const textFilters = collectTextFilters();
-    const blockedFolderId = collectFolderSelection("#blockedFolderId");
-    const favoritedFolderId = collectFolderSelection("#favoritedFolderId");
-
-    if (
-        blockedFolderId &&
-        favoritedFolderId &&
-        blockedFolderId === favoritedFolderId
-    ) {
-        showStatus("Blocked and Favorited must use different folders", true);
-        return;
-    }
+    const bookmarkRules = normalizeBookmarkRules(collectBookmarkRules());
 
     let obj = {
 		enableTopBorder: document.querySelector("#enableTopBorder").checked,
 		enableDeepSearch: document.querySelector("#enableDeepSearch").checked,
 		onlyUseSites: document.querySelector("#onlyUseSites").checked,
+        [ENABLE_SEEN_STYLING_KEY]: document.querySelector("#enableSeenStyling").checked,
         searchPairs,
         urlRules,
         textFilters,
-        [FOLDER_STORAGE_KEYS.blockedFolderId]: blockedFolderId,
-        [FOLDER_STORAGE_KEYS.favoritedFolderId]: favoritedFolderId
+        [BOOKMARK_RULE_STORAGE_KEY]: bookmarkRules
     };
 
     browser.storage.local.set(obj)
+        .then(() => browser.storage.local.remove([
+            LEGACY_FOLDER_STORAGE_KEYS.blockedFolderId,
+            LEGACY_FOLDER_STORAGE_KEYS.favoritedFolderId
+        ]))
         .then(() => {
-            replaceConfigurationRows(searchPairs, urlRules, textFilters);
+            replaceConfigurationRows(searchPairs, urlRules, textFilters, bookmarkRules);
             showStatus("Options saved");
         })
         .catch(err => {
@@ -317,6 +395,9 @@ function restoreOptions() {
         document.querySelector("#onlyUseSites").checked =
             !!result.onlyUseSites;
 
+        document.querySelector("#enableSeenStyling").checked =
+            result.enableSeenStyling !== false;
+
 
         if (result.searchPairs) {
             result.searchPairs.forEach(pair => {
@@ -342,10 +423,7 @@ function restoreOptions() {
             );
         }
 
-        return loadFolderSelectors({
-            blockedFolderId: result.blockedFolderId || "",
-            favoritedFolderId: result.favoritedFolderId || ""
-        });
+        return loadBookmarkRuleRows(migrateBookmarkRulesFromStorage(result));
     }
 
 
@@ -356,8 +434,10 @@ function restoreOptions() {
         "enableTopBorder",
         "enableDeepSearch",
         "onlyUseSites",
-        FOLDER_STORAGE_KEYS.blockedFolderId,
-        FOLDER_STORAGE_KEYS.favoritedFolderId
+        ENABLE_SEEN_STYLING_KEY,
+        BOOKMARK_RULE_STORAGE_KEY,
+        LEGACY_FOLDER_STORAGE_KEYS.blockedFolderId,
+        LEGACY_FOLDER_STORAGE_KEYS.favoritedFolderId
     ])
     .then(handleStorage)
     .catch(console.error);
@@ -375,8 +455,8 @@ function exportToClipboard() {
         enableTopBorder: document.querySelector("#enableTopBorder").checked,
         onlyUseSites: document.querySelector("#onlyUseSites").checked,
         enableDeepSearch: document.querySelector("#enableDeepSearch").checked,
-        blockedFolderId: collectFolderSelection("#blockedFolderId"),
-        favoritedFolderId: collectFolderSelection("#favoritedFolderId")
+        enableSeenStyling: document.querySelector("#enableSeenStyling").checked,
+        bookmarkRules: normalizeBookmarkRules(collectBookmarkRules())
     };
 
     navigator.clipboard.writeText(
@@ -446,6 +526,23 @@ function importFromJson(jsonString) {
         }
 
         if (
+            data.enableSeenStyling !== undefined &&
+            typeof data.enableSeenStyling !== "boolean"
+        ) {
+            throw new Error("Invalid enableSeenStyling");
+        }
+
+        if (
+            data.bookmarkRules !== undefined &&
+            (
+                !Array.isArray(data.bookmarkRules) ||
+                !data.bookmarkRules.every(isValidBookmarkRule)
+            )
+        ) {
+            throw new Error("Invalid bookmarkRules");
+        }
+
+        if (
             data.blockedFolderId !== undefined &&
             data.blockedFolderId !== null &&
             typeof data.blockedFolderId !== "string"
@@ -503,10 +600,12 @@ function importFromJson(jsonString) {
             data.onlyUseSites;
     }
 
-    loadFolderSelectors({
-        blockedFolderId: data.blockedFolderId || "",
-        favoritedFolderId: data.favoritedFolderId || ""
-    }).then(() => {
+    if (data.enableSeenStyling !== undefined) {
+        document.querySelector("#enableSeenStyling").checked =
+            data.enableSeenStyling;
+    }
+
+    loadBookmarkRuleRows(migrateBookmarkRulesFromStorage(data)).then(() => {
         showStatus("Imported configuration");
     });
 }
@@ -530,6 +629,13 @@ function isValidTextFilter(row) {
     return row &&
         typeof row.site === "string" &&
         typeof row.filterText === "string";
+}
+
+function isValidBookmarkRule(row) {
+    return row &&
+        typeof row.folderId === "string" &&
+        row.folderId.trim() !== "" &&
+        (row.style === "blocked" || row.style === "favorited");
 }
 
 function importFromClipboard() {
@@ -574,18 +680,23 @@ function setupEventListeners() {
         const importBtn = document.querySelector("#importBtn");
         const addUrlRuleBtn = document.querySelector("#addUrlRuleBtn");
         const addTextFilterBtn = document.querySelector("#addTextFilterBtn");
+        const addBookmarkRuleBtn = document.querySelector("#addBookmarkRuleBtn");
 
         if (!addRowBtn) console.warn("addRowBtn not found");
         if (!exportBtn) console.warn("exportBtn not found");
         if (!importBtn) console.warn("importBtn not found");
         if (!addUrlRuleBtn) console.warn("addUrlRuleBtn not found");
         if (!addTextFilterBtn) console.warn("addTextFilterBtn not found");
+        if (!addBookmarkRuleBtn) console.warn("addBookmarkRuleBtn not found");
 
         if (addRowBtn) addRowBtn.addEventListener("click", () => createRow());
         if (exportBtn) exportBtn.addEventListener("click", exportToClipboard);
         if (importBtn) importBtn.addEventListener("click", importFromClipboard);
         if (addUrlRuleBtn) addUrlRuleBtn.addEventListener("click", () => createUrlRuleRow());
         if (addTextFilterBtn) addTextFilterBtn.addEventListener("click", () => createTextFilterRow());
+        if (addBookmarkRuleBtn) {
+            addBookmarkRuleBtn.addEventListener("click", () => createBookmarkRuleRow());
+        }
 
         console.log("Event listeners attached successfully");
     } catch (err) {
