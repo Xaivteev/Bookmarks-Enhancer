@@ -1,7 +1,8 @@
 ﻿browser.runtime.onMessage.addListener((message, sender, sendResponse) => {
 	if (message && message.hrefs) {
+		const tabId = sender && sender.tab ? sender.tab.id : null;
 		settingsReady
-			.then(() => searchhrefs(message.hrefs))
+			.then(() => searchhrefs(message.hrefs, tabId))
 			.then(sendResponse)
 			.catch(error => {
 				onError(error);
@@ -289,7 +290,7 @@ const CONFIG_REFRESH_STORAGE_KEYS = new Set([
 
 function addSelectionAsTextRule(selection, site, styleId) {
 	const style = styleId || "blocked";
-	const normalizedSite = normalizeSiteForMatching(site) || site;
+	const normalizedSite = normalizeSite(site) || site;
 	return browser.storage.local.get([
 		STORAGE_KEYS.textRules,
 		STORAGE_KEYS.textFilters
@@ -336,7 +337,7 @@ browser.contextMenus.onClicked.addListener((info, tab) => {
 		if (!selection) return;
 		const styleId = info.menuItemId.slice(TEXT_RULE_MENU_PREFIX.length);
 		let site = '';
-		try { site = normalizeSiteForMatching(new URL(tab.url).hostname); }
+		try { site = normalizeSite(new URL(tab.url).hostname); }
 		catch (e) { site = tab.url || ''; }
 
 		addSelectionAsTextRule(selection, site, styleId).catch(onError);
@@ -455,11 +456,36 @@ browser.storage.onChanged.addListener((changes, areaName) => {
 const urlNormalizationCache = new Map(); // href -> normalized href
 
 let bookmarkStatusMap = new Map(); // href -> status string
+let tabHrefSets = new Map(); // tabId -> Set of normalized hrefs seen from that tab
 let bookmarkIndexPromise = null;
 let liveBookmarkIndex = null;
 let bookmarkCacheGeneration = 0;
 
-function searchhrefs(hrefs) {
+function rememberTabHrefs(tabId, hrefs) {
+	if (tabId == null || tabId === undefined) return;
+
+	let hrefSet = tabHrefSets.get(tabId);
+	if (!hrefSet) {
+		hrefSet = new Set();
+		tabHrefSets.set(tabId, hrefSet);
+	}
+
+	for (const href of hrefs || []) {
+		if (href) hrefSet.add(href);
+	}
+}
+
+function clearStatusesForTab(tabId) {
+	const hrefSet = tabHrefSets.get(tabId);
+	if (!hrefSet) return;
+
+	for (const href of hrefSet) {
+		bookmarkStatusMap.delete(href);
+	}
+	tabHrefSets.delete(tabId);
+}
+
+function searchhrefs(hrefs, tabId = null) {
 	const requestGeneration = bookmarkCacheGeneration;
 	// contentScript asks if links have been bookmarked
 	// Normalize hrefs and prepare lookup
@@ -467,6 +493,7 @@ function searchhrefs(hrefs) {
 
     // Filter out invalid URLs
 	const validHrefs = normalizedHrefs.filter(isValidBookmarkUrl);
+	rememberTabHrefs(tabId, validHrefs);
 
 	// Filter out hrefs that have already been processed
 	const hrefsToSearch = validHrefs.filter(href => !bookmarkStatusMap.has(href));
@@ -476,7 +503,7 @@ function searchhrefs(hrefs) {
 
 	return getBookmarkIndex().then(index => {
 		if (requestGeneration !== bookmarkCacheGeneration) {
-			return searchhrefs(hrefs);
+			return searchhrefs(hrefs, tabId);
 		}
 
 		for (const href of hrefsToSearch) {
@@ -628,13 +655,18 @@ function resolveConfiguredRules(rules) {
 function invalidateBookmarkCaches() {
 	bookmarkCacheGeneration += 1;
 	bookmarkStatusMap = new Map();
+	tabHrefSets = new Map();
 	bookmarkIndexPromise = null;
 	liveBookmarkIndex = null;
 }
 
 function clearStatusesForUrls(urls) {
-	for (const url of urls) {
-		if (url) bookmarkStatusMap.delete(url);
+	for (const url of urls || []) {
+		if (!url) continue;
+		bookmarkStatusMap.delete(url);
+		for (const hrefSet of tabHrefSets.values()) {
+			hrefSet.delete(url);
+		}
 	}
 }
 
@@ -901,11 +933,15 @@ function isValidBookmarkUrl(href) {
 	}
 }
 
-// Clear cached statuses when a tab finishes loading so the next query is fresh.
-browser.tabs.onUpdated.addListener((tabId, changeInfo, tab) => {
-	if (changeInfo.status === "complete") {
-		bookmarkStatusMap = new Map();
+// Clear only this tab's cached statuses when it navigates or finishes loading.
+browser.tabs.onUpdated.addListener((tabId, changeInfo) => {
+	if (changeInfo.status === "complete" || changeInfo.url) {
+		clearStatusesForTab(tabId);
 	}
+});
+
+browser.tabs.onRemoved.addListener(tabId => {
+	clearStatusesForTab(tabId);
 });
 
 browser.bookmarks.onRemoved.addListener((id, removeInfo) => {

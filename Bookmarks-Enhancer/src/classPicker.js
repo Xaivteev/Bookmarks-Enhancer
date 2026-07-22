@@ -326,7 +326,7 @@ function looksGeneratedClass(className) {
 
 function saveClassPickerSelection() {
 	const sessionId = classPickerState.sessionId;
-	const site = normalizeSiteForMatching(window.location.hostname);
+	const site = normalizeSite(window.location.hostname);
 	const selectedClassGroup = parseClassGroups(
 		Array.from(classPickerState.selectedClasses).join(' ')
 	)[0];
@@ -374,7 +374,7 @@ function renderClassPickerSelection(availableClasses) {
 	const site = document.createElement("p");
 	site.append("Site: ");
 	const siteCode = document.createElement("code");
-	siteCode.textContent = normalizeSiteForMatching(window.location.hostname);
+	siteCode.textContent = normalizeSite(window.location.hostname);
 	site.appendChild(siteCode);
 
 	const selectedElement = document.createElement("p");

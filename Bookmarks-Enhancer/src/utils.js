@@ -129,7 +129,7 @@ function mergeRowsBySite(rows, valueKey, parseValues, getValueKey = value => val
 	const rowsBySite = new Map();
 
 	for (const row of rows || []) {
-		const site = normalizeSiteForMatching(row.site);
+		const site = normalizeSite(row.site);
 		if (!site) continue;
 
 		if (!rowsBySite.has(site)) {
@@ -188,7 +188,7 @@ function normalizeTextRules(rules) {
 	for (const rule of rules) {
 		if (!isValidTextRule(rule)) continue;
 		const text = rule.text.trim();
-		const site = normalizeSiteForMatching(rule.site.trim()) || rule.site.trim();
+		const site = normalizeSite(rule.site.trim()) || rule.site.trim();
 		if (!site) continue;
 		const style = typeof rule.style === "string" && rule.style.trim()
 			? rule.style.trim()
@@ -384,11 +384,13 @@ function getStyleRulePriorityMap(styleRules) {
 }
 
 /**
- * Match a configured site against a hostname without allowing partial
- * hostname matches (for example, "example.com" must not match
- * "notexample.com"). A configured domain also matches its subdomains.
+ * Sole site normalizer for the extension.
+ * Strips scheme/path noise, lowercases, drops a leading "*." / trailing ".",
+ * and removes a leading "www.".
+ * All site storage and matching must go through this (via hostnameMatchesSite
+ * when comparing a hostname to a configured site).
  */
-function normalizeSiteForMatching(site) {
+function normalizeSite(site) {
 	if (typeof site !== "string") return "";
 
 	const trimmedSite = site.trim().toLowerCase().replace(/^\*\./, "");
@@ -404,9 +406,14 @@ function normalizeSiteForMatching(site) {
 	}
 }
 
+/** @deprecated Alias of normalizeSite for older call sites. */
+function normalizeSiteForMatching(site) {
+	return normalizeSite(site);
+}
+
 function hostnameMatchesSite(hostname, site) {
-	const normalizedHostname = normalizeSiteForMatching(hostname);
-	const normalizedSite = normalizeSiteForMatching(site);
+	const normalizedHostname = normalizeSite(hostname);
+	const normalizedSite = normalizeSite(site);
 
 	if (!normalizedHostname || !normalizedSite) return false;
 
