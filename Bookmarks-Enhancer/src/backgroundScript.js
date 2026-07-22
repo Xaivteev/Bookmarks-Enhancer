@@ -328,13 +328,36 @@ function createBookmarkInFolder(folderId, url, title) {
 	});
 }
 
-function notifyAllTabsRefresh() {
+function notifyAllTabsRefresh(mode = "optimistic") {
 	return browser.tabs.query({}).then(tabs => {
 		for (const t of tabs) {
-			browser.tabs.sendMessage(t.id, { refresh: true, mode: "optimistic" }).catch(() => {});
+			browser.tabs.sendMessage(t.id, { refresh: true, mode }).catch(() => {});
 		}
 	}).catch(() => {});
 }
+
+let configRefreshNotifyTimer = null;
+function scheduleConfigTabsRefresh() {
+	if (configRefreshNotifyTimer) {
+		clearTimeout(configRefreshNotifyTimer);
+	}
+	configRefreshNotifyTimer = setTimeout(() => {
+		configRefreshNotifyTimer = null;
+		notifyAllTabsRefresh("authoritative");
+	}, 75);
+}
+
+const CONFIG_REFRESH_STORAGE_KEYS = new Set([
+	STORAGE_KEYS.urlRules,
+	STORAGE_KEYS.bookmarkRules,
+	STORAGE_KEYS.styleRules,
+	STORAGE_KEYS.textRules,
+	STORAGE_KEYS.textFilters,
+	"searchPairs",
+	"enableDeepSearch",
+	"onlyUseSites",
+	"enableTopBorder"
+]);
 
 function addSelectionAsTextRule(selection, site, styleId) {
 	const style = styleId || "blocked";
@@ -447,12 +470,15 @@ browser.contextMenus.onClicked.addListener((info, tab) => {
 browser.storage.onChanged.addListener((changes, areaName) => {
 	if (areaName !== "local") return;
 
+	let shouldRefreshTabs = false;
+
 	if (changes[STORAGE_KEYS.urlRules]) {
 		urlRules = Array.isArray(changes[STORAGE_KEYS.urlRules].newValue)
 			? changes[STORAGE_KEYS.urlRules].newValue
 			: [];
 		urlNormalizationCache.clear();
 		invalidateBookmarkCaches();
+		shouldRefreshTabs = true;
 	}
 
 	if (changes[STORAGE_KEYS.bookmarkRules]) {
@@ -463,6 +489,7 @@ browser.storage.onChanged.addListener((changes, areaName) => {
 		unmatchedBookmarkStyle = migratedRules.find(isUnmatchedBookmarkRule)?.style || "";
 		invalidateBookmarkCaches();
 		refreshRuleFolderContextMenus();
+		shouldRefreshTabs = true;
 	}
 
 	if (changes[STORAGE_KEYS.styleRules]) {
@@ -472,6 +499,7 @@ browser.storage.onChanged.addListener((changes, areaName) => {
 		invalidateBookmarkCaches();
 		refreshTextRuleContextMenus();
 		refreshRuleFolderContextMenus();
+		shouldRefreshTabs = true;
 	}
 
 	if (changes[STORAGE_KEYS.enableSeenStyling]) {
@@ -481,6 +509,7 @@ browser.storage.onChanged.addListener((changes, areaName) => {
 				? ""
 				: "seen";
 			invalidateBookmarkCaches();
+			shouldRefreshTabs = true;
 		}
 	}
 
@@ -496,12 +525,24 @@ browser.storage.onChanged.addListener((changes, areaName) => {
 			if (Array.isArray(result[STORAGE_KEYS.bookmarkRules])) return;
 			bookmarkRules = normalizeBookmarkRules(
 				migrateBookmarkRulesFromStorage(result)
-			);
+			).filter(rule => !isUnmatchedBookmarkRule(rule));
+			unmatchedBookmarkStyle = migrateUnmatchedBookmarkStyle(result);
 			invalidateBookmarkCaches();
 			refreshRuleFolderContextMenus();
+			scheduleConfigTabsRefresh();
 		}).catch(onError);
 	}
 
+	for (const key of Object.keys(changes)) {
+		if (CONFIG_REFRESH_STORAGE_KEYS.has(key)) {
+			shouldRefreshTabs = true;
+			break;
+		}
+	}
+
+	if (shouldRefreshTabs) {
+		scheduleConfigTabsRefresh();
+	}
 });
 
 // Cache for URL normalization to avoid repeated calculations

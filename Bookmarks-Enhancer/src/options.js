@@ -549,8 +549,31 @@ function clearBookmarkRuleTable() {
     document.querySelector("#bookmarkRuleBody")?.replaceChildren();
 }
 
-function saveOptions(e) {
-    e.preventDefault();
+function findDanglingStyleReferences(styleRules, textRules, bookmarkRules) {
+    const styleIds = new Set(
+        (styleRules || []).map(rule => rule.id).filter(Boolean)
+    );
+    const dangling = [];
+
+    for (const rule of textRules || []) {
+        if (!rule?.style || styleIds.has(rule.style)) continue;
+        dangling.push(
+            `Text rule "${rule.text}" on ${rule.site || "(site)"} uses missing style "${rule.style}"`
+        );
+    }
+
+    for (const rule of bookmarkRules || []) {
+        if (!rule?.style || styleIds.has(rule.style)) continue;
+        const label = isUnmatchedBookmarkRule(rule)
+            ? "Bookmarks outside rule folders"
+            : `Bookmark folder ${rule.folderId}`;
+        dangling.push(`${label} uses missing style "${rule.style}"`);
+    }
+
+    return dangling;
+}
+
+function buildOptionsPayload() {
     const styleRules = normalizeStyleRules(collectStyleRules());
     cachedStyleRules = styleRules;
     const searchPairs = collectSearchPairs();
@@ -558,18 +581,42 @@ function saveOptions(e) {
     const textRules = normalizeTextRules(collectTextRules());
     const bookmarkRules = normalizeBookmarkRules(collectBookmarkRules());
 
-    let obj = {
-		enableTopBorder: document.querySelector("#enableTopBorder").checked,
-		enableDeepSearch: document.querySelector("#enableDeepSearch").checked,
-		onlyUseSites: document.querySelector("#onlyUseSites").checked,
-        [STYLE_RULE_STORAGE_KEY]: styleRules,
+    return {
+        styleRules,
         searchPairs,
         urlRules,
         textRules,
-        [BOOKMARK_RULE_STORAGE_KEY]: bookmarkRules
+        bookmarkRules,
+        payload: {
+            enableTopBorder: document.querySelector("#enableTopBorder").checked,
+            enableDeepSearch: document.querySelector("#enableDeepSearch").checked,
+            onlyUseSites: document.querySelector("#onlyUseSites").checked,
+            [STYLE_RULE_STORAGE_KEY]: styleRules,
+            searchPairs,
+            urlRules,
+            textRules,
+            [BOOKMARK_RULE_STORAGE_KEY]: bookmarkRules
+        }
     };
+}
 
-    browser.storage.local.set(obj)
+function persistOptionsFromForm({ successMessage = "Options saved" } = {}) {
+    const {
+        styleRules,
+        searchPairs,
+        urlRules,
+        textRules,
+        bookmarkRules,
+        payload
+    } = buildOptionsPayload();
+
+    const dangling = findDanglingStyleReferences(
+        styleRules,
+        textRules,
+        bookmarkRules
+    );
+
+    return browser.storage.local.set(payload)
         .then(() => browser.storage.local.remove([
             LEGACY_FOLDER_STORAGE_KEYS.blockedFolderId,
             LEGACY_FOLDER_STORAGE_KEYS.favoritedFolderId,
@@ -577,14 +624,37 @@ function saveOptions(e) {
             "textFilters"
         ]))
         .then(() => {
-            replaceConfigurationRows(searchPairs, urlRules, textRules, bookmarkRules, styleRules);
+            replaceConfigurationRows(
+                searchPairs,
+                urlRules,
+                textRules,
+                bookmarkRules,
+                styleRules
+            );
             return loadBookmarkRuleRows(bookmarkRules);
         })
-        .then(() => showStatus("Options saved"))
-        .catch(err => {
-            console.error("Save failed:", err);
-            showStatus("Could not save options", true);
+        .then(() => {
+            if (dangling.length > 0) {
+                const preview = dangling.slice(0, 3).join("; ");
+                const more = dangling.length > 3
+                    ? ` (+${dangling.length - 3} more)`
+                    : "";
+                showStatus(
+                    `${successMessage}. Warning: ${dangling.length} missing style reference(s): ${preview}${more}`,
+                    true
+                );
+            } else {
+                showStatus(successMessage);
+            }
         });
+}
+
+function saveOptions(e) {
+    e.preventDefault();
+    persistOptionsFromForm({ successMessage: "Options saved" }).catch(err => {
+        console.error("Save failed:", err);
+        showStatus("Could not save options", true);
+    });
 }
 
 function createRow(site = "", classes = "") {
@@ -932,7 +1002,12 @@ function importFromJson(jsonString) {
     }
 
     loadBookmarkRuleRows(migrateBookmarkRulesFromStorage(data)).then(() => {
-        showStatus("Imported configuration");
+        return persistOptionsFromForm({
+            successMessage: "Imported and saved configuration"
+        });
+    }).catch(err => {
+        console.error("Import failed:", err);
+        showStatus("Import loaded into form but could not save", true);
     });
 }
 
@@ -1011,7 +1086,7 @@ function showStatus(message, isError = false) {
     clearTimeout(statusTimeout);
     statusTimeout = setTimeout(() => {
         toast.classList.remove("visible");
-    }, 3000);
+    }, isError ? 6000 : 3000);
 }
 
 function activateOptionsTab(tabId) {

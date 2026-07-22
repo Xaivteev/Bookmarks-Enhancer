@@ -127,9 +127,7 @@ browser.storage.onChanged.addListener((changes, areaName) => {
 		]).then(result => {
 			preparedTextRules = preprocessTextRules(migrateTextRulesFromStorage(result));
 			invalidateTextFilterCache();
-			if (searchSite) {
-				applyTextFilters();
-			}
+			scheduleLocalAuthoritativeRefresh();
 		}).catch(onError);
 		invalidateUrlDependentCaches();
 		needsRefresh = true;
@@ -142,9 +140,7 @@ browser.storage.onChanged.addListener((changes, areaName) => {
 		]).then(result => {
 			preparedTextRules = preprocessTextRules(migrateTextRulesFromStorage(result));
 			invalidateTextFilterCache();
-			if (searchSite) {
-				applyTextFilters();
-			}
+			scheduleLocalAuthoritativeRefresh();
 		}).catch(onError);
 	}
 
@@ -172,10 +168,22 @@ browser.storage.onChanged.addListener((changes, areaName) => {
 	}
 
 	if (needsRefresh && searchSite) {
-		sendAllHrefs();
-		applyTextFilters();
+		scheduleLocalAuthoritativeRefresh();
 	}
 });
+
+let localAuthoritativeRefreshTimer = null;
+function scheduleLocalAuthoritativeRefresh() {
+	if (localAuthoritativeRefreshTimer) {
+		clearTimeout(localAuthoritativeRefreshTimer);
+	}
+	localAuthoritativeRefreshTimer = setTimeout(() => {
+		localAuthoritativeRefreshTimer = null;
+		if (searchSite) {
+			performAuthoritativeRefresh();
+		}
+	}, 100);
+}
 
 // Caches for performance optimization
 const urlNormalizationCache = new Map(); // href -> normalized href
