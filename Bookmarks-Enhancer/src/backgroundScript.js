@@ -119,8 +119,10 @@ function migrateBookmarkRulesFromStorage(result) {
 
 const settingsReady = loadSettings().catch(onError);
 
-const RULE_FOLDER_MENU_PREFIX = "addLinkToRuleFolder:";
-const RULE_FOLDER_MENU_PARENT = "addLinkToRuleFolderParent";
+const RULE_LINK_MENU_PREFIX = "addLinkToRuleFolder:";
+const RULE_PAGE_MENU_PREFIX = "addPageToRuleFolder:";
+const RULE_LINK_MENU_PARENT = "addLinkToRuleFolderParent";
+const RULE_PAGE_MENU_PARENT = "addPageToRuleFolderParent";
 const LEGACY_LINK_MENU_IDS = ["addLinkBlocked", "addLinkFavorited"];
 let ruleFolderMenuIds = [];
 
@@ -163,10 +165,38 @@ function removeContextMenu(id) {
 	return browser.contextMenus.remove(id).catch(() => {});
 }
 
+function getRuleFolderStyleLabel(style) {
+	return style === "favorited" ? "Favorited" : "Blocked";
+}
+
+function createRuleFolderChildMenus(parentId, idPrefix, contexts) {
+	return Promise.all(bookmarkRules.map(rule =>
+		getValidFolderId(rule.folderId).then(folderId => {
+			if (!folderId) return null;
+
+			return browser.bookmarks.get(folderId).then(nodes => {
+				const folder = nodes.find(node => node.type === "folder") || nodes[0];
+				if (!folder) return null;
+
+				const menuId = idPrefix + folderId;
+				browser.contextMenus.create({
+					id: menuId,
+					parentId,
+					title: `${folder.title || "Folder"} (${getRuleFolderStyleLabel(rule.style)})`,
+					contexts
+				});
+				ruleFolderMenuIds.push(menuId);
+				return menuId;
+			});
+		}).catch(onError)
+	));
+}
+
 function refreshRuleFolderContextMenus() {
 	return settingsReady.then(() => {
 		const removals = [
-			removeContextMenu(RULE_FOLDER_MENU_PARENT),
+			removeContextMenu(RULE_LINK_MENU_PARENT),
+			removeContextMenu(RULE_PAGE_MENU_PARENT),
 			...ruleFolderMenuIds.map(removeContextMenu),
 			...LEGACY_LINK_MENU_IDS.map(removeContextMenu)
 		];
@@ -176,32 +206,28 @@ function refreshRuleFolderContextMenus() {
 			if (bookmarkRules.length === 0) return;
 
 			browser.contextMenus.create({
-				id: RULE_FOLDER_MENU_PARENT,
+				id: RULE_LINK_MENU_PARENT,
 				title: "Add link to rule folder",
 				contexts: ["link"]
 			});
+			browser.contextMenus.create({
+				id: RULE_PAGE_MENU_PARENT,
+				title: "Add page to rule folder",
+				contexts: ["page"]
+			});
 
-			return Promise.all(bookmarkRules.map(rule =>
-				getValidFolderId(rule.folderId).then(folderId => {
-					if (!folderId) return null;
-
-					return browser.bookmarks.get(folderId).then(nodes => {
-						const folder = nodes.find(node => node.type === "folder") || nodes[0];
-						if (!folder) return null;
-
-						const styleLabel = rule.style === "favorited" ? "Favorited" : "Blocked";
-						const menuId = RULE_FOLDER_MENU_PREFIX + folderId;
-						browser.contextMenus.create({
-							id: menuId,
-							parentId: RULE_FOLDER_MENU_PARENT,
-							title: `${folder.title || "Folder"} (${styleLabel})`,
-							contexts: ["link"]
-						});
-						ruleFolderMenuIds.push(menuId);
-						return menuId;
-					});
-				}).catch(onError)
-			));
+			return Promise.all([
+				createRuleFolderChildMenus(
+					RULE_LINK_MENU_PARENT,
+					RULE_LINK_MENU_PREFIX,
+					["link"]
+				),
+				createRuleFolderChildMenus(
+					RULE_PAGE_MENU_PARENT,
+					RULE_PAGE_MENU_PREFIX,
+					["page"]
+				)
+			]);
 		});
 	}).catch(onError);
 }
@@ -272,24 +298,33 @@ browser.contextMenus.onClicked.addListener((info, tab) => {
 		return;
 	}
 
-	if (
-		typeof info.menuItemId === "string" &&
-		info.menuItemId.startsWith(RULE_FOLDER_MENU_PREFIX)
-	) {
-		const url = info.linkUrl;
-		if (!url) return;
-		const folderId = info.menuItemId.slice(RULE_FOLDER_MENU_PREFIX.length);
-		const title = info.linkText || url;
+	if (typeof info.menuItemId !== "string") return;
 
-		settingsReady
-			.then(() => createBookmarkInFolder(folderId, url, title))
-			.then(() => {
-				invalidateBookmarkCaches();
-				notifyAllTabsRefresh();
-			})
-			.catch(onError);
+	let folderId = null;
+	let url = null;
+	let title = null;
+
+	if (info.menuItemId.startsWith(RULE_LINK_MENU_PREFIX)) {
+		url = info.linkUrl;
+		if (!url) return;
+		folderId = info.menuItemId.slice(RULE_LINK_MENU_PREFIX.length);
+		title = info.linkText || url;
+	} else if (info.menuItemId.startsWith(RULE_PAGE_MENU_PREFIX)) {
+		url = tab.url;
+		if (!url || !/^https?:/i.test(url)) return;
+		folderId = info.menuItemId.slice(RULE_PAGE_MENU_PREFIX.length);
+		title = tab.title || url;
+	} else {
 		return;
 	}
+
+	settingsReady
+		.then(() => createBookmarkInFolder(folderId, url, title))
+		.then(() => {
+			invalidateBookmarkCaches();
+			notifyAllTabsRefresh();
+		})
+		.catch(onError);
 });
 
 // Listen for storage changes and update settings dynamically
