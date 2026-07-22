@@ -530,18 +530,53 @@ function getBookmarkIndex() {
 }
 
 function buildBookmarkIndex() {
-	return Promise.all([
-		resolveConfiguredRules(bookmarkRules),
-		browser.bookmarks.getTree()
-	]).then(([rules, bookmarkTree]) => {
-		const { bookmarksByNormalizedUrl, parentById } = buildBookmarkMaps(bookmarkTree);
-		return {
-			rules,
-			unmatchedBookmarkStyle,
-			stylePriorityById: getStyleRulePriorityMap(styleRules),
-			bookmarksByNormalizedUrl,
-			parentById
-		};
+	const stylePriorityById = getStyleRulePriorityMap(styleRules);
+	const shouldIndexUnmatched = !!(
+		unmatchedBookmarkStyle &&
+		stylePriorityById.has(unmatchedBookmarkStyle)
+	);
+
+	return resolveConfiguredRules(bookmarkRules).then(rules => {
+		if (shouldIndexUnmatched) {
+			return browser.bookmarks.getTree().then(bookmarkTree => {
+				const { bookmarksByNormalizedUrl, parentById } = buildBookmarkMaps(bookmarkTree);
+				return {
+					rules,
+					unmatchedBookmarkStyle,
+					stylePriorityById,
+					bookmarksByNormalizedUrl,
+					parentById
+				};
+			});
+		}
+
+		// None for unmatched: only index bookmarks under configured rule folders.
+		if (rules.length === 0) {
+			return {
+				rules,
+				unmatchedBookmarkStyle: "",
+				stylePriorityById,
+				bookmarksByNormalizedUrl: new Map(),
+				parentById: new Map()
+			};
+		}
+
+		return Promise.all(
+			rules.map(rule => browser.bookmarks.getSubTree(rule.folderId))
+		).then(subtrees => {
+			const bookmarksByNormalizedUrl = new Map();
+			const parentById = new Map();
+			for (const subtree of subtrees) {
+				addBookmarkTreeToMaps(subtree, bookmarksByNormalizedUrl, parentById);
+			}
+			return {
+				rules,
+				unmatchedBookmarkStyle: "",
+				stylePriorityById,
+				bookmarksByNormalizedUrl,
+				parentById
+			};
+		});
 	});
 }
 
@@ -592,7 +627,11 @@ function isBookmarkUnderFolder(bookmark, folderId, parentById) {
 function buildBookmarkMaps(bookmarkTree) {
 	const bookmarksByNormalizedUrl = new Map();
 	const parentById = new Map();
+	addBookmarkTreeToMaps(bookmarkTree, bookmarksByNormalizedUrl, parentById);
+	return { bookmarksByNormalizedUrl, parentById };
+}
 
+function addBookmarkTreeToMaps(bookmarkTree, bookmarksByNormalizedUrl, parentById) {
 	function visit(node, parentId = null) {
 		if (parentId) {
 			parentById.set(node.id, parentId);
@@ -611,8 +650,7 @@ function buildBookmarkMaps(bookmarkTree) {
 		}
 	}
 
-	bookmarkTree.forEach(node => visit(node, null));
-	return { bookmarksByNormalizedUrl, parentById };
+	(bookmarkTree || []).forEach(node => visit(node, null));
 }
 
 function isValidBookmarkUrl(href) {
