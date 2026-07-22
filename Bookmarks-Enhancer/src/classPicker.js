@@ -324,20 +324,41 @@ function looksGeneratedClass(className) {
 		/\d{7,}/.test(className);
 }
 
-function normalizeClassPickerSite(site) {
-	if (typeof site !== "string") return "";
+function saveClassPickerSelection() {
+	const sessionId = classPickerState.sessionId;
+	const site = normalizeSiteForMatching(window.location.hostname);
+	const selectedClassGroup = parseClassGroups(
+		Array.from(classPickerState.selectedClasses).join(' ')
+	)[0];
+	if (!site || !selectedClassGroup) return;
 
-	const trimmedSite = site.trim().toLowerCase().replace(/^\*\./, "");
-	if (!trimmedSite) return "";
+	classPickerState.saveButton.disabled = true;
+	classPickerState.saveButton.textContent = "Saving…";
 
-	try {
-		const url = new URL(
-			trimmedSite.includes("://") ? trimmedSite : `http://${trimmedSite}`
+	browser.storage.local.get(["searchPairs"]).then(result => {
+		const existingPairs = Array.isArray(result.searchPairs) ? result.searchPairs : [];
+		const mergedPairs = mergeClassGroupIntoSearchPairs(
+			existingPairs,
+			site,
+			selectedClassGroup
 		);
-		return url.hostname.replace(/\.$/, "").replace(/^www\./, "");
-	} catch {
-		return trimmedSite.replace(/\.$/, "").replace(/^www\./, "");
-	}
+		return browser.storage.local.set({ searchPairs: mergedPairs });
+	}).then(() => {
+		if (classPickerState?.sessionId !== sessionId) return;
+		classPickerState.saveButton.textContent = "Saved";
+		setTimeout(() => {
+			if (classPickerState?.sessionId === sessionId) {
+				stopClassPicker();
+			}
+		}, 700);
+	}).catch(error => {
+		if (classPickerState?.sessionId !== sessionId) return;
+		console.error("Could not save selected classes:", error);
+		classPickerState.saveButton.disabled = false;
+		classPickerState.saveButton.textContent = "Try again";
+		classPickerState.warningElement.textContent =
+			"Could not save the selected classes.";
+	});
 }
 
 function renderClassPickerSelection(availableClasses) {
@@ -353,7 +374,7 @@ function renderClassPickerSelection(availableClasses) {
 	const site = document.createElement("p");
 	site.append("Site: ");
 	const siteCode = document.createElement("code");
-	siteCode.textContent = normalizeClassPickerSite(window.location.hostname);
+	siteCode.textContent = normalizeSiteForMatching(window.location.hostname);
 	site.appendChild(siteCode);
 
 	const selectedElement = document.createElement("p");
@@ -536,74 +557,4 @@ function clearClassPickerHighlights() {
 	for (const element of Array.from(document.getElementsByClassName(CLASS_PICKER_CURRENT))) {
 		element.classList.remove(CLASS_PICKER_CURRENT);
 	}
-}
-
-function normalizeClassGroup(classGroup) {
-	return classGroup.split(/\s+/).filter(Boolean).join(' ');
-}
-
-function getClassGroupStorageKey(classGroup) {
-	return normalizeClassGroup(classGroup).split(' ').sort().join('\u0000');
-}
-
-function getStoredClassGroups(pair) {
-	const classes = typeof pair.classes === "string" ? pair.classes : pair.tag;
-	if (typeof classes !== "string") return [];
-
-	return classes.split(',').map(normalizeClassGroup).filter(Boolean);
-}
-
-function saveClassPickerSelection() {
-	const sessionId = classPickerState.sessionId;
-	const site = normalizeClassPickerSite(window.location.hostname);
-	const selectedClassGroup = normalizeClassGroup(
-		Array.from(classPickerState.selectedClasses).join(' ')
-	);
-	if (!site || !selectedClassGroup) return;
-
-	classPickerState.saveButton.disabled = true;
-	classPickerState.saveButton.textContent = "Saving…";
-
-	browser.storage.local.get(["searchPairs"]).then(result => {
-		const existingPairs = Array.isArray(result.searchPairs) ? result.searchPairs : [];
-		const remainingPairs = [];
-		const classGroups = new Map();
-
-		for (const pair of existingPairs) {
-			if (normalizeClassPickerSite(pair.site) !== site) {
-				remainingPairs.push(pair);
-				continue;
-			}
-
-			for (const classGroup of getStoredClassGroups(pair)) {
-				classGroups.set(getClassGroupStorageKey(classGroup), classGroup);
-			}
-		}
-
-		classGroups.set(
-			getClassGroupStorageKey(selectedClassGroup),
-			selectedClassGroup
-		);
-		remainingPairs.push({
-			site,
-			classes: Array.from(classGroups.values()).join(', ')
-		});
-
-		return browser.storage.local.set({ searchPairs: remainingPairs });
-	}).then(() => {
-		if (classPickerState?.sessionId !== sessionId) return;
-		classPickerState.saveButton.textContent = "Saved";
-		setTimeout(() => {
-			if (classPickerState?.sessionId === sessionId) {
-				stopClassPicker();
-			}
-		}, 700);
-	}).catch(error => {
-		if (classPickerState?.sessionId !== sessionId) return;
-		console.error("Could not save selected classes:", error);
-		classPickerState.saveButton.disabled = false;
-		classPickerState.saveButton.textContent = "Try again";
-		classPickerState.warningElement.textContent =
-			"Could not save the selected classes.";
-	});
 }

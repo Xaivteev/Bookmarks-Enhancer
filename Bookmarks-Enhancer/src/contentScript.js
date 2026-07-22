@@ -527,48 +527,19 @@ function hasStatusClass(element) {
 	return managedClassNames.some(className => element.classList.contains(className));
 }
 
-
-function migrateTextRulesFromStorage(result) {
-	if (Array.isArray(result[STORAGE_KEYS.textRules])) {
-		return result[STORAGE_KEYS.textRules];
-	}
-	if (!Array.isArray(result[STORAGE_KEYS.textFilters])) return [];
-
-	const migrated = [];
-	for (const filter of result[STORAGE_KEYS.textFilters]) {
-		if (!filter || typeof filter.filterText !== "string") continue;
-		const site = typeof filter.site === "string" ? filter.site : "";
-		const texts = filter.filterText.split(',').map(text => text.trim()).filter(Boolean);
-		for (const text of texts) {
-			migrated.push({
-				site,
-				text,
-				style: "blocked"
-			});
-		}
-	}
-	return migrated;
-}
-
 function preprocessTextRules(rules) {
-	if (!Array.isArray(rules)) return [];
-
-	return rules.map(rule => {
-		const text = typeof rule.text === "string" ? rule.text.trim().toLowerCase() : "";
-		const site = typeof rule.site === "string" ? rule.site.trim() : "";
-		const styleId = typeof rule.style === "string" && rule.style.trim()
-			? rule.style.trim()
-			: "blocked";
-		const style = getStyleConfigById(styleId);
+	const normalized = normalizeTextRules(rules);
+	return normalized.map(rule => {
+		const style = getStyleConfigById(rule.style);
 		if (!style) return null;
 		return {
-			site,
-			text,
-			styleId,
+			site: rule.site,
+			text: rule.text.toLowerCase(),
+			styleId: rule.style,
 			priority: style.priority,
 			className: style.className
 		};
-	}).filter(rule => rule && rule.site && rule.text)
+	}).filter(Boolean)
 		.sort((a, b) => a.priority - b.priority);
 }
 

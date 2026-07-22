@@ -289,45 +289,23 @@ const CONFIG_REFRESH_STORAGE_KEYS = new Set([
 
 function addSelectionAsTextRule(selection, site, styleId) {
 	const style = styleId || "blocked";
+	const normalizedSite = normalizeSiteForMatching(site) || site;
 	return browser.storage.local.get([
 		STORAGE_KEYS.textRules,
 		STORAGE_KEYS.textFilters
 	]).then(result => {
-		const existing = Array.isArray(result[STORAGE_KEYS.textRules])
-			? result[STORAGE_KEYS.textRules].slice()
-			: [];
-
-		if (!Array.isArray(result[STORAGE_KEYS.textRules]) && Array.isArray(result[STORAGE_KEYS.textFilters])) {
-			for (const filter of result[STORAGE_KEYS.textFilters]) {
-				if (!filter || typeof filter.filterText !== "string") continue;
-				const legacySite = typeof filter.site === "string" ? filter.site : "";
-				const texts = filter.filterText.split(',').map(text => text.trim()).filter(Boolean);
-				for (const text of texts) {
-					existing.push({
-						site: legacySite,
-						text,
-						style: "blocked"
-					});
-				}
-			}
-		}
-
-		const alreadyExists = existing.some(rule =>
-			(rule.site || "") === site &&
-			typeof rule.text === "string" &&
-			rule.text.trim().toLowerCase() === selection.toLowerCase() &&
-			(rule.style || "blocked") === style
-		);
-		if (!alreadyExists) {
-			existing.push({
-				site,
+		const existing = migrateTextRulesFromStorage(result);
+		const next = normalizeTextRules([
+			...existing,
+			{
+				site: normalizedSite,
 				text: selection,
 				style
-			});
-		}
+			}
+		]);
 
 		return browser.storage.local.set({
-			textRules: existing
+			textRules: next
 		}).then(() => browser.storage.local.remove([STORAGE_KEYS.textFilters]));
 	});
 }

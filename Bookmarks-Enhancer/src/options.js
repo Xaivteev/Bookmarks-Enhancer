@@ -156,6 +156,19 @@ function createStyleRuleRow(rule = null) {
     deleteBtn.textContent = "Delete";
     deleteBtn.type = "button";
     deleteBtn.addEventListener("click", () => {
+        const styleId = row.dataset.styleId;
+        const styleName = nameInput.value.trim() || styleId || "this style";
+        const references = findDomRulesReferencingStyle(styleId);
+        if (references.length > 0) {
+            const preview = references.slice(0, 5).join("\n- ");
+            const more = references.length > 5
+                ? `\n- …and ${references.length - 5} more`
+                : "";
+            const confirmed = window.confirm(
+                `"${styleName}" is still referenced by ${references.length} rule(s):\n- ${preview}${more}\n\nDelete it anyway?`
+            );
+            if (!confirmed) return;
+        }
         row.remove();
         refreshAllStyleSelects();
     });
@@ -177,48 +190,6 @@ function loadStyleRuleRows(rules) {
         cachedStyleRules.forEach(rule => createStyleRuleRow(rule));
     }
     refreshAllStyleSelects();
-}
-
-function mergeRowsBySite(rows, valueKey, parseValues, getValueKey = value => value) {
-    const rowsBySite = new Map();
-
-    for (const row of rows) {
-        const site = normalizeSiteForMatching(row.site);
-        if (!site) continue;
-
-        if (!rowsBySite.has(site)) {
-            rowsBySite.set(site, new Map());
-        }
-
-        const values = rowsBySite.get(site);
-        for (const value of parseValues(row[valueKey])) {
-            const key = getValueKey(value);
-            if (!values.has(key)) {
-                values.set(key, value);
-            }
-        }
-    }
-
-    return Array.from(rowsBySite, ([site, values]) => ({
-        site,
-        [valueKey]: Array.from(values.values()).join(', ')
-    })).filter(row => row[valueKey]);
-}
-
-function parseCommaSeparatedValues(value) {
-    return typeof value === "string"
-        ? value.split(',').map(item => item.trim()).filter(Boolean)
-        : [];
-}
-
-function parseClassGroups(value) {
-    return parseCommaSeparatedValues(value)
-        .map(classGroup => classGroup.split(/\s+/).filter(Boolean).join(' '))
-        .filter(Boolean);
-}
-
-function getClassGroupKey(classGroup) {
-    return classGroup.split(/\s+/).sort().join('\u0000');
 }
 
 function collectSearchPairs() {
@@ -256,50 +227,6 @@ function collectTextRules() {
             style: styleSelect?.value || "blocked"
         };
     }).filter(rule => rule.site && rule.text);
-}
-
-function normalizeTextRules(rules) {
-    if (!Array.isArray(rules)) return [];
-
-    const seen = new Set();
-    const normalized = [];
-    for (const rule of rules) {
-        if (!isValidTextRule(rule)) continue;
-        const text = rule.text.trim();
-        const site = normalizeSiteForMatching(rule.site.trim()) || rule.site.trim();
-        if (!site) continue;
-        const style = typeof rule.style === "string" && rule.style.trim()
-            ? rule.style.trim()
-            : "blocked";
-        const key = [site.toLowerCase(), text.toLowerCase(), style].join("\u0000");
-        if (seen.has(key)) continue;
-        seen.add(key);
-        normalized.push({ site, text, style });
-    }
-    return normalized;
-}
-
-function migrateTextRulesFromStorage(result) {
-    if (Array.isArray(result.textRules)) {
-        return normalizeTextRules(result.textRules);
-    }
-
-    if (!Array.isArray(result.textFilters)) return [];
-
-    const migrated = [];
-    for (const filter of result.textFilters) {
-        if (!filter || typeof filter.filterText !== "string") continue;
-        const site = typeof filter.site === "string" ? filter.site : "";
-        const texts = filter.filterText.split(',').map(text => text.trim()).filter(Boolean);
-        for (const text of texts) {
-            migrated.push({
-                site,
-                text,
-                style: "blocked"
-            });
-        }
-    }
-    return normalizeTextRules(migrated);
 }
 
 function replaceConfigurationRows(searchPairs, urlRules, textRules, bookmarkRules, styleRules) {
@@ -492,6 +419,35 @@ function clearBookmarkRuleTable() {
     document.querySelector("#bookmarkRuleBody")?.replaceChildren();
 }
 
+function findDomRulesReferencingStyle(styleId) {
+    if (!styleId) return [];
+
+    const references = [];
+    for (const row of document.querySelectorAll("#textRuleBody tr")) {
+        const styleSelect = row.querySelector(".textRuleStyle");
+        if (styleSelect?.value !== styleId) continue;
+        const text = row.querySelector(".textRuleText")?.value.trim() || "(text)";
+        const site = row.querySelector(".textRuleSite")?.value.trim() || "(site)";
+        references.push(`Text rule "${text}" on ${site}`);
+    }
+
+    for (const row of document.querySelectorAll("#bookmarkRuleBody tr")) {
+        const styleSelect = row.querySelector(".bookmarkRuleStyle");
+        if (styleSelect?.value !== styleId) continue;
+        if (row.classList.contains("unmatchedBookmarkRule")) {
+            references.push("Bookmarks outside rule folders");
+            continue;
+        }
+        const folderSelect = row.querySelector(".bookmarkRuleFolder");
+        const label = folderSelect?.selectedOptions?.[0]?.textContent ||
+            folderSelect?.value ||
+            "Bookmark folder";
+        references.push(`Bookmark rule: ${label}`);
+    }
+
+    return references;
+}
+
 function findDanglingStyleReferences(styleRules, textRules, bookmarkRules) {
     const styleIds = new Set(
         (styleRules || []).map(rule => rule.id).filter(Boolean)
@@ -514,6 +470,14 @@ function findDanglingStyleReferences(styleRules, textRules, bookmarkRules) {
     }
 
     return dangling;
+}
+
+function formatIssueList(issues, limit = 5) {
+    const preview = issues.slice(0, limit).join("\n- ");
+    const more = issues.length > limit
+        ? `\n- …and ${issues.length - limit} more`
+        : "";
+    return `- ${preview}${more}`;
 }
 
 function buildOptionsPayload() {
@@ -558,6 +522,30 @@ function persistOptionsFromForm({ successMessage = "Options saved" } = {}) {
         textRules,
         bookmarkRules
     );
+    const collisions = findStyleRuleClassNameCollisions(styleRules);
+
+    if (dangling.length > 0) {
+        const confirmed = window.confirm(
+            `${dangling.length} rule(s) reference missing styles:\n${formatIssueList(dangling)}\n\nSave anyway?`
+        );
+        if (!confirmed) {
+            showStatus("Save cancelled: missing style references", true);
+            return Promise.resolve();
+        }
+    }
+
+    if (collisions.length > 0) {
+        const collisionMessages = collisions.map(collision =>
+            `${collision.className} ← ${collision.names.join(", ")}`
+        );
+        const confirmed = window.confirm(
+            `${collisions.length} style class name collision(s):\n${formatIssueList(collisionMessages)}\n\nThese styles would override each other. Save anyway?`
+        );
+        if (!confirmed) {
+            showStatus("Save cancelled: style class name collisions", true);
+            return Promise.resolve();
+        }
+    }
 
     return browser.storage.local.set(payload)
         .then(() => browser.storage.local.remove([
@@ -577,15 +565,15 @@ function persistOptionsFromForm({ successMessage = "Options saved" } = {}) {
             return loadBookmarkRuleRows(bookmarkRules);
         })
         .then(() => {
+            const warnings = [];
             if (dangling.length > 0) {
-                const preview = dangling.slice(0, 3).join("; ");
-                const more = dangling.length > 3
-                    ? ` (+${dangling.length - 3} more)`
-                    : "";
-                showStatus(
-                    `${successMessage}. Warning: ${dangling.length} missing style reference(s): ${preview}${more}`,
-                    true
-                );
+                warnings.push(`${dangling.length} missing style reference(s)`);
+            }
+            if (collisions.length > 0) {
+                warnings.push(`${collisions.length} class name collision(s)`);
+            }
+            if (warnings.length > 0) {
+                showStatus(`${successMessage} (with warnings: ${warnings.join("; ")})`, true);
             } else {
                 showStatus(successMessage);
             }
@@ -973,18 +961,6 @@ function isValidLegacyTextFilter(row) {
     return row &&
         typeof row.site === "string" &&
         typeof row.filterText === "string";
-}
-
-function isValidTextRule(row) {
-    return row &&
-        typeof row.site === "string" &&
-        row.site.trim() !== "" &&
-        typeof row.text === "string" &&
-        row.text.trim() !== "" &&
-        (
-            row.style === undefined ||
-            (typeof row.style === "string" && row.style.trim() !== "")
-        );
 }
 
 function importFromClipboard() {

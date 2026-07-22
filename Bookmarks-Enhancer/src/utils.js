@@ -109,6 +109,121 @@ function migrateBookmarkRulesFromStorage(result) {
 	return normalizeBookmarkRules(rules);
 }
 
+function parseCommaSeparatedValues(value) {
+	return typeof value === "string"
+		? value.split(',').map(item => item.trim()).filter(Boolean)
+		: [];
+}
+
+function parseClassGroups(value) {
+	return parseCommaSeparatedValues(value)
+		.map(classGroup => classGroup.split(/\s+/).filter(Boolean).join(' '))
+		.filter(Boolean);
+}
+
+function getClassGroupKey(classGroup) {
+	return String(classGroup || "").split(/\s+/).filter(Boolean).sort().join('\u0000');
+}
+
+function mergeRowsBySite(rows, valueKey, parseValues, getValueKey = value => value) {
+	const rowsBySite = new Map();
+
+	for (const row of rows || []) {
+		const site = normalizeSiteForMatching(row.site);
+		if (!site) continue;
+
+		if (!rowsBySite.has(site)) {
+			rowsBySite.set(site, new Map());
+		}
+
+		const values = rowsBySite.get(site);
+		for (const value of parseValues(row[valueKey])) {
+			const key = getValueKey(value);
+			if (!values.has(key)) {
+				values.set(key, value);
+			}
+		}
+	}
+
+	return Array.from(rowsBySite, ([site, values]) => ({
+		site,
+		[valueKey]: Array.from(values.values()).join(', ')
+	})).filter(row => row[valueKey]);
+}
+
+function normalizeSearchPairs(pairs) {
+	const rows = (pairs || []).map(pair => ({
+		site: pair?.site,
+		classes: typeof pair?.classes === "string"
+			? pair.classes
+			: pair?.tag
+	}));
+	return mergeRowsBySite(rows, "classes", parseClassGroups, getClassGroupKey);
+}
+
+function mergeClassGroupIntoSearchPairs(existingPairs, site, classGroup) {
+	return normalizeSearchPairs([
+		...(existingPairs || []),
+		{ site, classes: classGroup }
+	]);
+}
+
+function isValidTextRule(rule) {
+	return !!rule &&
+		typeof rule.site === "string" &&
+		rule.site.trim() !== "" &&
+		typeof rule.text === "string" &&
+		rule.text.trim() !== "" &&
+		(
+			rule.style === undefined ||
+			(typeof rule.style === "string" && rule.style.trim() !== "")
+		);
+}
+
+function normalizeTextRules(rules) {
+	if (!Array.isArray(rules)) return [];
+
+	const seen = new Set();
+	const normalized = [];
+	for (const rule of rules) {
+		if (!isValidTextRule(rule)) continue;
+		const text = rule.text.trim();
+		const site = normalizeSiteForMatching(rule.site.trim()) || rule.site.trim();
+		if (!site) continue;
+		const style = typeof rule.style === "string" && rule.style.trim()
+			? rule.style.trim()
+			: "blocked";
+		const key = [site.toLowerCase(), text.toLowerCase(), style].join("\u0000");
+		if (seen.has(key)) continue;
+		seen.add(key);
+		normalized.push({ site, text, style });
+	}
+	return normalized;
+}
+
+function migrateTextRulesFromStorage(result) {
+	if (Array.isArray(result?.textRules)) {
+		return normalizeTextRules(result.textRules);
+	}
+
+	if (!Array.isArray(result?.textFilters)) return [];
+
+	const migrated = [];
+	for (const filter of result.textFilters) {
+		if (!filter || typeof filter.filterText !== "string") continue;
+		const site = typeof filter.site === "string" ? filter.site : "";
+		const texts = filter.filterText.split(',').map(text => text.trim()).filter(Boolean);
+		for (const text of texts) {
+			migrated.push({
+				site,
+				text,
+				style: "blocked"
+			});
+		}
+	}
+	return normalizeTextRules(migrated);
+}
+
 const PREDEFINED_STYLE_CSS = {
 	blocked: "display: none !important;",
 	favorited: "text-decoration-line: underline !important; text-decoration-style: double !important;",
@@ -142,6 +257,28 @@ function styleRuleClassName(ruleOrName) {
 	if (!sanitized) sanitized = "style";
 	if (/^[0-9]/.test(sanitized)) sanitized = `n-${sanitized}`;
 	return `rule-be-${sanitized}`;
+}
+
+function findStyleRuleClassNameCollisions(styleRules) {
+	const byClassName = new Map();
+	for (const rule of styleRules || []) {
+		if (!rule || !rule.name) continue;
+		const className = styleRuleClassName(rule);
+		if (!byClassName.has(className)) {
+			byClassName.set(className, []);
+		}
+		byClassName.get(className).push(rule);
+	}
+
+	const collisions = [];
+	for (const [className, rules] of byClassName) {
+		if (rules.length < 2) continue;
+		collisions.push({
+			className,
+			names: rules.map(rule => rule.name)
+		});
+	}
+	return collisions;
 }
 
 function sanitizeCustomCss(css) {
