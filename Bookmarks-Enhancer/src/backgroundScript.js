@@ -464,27 +464,30 @@ function clearStatusesForTab(tabId) {
 }
 
 function searchhrefs(hrefs, tabId = null) {
-	const requestGeneration = bookmarkCacheGeneration;
 	// contentScript asks if links have been bookmarked
-	// Normalize hrefs and prepare lookup
+	// Normalize once; retries reuse validHrefs instead of re-entering searchhrefs.
 	const normalizedHrefs = hrefs.map(normalizeHrefForSearch);
-
-    // Filter out invalid URLs
 	const validHrefs = normalizedHrefs.filter(isValidBookmarkUrl);
 	rememberTabHrefs(tabId, validHrefs);
+	return fillBookmarkStatuses(validHrefs);
+}
 
-	// Filter out hrefs that have already been processed
+function fillBookmarkStatuses(validHrefs) {
 	const hrefsToSearch = validHrefs.filter(href => !bookmarkStatusMap.has(href));
 	if (hrefsToSearch.length === 0) {
 		return Promise.resolve(buildStatusResponse(validHrefs));
 	}
 
+	// getBookmarkIndex() chains through stale builds once for all waiters.
+	// Only re-run status fills if the cache generation moved after the index settled.
 	return getBookmarkIndex().then(index => {
-		if (requestGeneration !== bookmarkCacheGeneration) {
-			return searchhrefs(hrefs, tabId);
+		if (index.generation !== bookmarkCacheGeneration) {
+			return fillBookmarkStatuses(validHrefs);
 		}
 
 		for (const href of hrefsToSearch) {
+			if (bookmarkStatusMap.has(href)) continue;
+
 			const bookmarkList = index.bookmarksByNormalizedUrl.get(href) || [];
 			let status = "none";
 			let bestPriority = Infinity;
@@ -516,6 +519,11 @@ function searchhrefs(hrefs, tabId = null) {
 			bookmarkStatusMap.set(href, status);
 		}
 
+		if (index.generation !== bookmarkCacheGeneration) {
+			// invalidateBookmarkCaches() replaced the status map; retry against the new generation.
+			return fillBookmarkStatuses(validHrefs);
+		}
+
 		return buildStatusResponse(validHrefs);
 	});
 }
@@ -535,16 +543,30 @@ function buildStatusResponse(requestedHrefs) {
 
 function getBookmarkIndex() {
 	if (!bookmarkIndexPromise) {
-		bookmarkIndexPromise = buildBookmarkIndex()
+		const generationAtStart = bookmarkCacheGeneration;
+		const buildPromise = buildBookmarkIndex()
 			.then(index => {
+				if (generationAtStart !== bookmarkCacheGeneration) {
+					// Drop stale work. If invalidate already started a newer build, join it;
+					// otherwise start one. All waiters on this promise share this single chain.
+					if (bookmarkIndexPromise === buildPromise) {
+						bookmarkIndexPromise = null;
+						liveBookmarkIndex = null;
+					}
+					return getBookmarkIndex();
+				}
+				index.generation = generationAtStart;
 				liveBookmarkIndex = index;
 				return index;
 			})
 			.catch(error => {
-				bookmarkIndexPromise = null;
-				liveBookmarkIndex = null;
+				if (bookmarkIndexPromise === buildPromise) {
+					bookmarkIndexPromise = null;
+					liveBookmarkIndex = null;
+				}
 				throw error;
 			});
+		bookmarkIndexPromise = buildPromise;
 	}
 	return bookmarkIndexPromise;
 }
