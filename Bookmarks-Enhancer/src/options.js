@@ -230,7 +230,6 @@ function replaceConfigurationRows(searchPairs, urlRules, textRules, bookmarkRule
     clearSearchTable();
     clearUrlRuleTable();
     clearTextRuleTable();
-    clearBookmarkRuleTable();
     loadStyleRuleRows(styleRules);
 
     searchPairs.forEach(({ site, classes }) => createRow(site, classes));
@@ -240,7 +239,7 @@ function replaceConfigurationRows(searchPairs, urlRules, textRules, bookmarkRule
     } else {
         textRules.forEach(rule => createTextRuleRow(rule.site, rule.text, rule.style));
     }
-    // Bookmark rows are rebuilt by loadBookmarkRuleRows (includes the permanent unmatched row).
+    // Bookmark rows are rebuilt by loadBookmarkRuleRows (keeps existing rows until then).
 }
 
 function flattenBookmarkFolders(nodes, path = "") {
@@ -424,23 +423,45 @@ function collectBookmarkRules() {
     return rules;
 }
 
+function renderBookmarkRuleRows(rules) {
+    clearBookmarkRuleTable();
+    const normalizedRules = normalizeBookmarkRules(rules);
+    const folderRules = normalizedRules.filter(rule => !isUnmatchedBookmarkRule(rule));
+    const unmatchedRule = normalizedRules.find(isUnmatchedBookmarkRule);
+    const unmatchedStyle = unmatchedRule
+        ? unmatchedRule.style
+        : migrateUnmatchedBookmarkStyle({ bookmarkRules: rules });
+
+    if (folderRules.length === 0) {
+        createBookmarkRuleRow("", "blocked");
+    } else {
+        folderRules.forEach(rule => createBookmarkRuleRow(rule.folderId, rule.style));
+    }
+    createUnmatchedBookmarkRuleRow(unmatchedStyle || "");
+}
+
+function refreshBookmarkFolderSelectOptions() {
+    for (const select of document.querySelectorAll(".bookmarkRuleFolder")) {
+        populateFolderSelect(select, cachedBookmarkFolders, select.value || "");
+    }
+}
+
 function loadBookmarkRuleRows(rules) {
+    // Rebuild immediately from cache so saves don't flash an empty table while
+    // waiting on bookmarks.getTree().
+    if (cachedBookmarkFolders.length > 0) {
+        renderBookmarkRuleRows(rules);
+        return browser.bookmarks.getTree().then(tree => {
+            cachedBookmarkFolders = flattenBookmarkFolders(tree);
+            refreshBookmarkFolderSelectOptions();
+        }).catch(err => {
+            console.error("Could not refresh bookmark folders:", err);
+        });
+    }
+
     return browser.bookmarks.getTree().then(tree => {
         cachedBookmarkFolders = flattenBookmarkFolders(tree);
-        clearBookmarkRuleTable();
-        const normalizedRules = normalizeBookmarkRules(rules);
-        const folderRules = normalizedRules.filter(rule => !isUnmatchedBookmarkRule(rule));
-        const unmatchedRule = normalizedRules.find(isUnmatchedBookmarkRule);
-        const unmatchedStyle = unmatchedRule
-            ? unmatchedRule.style
-            : migrateUnmatchedBookmarkStyle({ bookmarkRules: rules });
-
-        if (folderRules.length === 0) {
-            createBookmarkRuleRow("", "blocked");
-        } else {
-            folderRules.forEach(rule => createBookmarkRuleRow(rule.folderId, rule.style));
-        }
-        createUnmatchedBookmarkRuleRow(unmatchedStyle || "");
+        renderBookmarkRuleRows(rules);
     }).catch(err => {
         console.error("Could not load bookmark folders:", err);
         showStatus("Could not load bookmark folders", true);
