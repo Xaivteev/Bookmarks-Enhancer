@@ -107,6 +107,40 @@
             vertical-align: top;
         }
 
+        #bookmarkRuleTable {
+            table-layout: fixed;
+        }
+
+        #bookmarkRuleTable th:nth-child(1),
+        #bookmarkRuleTable td:nth-child(1) {
+            width: auto;
+        }
+
+        #bookmarkRuleTable th:nth-child(2),
+        #bookmarkRuleTable td:nth-child(2) {
+            width: 9rem;
+        }
+
+        #bookmarkRuleTable th:nth-child(3),
+        #bookmarkRuleTable td:nth-child(3) {
+            width: 5.5rem;
+        }
+
+        #bookmarkRuleTable .bookmarkRuleFolder,
+        #bookmarkRuleTable .bookmarkRuleStyle {
+            display: block;
+            box-sizing: border-box;
+            width: 100%;
+            max-width: 100%;
+        }
+
+        #bookmarkRuleTable .unmatchedBookmarkLabel {
+            display: block;
+            overflow: hidden;
+            text-overflow: ellipsis;
+            white-space: nowrap;
+        }
+
         #statusToast {
             position: fixed;
             right: 1rem;
