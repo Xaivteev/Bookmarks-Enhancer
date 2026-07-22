@@ -41,6 +41,7 @@ function onError(error) {
 const STORAGE_KEYS = {
 	urlRules: "urlRules",
 	textFilters: "textFilters",
+	textRules: "textRules",
 	bookmarkRules: "bookmarkRules",
 	enableSeenStyling: "enableSeenStyling",
 	blockedFolderId: "blockedFolderId",
@@ -131,7 +132,7 @@ function createContextMenus() {
 	const menuDefinitions = [
 		{
 			id: 'addTextFilter',
-			title: 'Add selection to site blocked text',
+			title: 'Add selection as text rule',
 			contexts: ['selection']
 		},
 		{
@@ -277,23 +278,49 @@ browser.contextMenus.onClicked.addListener((info, tab) => {
 		const selection = (info.selectionText || '').trim();
 		if (!selection) return;
 		let site = '';
-		try { site = new URL(tab.url).hostname; } catch (e) { site = tab.url || ''; }
+		try { site = normalizeSiteForMatching(new URL(tab.url).hostname); }
+		catch (e) { site = tab.url || ''; }
 
-		browser.storage.local.get([STORAGE_KEYS.textFilters]).then(result => {
-			const existing = Array.isArray(result[STORAGE_KEYS.textFilters]) ? result[STORAGE_KEYS.textFilters] : [];
-			const found = existing.find(f => f.site === site);
-			const selNormalized = selection.trim();
-			if (found) {
-				const parts = found.filterText.split(',').map(s => s.trim()).filter(Boolean);
-				const lower = parts.map(p => p.toLowerCase());
-				if (!lower.includes(selNormalized.toLowerCase())) {
-					parts.push(selNormalized);
-					found.filterText = parts.join(', ');
+		browser.storage.local.get([
+			STORAGE_KEYS.textRules,
+			STORAGE_KEYS.textFilters
+		]).then(result => {
+			const existing = Array.isArray(result[STORAGE_KEYS.textRules])
+				? result[STORAGE_KEYS.textRules].slice()
+				: [];
+
+			if (!Array.isArray(result[STORAGE_KEYS.textRules]) && Array.isArray(result[STORAGE_KEYS.textFilters])) {
+				for (const filter of result[STORAGE_KEYS.textFilters]) {
+					if (!filter || typeof filter.filterText !== "string") continue;
+					const legacySite = typeof filter.site === "string" ? filter.site : "";
+					const texts = filter.filterText.split(',').map(text => text.trim()).filter(Boolean);
+					for (const text of texts) {
+						existing.push({
+							site: legacySite,
+							text,
+							style: "blocked"
+						});
+					}
 				}
-			} else {
-				existing.push({ site, filterText: selNormalized });
 			}
-			return browser.storage.local.set({ textFilters: existing });
+
+			const alreadyExists = existing.some(rule =>
+				(rule.site || "") === site &&
+				typeof rule.text === "string" &&
+				rule.text.trim().toLowerCase() === selection.toLowerCase() &&
+				(rule.style || "blocked") === "blocked"
+			);
+			if (!alreadyExists) {
+				existing.push({
+					site,
+					text: selection,
+					style: "blocked"
+				});
+			}
+
+			return browser.storage.local.set({
+				textRules: existing
+			}).then(() => browser.storage.local.remove([STORAGE_KEYS.textFilters]));
 		}).catch(onError);
 		return;
 	}

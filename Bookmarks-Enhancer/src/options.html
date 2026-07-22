@@ -135,6 +135,9 @@
             <button type="button" role="tab" id="tabBookmarkRules" aria-controls="panelBookmarkRules" aria-selected="false" data-tab="bookmarkRules">
                 Bookmark Rules
             </button>
+            <button type="button" role="tab" id="tabTextRules" aria-controls="panelTextRules" aria-selected="false" data-tab="textRules">
+                Text Rules
+            </button>
             <button type="button" role="tab" id="tabSiteRules" aria-controls="panelSiteRules" aria-selected="false" data-tab="siteRules">
                 Site Rules
             </button>
@@ -190,6 +193,33 @@
         </section>
 
         <section
+            id="panelTextRules"
+            class="tabPanel"
+            role="tabpanel"
+            aria-labelledby="tabTextRules"
+            data-tab-panel="textRules"
+            hidden
+        >
+            <p class="hint">
+                Match text inside Search Pairs targeted classes and apply blocked,
+                favorited, or seen styling. Requires a site.
+            </p>
+            <table id="textRuleTable">
+                <thead>
+                    <tr>
+                        <th>Site</th>
+                        <th>Text</th>
+                        <th>Style</th>
+                        <th>Actions</th>
+                    </tr>
+                </thead>
+                <tbody id="textRuleBody">
+                </tbody>
+            </table>
+            <button type="button" id="addTextRuleBtn">Add Text Rule</button>
+        </section>
+
+        <section
             id="panelSiteRules"
             class="tabPanel"
             role="tabpanel"
@@ -225,20 +255,6 @@
                 </tbody>
             </table>
             <button type="button" id="addUrlRuleBtn">Add URL Rule</button>
-
-            <h3>Block Text</h3>
-            <table id="textFilterTable">
-                <thead>
-                    <tr>
-                        <th>Site</th>
-                        <th>Filter Text</th>
-                        <th>Actions</th>
-                    </tr>
-                </thead>
-                <tbody id="textFilterBody">
-                </tbody>
-            </table>
-            <button type="button" id="addTextFilterBtn">Add Text Filter</button>
         </section>
 
         <div class="actionsBar">

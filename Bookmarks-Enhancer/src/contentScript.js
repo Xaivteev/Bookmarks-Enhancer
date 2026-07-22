@@ -2,6 +2,7 @@
 const STORAGE_KEYS = {
 	searchPairs: "searchPairs",
 	urlRules: "urlRules",
+	textRules: "textRules",
 	textFilters: "textFilters",
 	enableTopBorder: "enableTopBorder",
 	enableDeepSearch: "enableDeepSearch",
@@ -12,7 +13,7 @@ const STORAGE_KEYS = {
 let searchPairs = [];
 let classesForSearch = [];
 let urlRules = [];
-let preparedTextFilters = [];
+let preparedTextRules = [];
 let searchSite = true;
 let enableTopBorder = false;
 let enableDeepSearch = false;
@@ -21,6 +22,7 @@ let onlyUseSites = false;
 let getting = browser.storage.local.get([
     STORAGE_KEYS.searchPairs,
     STORAGE_KEYS.urlRules,
+    STORAGE_KEYS.textRules,
     STORAGE_KEYS.textFilters,
     STORAGE_KEYS.enableTopBorder,
     STORAGE_KEYS.enableDeepSearch,
@@ -62,7 +64,7 @@ function updateClassesForSearch() {
 function onGot(item) {
 	searchPairs = Array.isArray(item[STORAGE_KEYS.searchPairs]) ? item[STORAGE_KEYS.searchPairs] : [];
 	urlRules = Array.isArray(item[STORAGE_KEYS.urlRules]) ? item[STORAGE_KEYS.urlRules] : [];
-	preparedTextFilters = preprocessTextFilters(item[STORAGE_KEYS.textFilters]);
+	preparedTextRules = preprocessTextRules(migrateTextRulesFromStorage(item));
 	enableTopBorder = !!item[STORAGE_KEYS.enableTopBorder];
 	enableDeepSearch = !!item[STORAGE_KEYS.enableDeepSearch];
 	onlyUseSites = !!item[STORAGE_KEYS.onlyUseSites];
@@ -88,10 +90,17 @@ browser.storage.onChanged.addListener((changes, areaName) => {
 		needsRefresh = true;
 	}
 
-	if (changes[STORAGE_KEYS.textFilters]) {
-		preparedTextFilters = preprocessTextFilters(changes[STORAGE_KEYS.textFilters].newValue);
-		invalidateTextFilterCache();
-		needsRefresh = true;
+	if (changes[STORAGE_KEYS.textRules] || changes[STORAGE_KEYS.textFilters]) {
+		browser.storage.local.get([
+			STORAGE_KEYS.textRules,
+			STORAGE_KEYS.textFilters
+		]).then(result => {
+			preparedTextRules = preprocessTextRules(migrateTextRulesFromStorage(result));
+			invalidateTextFilterCache();
+			if (searchSite) {
+				applyTextFilters();
+			}
+		}).catch(onError);
 	}
 
 	if (changes[STORAGE_KEYS.enableTopBorder]) {
@@ -143,7 +152,14 @@ const statusClasses = {
 	seen: 'be-bookmarks-enhancer-seen',
 	textFiltered: 'be-bookmarks-enhancer-text-filtered'
 };
+const textRuleClasses = {
+	blocked: 'be-bookmarks-enhancer-text-blocked',
+	favorited: 'be-bookmarks-enhancer-text-favorited',
+	seen: 'be-bookmarks-enhancer-text-seen'
+};
 const statusClassNames = Object.values(statusClasses);
+const textRuleClassNames = Object.values(textRuleClasses);
+const managedClassNames = [...statusClassNames, ...textRuleClassNames];
 
 function removeStatusClasses(classNames) {
 	const selector = classNames.map(className => `.${className}`).join(',');
@@ -176,6 +192,7 @@ function invalidateUrlDependentCaches() {
 
 function invalidateTextFilterCache() {
 	textFilterCache.clear();
+	removeStatusClasses(textRuleClassNames);
 	removeStatusClasses([statusClasses.textFiltered]);
 }
 
@@ -213,6 +230,20 @@ function injectBookmarkStyles() {
 
 		.${statusClasses.textFiltered} {
 			display: none !important;
+		}
+
+		.${textRuleClasses.blocked} {
+			display: none !important;
+		}
+
+		.${textRuleClasses.favorited} {
+			text-decoration-line: underline !important;
+			text-decoration-style: double !important;
+		}
+
+		.${textRuleClasses.seen} {
+			text-decoration-line: underline !important;
+			text-decoration-style: dashed !important;
 		}
 	`;
 	(document.head || document.documentElement).appendChild(style);
@@ -297,7 +328,7 @@ function performAuthoritativeRefresh() {
 		processedHrefs = new Set(allHrefs);
 		pendingObservedHrefs = new Set();
 		textFilterCache.clear();
-		removeStatusClasses(statusClassNames);
+		removeStatusClasses(managedClassNames);
 		clearExtensionTopBorder();
 		applyBookmarkStyling(message, true);
 
@@ -507,57 +538,87 @@ function clearExtensionTopBorder() {
 }
 
 function applyStatusClass(element, className) {
-	element.classList.remove(...statusClassNames);
+	element.classList.remove(...managedClassNames);
 	element.classList.add(className);
 }
 
 function hasStatusClass(element) {
-	return statusClassNames.some(className => element.classList.contains(className));
+	return managedClassNames.some(className => element.classList.contains(className));
 }
 
 
-function preprocessTextFilters(filters) {
-	if (!Array.isArray(filters)) return [];
+function migrateTextRulesFromStorage(result) {
+	if (Array.isArray(result[STORAGE_KEYS.textRules])) {
+		return result[STORAGE_KEYS.textRules];
+	}
+	if (!Array.isArray(result[STORAGE_KEYS.textFilters])) return [];
 
-	return filters.map(filter => ({
-		site: typeof filter.site === "string" ? filter.site.trim().toLowerCase() : "",
-		filterTexts: typeof filter.filterText === "string"
-			? Array.from(new Set(
-				filter.filterText
-					.split(',')
-					.map(text => text.trim().toLowerCase())
-					.filter(Boolean)
-			))
-			: []
-	})).filter(filter => filter.site && filter.filterTexts.length > 0);
+	const migrated = [];
+	for (const filter of result[STORAGE_KEYS.textFilters]) {
+		if (!filter || typeof filter.filterText !== "string") continue;
+		const site = typeof filter.site === "string" ? filter.site : "";
+		const texts = filter.filterText.split(',').map(text => text.trim()).filter(Boolean);
+		for (const text of texts) {
+			migrated.push({
+				site,
+				text,
+				style: "blocked"
+			});
+		}
+	}
+	return migrated;
 }
 
-function getMatchingTextFilters() {
+function preprocessTextRules(rules) {
+	if (!Array.isArray(rules)) return [];
+
+	const stylePriority = { blocked: 0, favorited: 1, seen: 2 };
+	return rules.map(rule => {
+		const text = typeof rule.text === "string" ? rule.text.trim().toLowerCase() : "";
+		const site = typeof rule.site === "string" ? rule.site.trim() : "";
+		const style = rule.style === "favorited" || rule.style === "seen"
+			? rule.style
+			: "blocked";
+		return {
+			site,
+			text,
+			style,
+			priority: stylePriority[style],
+			className: textRuleClasses[style]
+		};
+	}).filter(rule => rule.site && rule.text)
+		.sort((a, b) => a.priority - b.priority);
+}
+
+function getMatchingTextRules() {
 	const currentHost = window.location.hostname;
-	return preparedTextFilters.filter(filter =>
-		hostnameMatchesSite(currentHost, filter.site)
+	return preparedTextRules.filter(rule =>
+		hostnameMatchesSite(currentHost, rule.site)
 	);
 }
 
-function applyTextFilters(includeHidden = false) {
-	const matchingFilters = getMatchingTextFilters();
-	if (matchingFilters.length === 0) return;
-
+function getTargetedClassElements(includeHidden = false) {
+	const elements = [];
 	for (const classGroup of classesForSearch) {
-		const elements = Array.from(document.getElementsByClassName(classGroup)).filter(el => {
-			if (hasStatusClass(el)) return false;
-			if (includeHidden) return true;
-
-			return window.getComputedStyle(el).display !== 'none';
-		});
-		applyTextFiltersTo(elements, matchingFilters, includeHidden);
+		for (const el of document.getElementsByClassName(classGroup)) {
+			if (hasStatusClass(el)) continue;
+			if (!includeHidden && window.getComputedStyle(el).display === 'none') continue;
+			elements.push(el);
+		}
 	}
+	return elements;
 }
 
-function applyTextFiltersTo(elements, matchingFilters, includeHidden = false) {
+function applyTextFilters(includeHidden = false) {
+	const matchingRules = getMatchingTextRules();
+	if (matchingRules.length === 0 || !classesForSearch.length) return;
+	applyTextRulesTo(getTargetedClassElements(includeHidden), matchingRules, includeHidden);
+}
+
+function applyTextRulesTo(elements, matchingRules, includeHidden = false) {
 	if (!elements || elements.length === 0) return;
-	matchingFilters = matchingFilters || getMatchingTextFilters();
-	if (matchingFilters.length === 0) return;
+	matchingRules = matchingRules || getMatchingTextRules();
+	if (matchingRules.length === 0) return;
 
 	for (const element of elements) {
 		if (hasStatusClass(element)) continue;
@@ -569,15 +630,11 @@ function applyTextFiltersTo(elements, matchingFilters, includeHidden = false) {
 			textFilterCache.set(element, normalizedText);
 		}
 
-		for (const filter of matchingFilters) {
-			for (const text of filter.filterTexts) {
-				if (normalizedText.includes(text)) {
-					applyStatusClass(element, statusClasses.textFiltered);
-					break;
-				}
+		for (const rule of matchingRules) {
+			if (normalizedText.includes(rule.text)) {
+				applyStatusClass(element, rule.className);
+				break;
 			}
-
-			if (hasStatusClass(element)) break;
 		}
 	}
 }
@@ -600,7 +657,8 @@ function startMutationObserver() {
 					}
 
 					// Collect newly added elements that match configured classes for text filtering
-					if (classesForSearch && classesForSearch.length) {
+					const matchingRules = getMatchingTextRules();
+					if (matchingRules.length && classesForSearch && classesForSearch.length) {
 						const elems = [];
 						for (const classGroup of classesForSearch) {
 							try {
@@ -619,7 +677,7 @@ function startMutationObserver() {
 						}
 
 						if (elems.length) {
-							applyTextFiltersTo(elems, getMatchingTextFilters());
+							applyTextRulesTo(elems, matchingRules);
 						}
 					}
 				}

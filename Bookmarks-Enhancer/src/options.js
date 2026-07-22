@@ -73,32 +73,77 @@ function collectUrlRules() {
     return mergeRowsBySite(rows, "keepParams", parseCommaSeparatedValues);
 }
 
-function collectTextFilters() {
-    const rows = Array.from(document.querySelectorAll("#textFilterBody tr")).map(row => {
-        const inputs = row.querySelectorAll("input");
+function collectTextRules() {
+    return Array.from(document.querySelectorAll("#textRuleBody tr")).map(row => {
+        const siteInput = row.querySelector(".textRuleSite");
+        const textInput = row.querySelector(".textRuleText");
+        const styleSelect = row.querySelector(".textRuleStyle");
+        const style = styleSelect?.value;
         return {
-            site: inputs[0].value,
-            filterText: inputs[1].value
+            site: siteInput?.value.trim() || "",
+            text: textInput?.value.trim() || "",
+            style: style === "favorited" || style === "seen" ? style : "blocked"
         };
-    });
-
-    return mergeRowsBySite(
-        rows,
-        "filterText",
-        parseCommaSeparatedValues,
-        value => value.toLowerCase()
-    );
+    }).filter(rule => rule.site && rule.text);
 }
 
-function replaceConfigurationRows(searchPairs, urlRules, textFilters, bookmarkRules) {
+function normalizeTextRules(rules) {
+    if (!Array.isArray(rules)) return [];
+
+    const seen = new Set();
+    const normalized = [];
+    for (const rule of rules) {
+        if (!isValidTextRule(rule)) continue;
+        const text = rule.text.trim();
+        const site = normalizeSiteForMatching(rule.site.trim()) || rule.site.trim();
+        if (!site) continue;
+        const style = rule.style === "favorited" || rule.style === "seen"
+            ? rule.style
+            : "blocked";
+        const key = [site.toLowerCase(), text.toLowerCase(), style].join("\u0000");
+        if (seen.has(key)) continue;
+        seen.add(key);
+        normalized.push({ site, text, style });
+    }
+    return normalized;
+}
+
+function migrateTextRulesFromStorage(result) {
+    if (Array.isArray(result.textRules)) {
+        return normalizeTextRules(result.textRules);
+    }
+
+    if (!Array.isArray(result.textFilters)) return [];
+
+    const migrated = [];
+    for (const filter of result.textFilters) {
+        if (!filter || typeof filter.filterText !== "string") continue;
+        const site = typeof filter.site === "string" ? filter.site : "";
+        const texts = filter.filterText.split(',').map(text => text.trim()).filter(Boolean);
+        for (const text of texts) {
+            migrated.push({
+                site,
+                text,
+                style: "blocked"
+            });
+        }
+    }
+    return normalizeTextRules(migrated);
+}
+
+function replaceConfigurationRows(searchPairs, urlRules, textRules, bookmarkRules) {
     clearSearchTable();
     clearUrlRuleTable();
-    clearTextFilterTable();
+    clearTextRuleTable();
     clearBookmarkRuleTable();
 
     searchPairs.forEach(({ site, classes }) => createRow(site, classes));
     urlRules.forEach(({ site, keepParams }) => createUrlRuleRow(site, keepParams));
-    textFilters.forEach(({ site, filterText }) => createTextFilterRow(site, filterText));
+    if (!textRules || textRules.length === 0) {
+        createTextRuleRow();
+    } else {
+        textRules.forEach(rule => createTextRuleRow(rule.site, rule.text, rule.style));
+    }
     if (!bookmarkRules || bookmarkRules.length === 0) {
         createBookmarkRuleRow("", "blocked");
     } else {
@@ -267,7 +312,7 @@ function saveOptions(e) {
     e.preventDefault();
     const searchPairs = collectSearchPairs();
     const urlRules = collectUrlRules();
-    const textFilters = collectTextFilters();
+    const textRules = normalizeTextRules(collectTextRules());
     const bookmarkRules = normalizeBookmarkRules(collectBookmarkRules());
 
     let obj = {
@@ -277,17 +322,18 @@ function saveOptions(e) {
         [ENABLE_SEEN_STYLING_KEY]: document.querySelector("#enableSeenStyling").checked,
         searchPairs,
         urlRules,
-        textFilters,
+        textRules,
         [BOOKMARK_RULE_STORAGE_KEY]: bookmarkRules
     };
 
     browser.storage.local.set(obj)
         .then(() => browser.storage.local.remove([
             LEGACY_FOLDER_STORAGE_KEYS.blockedFolderId,
-            LEGACY_FOLDER_STORAGE_KEYS.favoritedFolderId
+            LEGACY_FOLDER_STORAGE_KEYS.favoritedFolderId,
+            "textFilters"
         ]))
         .then(() => {
-            replaceConfigurationRows(searchPairs, urlRules, textFilters, bookmarkRules);
+            replaceConfigurationRows(searchPairs, urlRules, textRules, bookmarkRules);
             showStatus("Options saved");
         })
         .catch(err => {
@@ -354,20 +400,38 @@ function createUrlRuleRow(site = "", keepParams = "") {
     document.querySelector("#urlRuleBody").appendChild(row);
 }
 
-function createTextFilterRow(site = "", filterText = "") {
+function createTextRuleRow(site = "", text = "", style = "blocked") {
     const row = document.createElement("tr");
 
     const siteCell = document.createElement("td");
     const siteInput = document.createElement("input");
     siteInput.type = "text";
+    siteInput.className = "textRuleSite";
     siteInput.value = site;
     siteCell.appendChild(siteInput);
 
-    const filterCell = document.createElement("td");
-    const filterInput = document.createElement("input");
-    filterInput.type = "text";
-    filterInput.value = filterText;
-    filterCell.appendChild(filterInput);
+    const textCell = document.createElement("td");
+    const textInput = document.createElement("input");
+    textInput.type = "text";
+    textInput.className = "textRuleText";
+    textInput.value = text;
+    textCell.appendChild(textInput);
+
+    const styleCell = document.createElement("td");
+    const styleSelect = document.createElement("select");
+    styleSelect.className = "textRuleStyle";
+    for (const [value, label] of [
+        ["blocked", "Blocked (hide)"],
+        ["favorited", "Favorited (double underline)"],
+        ["seen", "Seen (dashed underline)"]
+    ]) {
+        const option = document.createElement("option");
+        option.value = value;
+        option.textContent = label;
+        option.selected = style === value;
+        styleSelect.appendChild(option);
+    }
+    styleCell.appendChild(styleSelect);
 
     const actionCell = document.createElement("td");
     const deleteBtn = document.createElement("button");
@@ -376,11 +440,8 @@ function createTextFilterRow(site = "", filterText = "") {
     deleteBtn.addEventListener("click", () => row.remove());
     actionCell.appendChild(deleteBtn);
 
-    row.appendChild(siteCell);
-    row.appendChild(filterCell);
-    row.appendChild(actionCell);
-
-    document.querySelector("#textFilterBody").appendChild(row);
+    row.append(siteCell, textCell, styleCell, actionCell);
+    document.querySelector("#textRuleBody").appendChild(row);
 }
 
 function restoreOptions() {
@@ -416,11 +477,19 @@ function restoreOptions() {
             );
         }
 
-        if (result.textFilters) {
-            result.textFilters.forEach(
-                ({ site, filterText }) =>
-                    createTextFilterRow(site, filterText)
-            );
+        if (result.textFilters || result.textRules) {
+            const textRules = migrateTextRulesFromStorage(result);
+            if (textRules.length === 0) {
+                createTextRuleRow();
+            } else {
+                textRules.forEach(rule => createTextRuleRow(
+                    rule.site,
+                    rule.text,
+                    rule.style
+                ));
+            }
+        } else {
+            createTextRuleRow();
         }
 
         return loadBookmarkRuleRows(migrateBookmarkRulesFromStorage(result));
@@ -430,6 +499,7 @@ function restoreOptions() {
     browser.storage.local.get([
         "searchPairs",
         "urlRules",
+        "textRules",
         "textFilters",
         "enableTopBorder",
         "enableDeepSearch",
@@ -451,7 +521,7 @@ function exportToClipboard() {
     const data = {
         searchPairs: collectSearchPairs(),
         urlRules: collectUrlRules(),
-        textFilters: collectTextFilters(),
+        textRules: normalizeTextRules(collectTextRules()),
         enableTopBorder: document.querySelector("#enableTopBorder").checked,
         onlyUseSites: document.querySelector("#onlyUseSites").checked,
         enableDeepSearch: document.querySelector("#enableDeepSearch").checked,
@@ -498,8 +568,18 @@ function importFromJson(jsonString) {
         }
 
         if (
+            data.textRules !== undefined &&
+            (
+                !Array.isArray(data.textRules) ||
+                !data.textRules.every(isValidTextRule)
+            )
+        ) {
+            throw new Error("Invalid textRules");
+        }
+
+        if (
             data.textFilters &&
-            !data.textFilters.every(isValidTextFilter)
+            !data.textFilters.every(isValidLegacyTextFilter)
         ) {
             throw new Error("Invalid textFilters");
         }
@@ -566,7 +646,7 @@ function importFromJson(jsonString) {
 
     clearSearchTable();
     clearUrlRuleTable();
-    clearTextFilterTable();
+    clearTextRuleTable();
 
     (data.searchPairs || []).forEach(pair => {
         const classes = typeof pair.classes === "string"
@@ -580,10 +660,16 @@ function importFromJson(jsonString) {
             createUrlRuleRow(site, keepParams)
     );
 
-    (data.textFilters || []).forEach(
-        ({ site, filterText }) =>
-            createTextFilterRow(site, filterText)
-    );
+    const importedTextRules = migrateTextRulesFromStorage(data);
+    if (importedTextRules.length === 0) {
+        createTextRuleRow();
+    } else {
+        importedTextRules.forEach(rule => createTextRuleRow(
+            rule.site,
+            rule.text,
+            rule.style
+        ));
+    }
 
     if (data.enableDeepSearch !== undefined) {
         document.querySelector("#enableDeepSearch").checked =
@@ -625,10 +711,24 @@ function isValidUrlRule(row) {
         typeof row.keepParams === "string";
 }
 
-function isValidTextFilter(row) {
+function isValidLegacyTextFilter(row) {
     return row &&
         typeof row.site === "string" &&
         typeof row.filterText === "string";
+}
+
+function isValidTextRule(row) {
+    return row &&
+        typeof row.site === "string" &&
+        row.site.trim() !== "" &&
+        typeof row.text === "string" &&
+        row.text.trim() !== "" &&
+        (
+            row.style === undefined ||
+            row.style === "blocked" ||
+            row.style === "favorited" ||
+            row.style === "seen"
+        );
 }
 
 function isValidBookmarkRule(row) {
@@ -654,8 +754,8 @@ function clearUrlRuleTable() {
     document.querySelector("#urlRuleBody").replaceChildren();
 }
 
-function clearTextFilterTable() {
-    document.querySelector("#textFilterBody").replaceChildren();
+function clearTextRuleTable() {
+    document.querySelector("#textRuleBody")?.replaceChildren();
 }
 
 let statusTimeout = null;
@@ -735,21 +835,21 @@ function setupEventListeners() {
         const exportBtn = document.querySelector("#exportBtn");
         const importBtn = document.querySelector("#importBtn");
         const addUrlRuleBtn = document.querySelector("#addUrlRuleBtn");
-        const addTextFilterBtn = document.querySelector("#addTextFilterBtn");
+        const addTextRuleBtn = document.querySelector("#addTextRuleBtn");
         const addBookmarkRuleBtn = document.querySelector("#addBookmarkRuleBtn");
 
         if (!addRowBtn) console.warn("addRowBtn not found");
         if (!exportBtn) console.warn("exportBtn not found");
         if (!importBtn) console.warn("importBtn not found");
         if (!addUrlRuleBtn) console.warn("addUrlRuleBtn not found");
-        if (!addTextFilterBtn) console.warn("addTextFilterBtn not found");
+        if (!addTextRuleBtn) console.warn("addTextRuleBtn not found");
         if (!addBookmarkRuleBtn) console.warn("addBookmarkRuleBtn not found");
 
         if (addRowBtn) addRowBtn.addEventListener("click", () => createRow());
         if (exportBtn) exportBtn.addEventListener("click", exportToClipboard);
         if (importBtn) importBtn.addEventListener("click", importFromClipboard);
         if (addUrlRuleBtn) addUrlRuleBtn.addEventListener("click", () => createUrlRuleRow());
-        if (addTextFilterBtn) addTextFilterBtn.addEventListener("click", () => createTextFilterRow());
+        if (addTextRuleBtn) addTextRuleBtn.addEventListener("click", () => createTextRuleRow());
         if (addBookmarkRuleBtn) {
             addBookmarkRuleBtn.addEventListener("click", () => createBookmarkRuleRow());
         }
