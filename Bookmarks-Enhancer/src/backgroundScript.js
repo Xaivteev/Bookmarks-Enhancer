@@ -47,11 +47,6 @@ const STORAGE_KEYS = {
 	favoritedFolderId: "favoritedFolderId"
 };
 
-const DEFAULT_FOLDER_TITLES = {
-	blocked: "Blocked",
-	favorited: "Favorited"
-};
-
 let urlRules = [];
 let bookmarkRules = [];
 let enableSeenStyling = true;
@@ -124,6 +119,11 @@ function migrateBookmarkRulesFromStorage(result) {
 
 const settingsReady = loadSettings().catch(onError);
 
+const RULE_FOLDER_MENU_PREFIX = "addLinkToRuleFolder:";
+const RULE_FOLDER_MENU_PARENT = "addLinkToRuleFolderParent";
+const LEGACY_LINK_MENU_IDS = ["addLinkBlocked", "addLinkFavorited"];
+let ruleFolderMenuIds = [];
+
 // Create context menu items for selection and links
 function createContextMenus() {
 	const menuDefinitions = [
@@ -133,16 +133,6 @@ function createContextMenus() {
 			contexts: ['selection']
 		},
 		{
-			id: 'addLinkBlocked',
-			title: 'Add link to Blocked bookmarks',
-			contexts: ['link']
-		},
-		{
-			id: 'addLinkFavorited',
-			title: 'Add link to Favorited bookmarks',
-			contexts: ['link']
-		},
-		{
 			id: 'selectTargetClasses',
 			title: 'Select Target Classes',
 			contexts: ['page', 'browser_action', 'page_action']
@@ -150,6 +140,9 @@ function createContextMenus() {
 	];
 
 	browser.contextMenus.remove('authoritativeRefresh').catch(() => {});
+	for (const legacyId of LEGACY_LINK_MENU_IDS) {
+		browser.contextMenus.remove(legacyId).catch(() => {});
+	}
 
 	for (const definition of menuDefinitions) {
 		browser.contextMenus.remove(definition.id)
@@ -162,20 +155,58 @@ function createContextMenus() {
 				}
 			});
 	}
+
+	refreshRuleFolderContextMenus();
+}
+
+function removeContextMenu(id) {
+	return browser.contextMenus.remove(id).catch(() => {});
+}
+
+function refreshRuleFolderContextMenus() {
+	return settingsReady.then(() => {
+		const removals = [
+			removeContextMenu(RULE_FOLDER_MENU_PARENT),
+			...ruleFolderMenuIds.map(removeContextMenu),
+			...LEGACY_LINK_MENU_IDS.map(removeContextMenu)
+		];
+		ruleFolderMenuIds = [];
+
+		return Promise.all(removals).then(() => {
+			if (bookmarkRules.length === 0) return;
+
+			browser.contextMenus.create({
+				id: RULE_FOLDER_MENU_PARENT,
+				title: "Add link to rule folder",
+				contexts: ["link"]
+			});
+
+			return Promise.all(bookmarkRules.map(rule =>
+				getValidFolderId(rule.folderId).then(folderId => {
+					if (!folderId) return null;
+
+					return browser.bookmarks.get(folderId).then(nodes => {
+						const folder = nodes.find(node => node.type === "folder") || nodes[0];
+						if (!folder) return null;
+
+						const styleLabel = rule.style === "favorited" ? "Favorited" : "Blocked";
+						const menuId = RULE_FOLDER_MENU_PREFIX + folderId;
+						browser.contextMenus.create({
+							id: menuId,
+							parentId: RULE_FOLDER_MENU_PARENT,
+							title: `${folder.title || "Folder"} (${styleLabel})`,
+							contexts: ["link"]
+						});
+						ruleFolderMenuIds.push(menuId);
+						return menuId;
+					});
+				}).catch(onError)
+			));
+		});
+	}).catch(onError);
 }
 
 createContextMenus();
-
-// Helper: ensure configured/default folder exists then create bookmark inside it
-function ensureFolderAndCreateBookmark(folderRole, url, title) {
-	return resolveFolderIdForStyle(folderRole).then(folderId => {
-		return browser.bookmarks.create({
-			parentId: folderId,
-			title: title || url,
-			url
-		});
-	});
-}
 
 function getValidFolderId(folderId) {
 	if (!folderId) return Promise.resolve(null);
@@ -185,40 +216,15 @@ function getValidFolderId(folderId) {
 	}).catch(() => null);
 }
 
-function findOrCreateFolderByTitle(title) {
-	return browser.bookmarks.search({ title }).then(nodes => {
-		const folder = nodes.find(
-			node => node.title === title && node.type === "folder"
-		);
-		if (folder) return folder.id;
-		return browser.bookmarks.create({ title }).then(created => created.id);
-	});
-}
-
-function persistBookmarkRules(rules) {
-	bookmarkRules = normalizeBookmarkRules(rules);
-	return browser.storage.local.set({
-		[STORAGE_KEYS.bookmarkRules]: bookmarkRules
-	}).then(() => browser.storage.local.remove([
-		STORAGE_KEYS.blockedFolderId,
-		STORAGE_KEYS.favoritedFolderId
-	])).then(() => bookmarkRules);
-}
-
-function resolveFolderIdForStyle(style) {
-	const defaultTitle = DEFAULT_FOLDER_TITLES[style] || DEFAULT_FOLDER_TITLES.blocked;
-	const existingRule = bookmarkRules.find(rule => rule.style === style);
-
-	return getValidFolderId(existingRule?.folderId).then(validFolderId => {
-		if (validFolderId) return validFolderId;
-
-		return findOrCreateFolderByTitle(defaultTitle).then(folderId => {
-			const nextRules = bookmarkRules.filter(rule =>
-				rule.folderId !== existingRule?.folderId &&
-				rule.folderId !== folderId
-			);
-			nextRules.push({ folderId, style });
-			return persistBookmarkRules(nextRules).then(() => folderId);
+function createBookmarkInFolder(folderId, url, title) {
+	return getValidFolderId(folderId).then(validFolderId => {
+		if (!validFolderId) {
+			throw new Error("Configured bookmark rule folder no longer exists");
+		}
+		return browser.bookmarks.create({
+			parentId: validFolderId,
+			title: title || url,
+			url
 		});
 	});
 }
@@ -266,14 +272,17 @@ browser.contextMenus.onClicked.addListener((info, tab) => {
 		return;
 	}
 
-	if (info.menuItemId === 'addLinkBlocked' || info.menuItemId === 'addLinkFavorited') {
+	if (
+		typeof info.menuItemId === "string" &&
+		info.menuItemId.startsWith(RULE_FOLDER_MENU_PREFIX)
+	) {
 		const url = info.linkUrl;
 		if (!url) return;
-		const folderRole = info.menuItemId === 'addLinkBlocked' ? 'blocked' : 'favorited';
+		const folderId = info.menuItemId.slice(RULE_FOLDER_MENU_PREFIX.length);
 		const title = info.linkText || url;
 
 		settingsReady
-			.then(() => ensureFolderAndCreateBookmark(folderRole, url, title))
+			.then(() => createBookmarkInFolder(folderId, url, title))
 			.then(() => {
 				invalidateBookmarkCaches();
 				notifyAllTabsRefresh();
@@ -300,6 +309,7 @@ browser.storage.onChanged.addListener((changes, areaName) => {
 			changes[STORAGE_KEYS.bookmarkRules].newValue
 		);
 		invalidateBookmarkCaches();
+		refreshRuleFolderContextMenus();
 	}
 
 	if (changes[STORAGE_KEYS.enableSeenStyling]) {
@@ -321,6 +331,7 @@ browser.storage.onChanged.addListener((changes, areaName) => {
 				migrateBookmarkRulesFromStorage(result)
 			);
 			invalidateBookmarkCaches();
+			refreshRuleFolderContextMenus();
 		}).catch(onError);
 	}
 
