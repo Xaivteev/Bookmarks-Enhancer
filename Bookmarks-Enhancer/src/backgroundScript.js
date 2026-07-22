@@ -153,20 +153,24 @@ const RULE_LINK_MENU_PREFIX = "addLinkToRuleFolder:";
 const RULE_PAGE_MENU_PREFIX = "addPageToRuleFolder:";
 const RULE_LINK_MENU_PARENT = "addLinkToRuleFolderParent";
 const RULE_PAGE_MENU_PARENT = "addPageToRuleFolderParent";
-const LEGACY_LINK_MENU_IDS = ["addLinkBlocked", "addLinkFavorited"];
+const TEXT_RULE_MENU_PARENT = "addTextRuleParent";
+const TEXT_RULE_MENU_PREFIX = "addTextRuleStyle:";
+const REFRESH_TAB_STYLING_MENU_ID = "refreshTabStyling";
+const LEGACY_LINK_MENU_IDS = ["addLinkBlocked", "addLinkFavorited", "addTextFilter"];
 let ruleFolderMenuIds = [];
+let textRuleMenuIds = [];
 
 // Create context menu items for selection and links
 function createContextMenus() {
 	const menuDefinitions = [
 		{
-			id: 'addTextFilter',
-			title: 'Add selection as text rule',
-			contexts: ['selection']
-		},
-		{
 			id: 'selectTargetClasses',
 			title: 'Select Target Classes',
+			contexts: ['page', 'browser_action', 'page_action']
+		},
+		{
+			id: REFRESH_TAB_STYLING_MENU_ID,
+			title: 'Refresh styling on this tab',
 			contexts: ['page', 'browser_action', 'page_action']
 		}
 	];
@@ -188,6 +192,7 @@ function createContextMenus() {
 			});
 	}
 
+	refreshTextRuleContextMenus();
 	refreshRuleFolderContextMenus();
 }
 
@@ -198,6 +203,10 @@ function removeContextMenu(id) {
 function getRuleFolderStyleLabel(styleId) {
 	const rule = styleRules.find(styleRule => styleRule.id === styleId);
 	return rule?.name || styleId || "Style";
+}
+
+function getFolderRuleMenuTitle(folderTitle, styleId) {
+	return `${folderTitle || "Folder"} (${getRuleFolderStyleLabel(styleId)})`;
 }
 
 function createRuleFolderChildMenus(parentId, idPrefix, contexts) {
@@ -213,7 +222,7 @@ function createRuleFolderChildMenus(parentId, idPrefix, contexts) {
 				browser.contextMenus.create({
 					id: menuId,
 					parentId,
-					title: `${folder.title || "Folder"} (${getRuleFolderStyleLabel(rule.style)})`,
+					title: getFolderRuleMenuTitle(folder.title, rule.style),
 					contexts
 				});
 				ruleFolderMenuIds.push(menuId);
@@ -263,6 +272,39 @@ function refreshRuleFolderContextMenus() {
 	}).catch(onError);
 }
 
+function refreshTextRuleContextMenus() {
+	return settingsReady.then(() => {
+		const removals = [
+			removeContextMenu(TEXT_RULE_MENU_PARENT),
+			...textRuleMenuIds.map(removeContextMenu)
+		];
+		textRuleMenuIds = [];
+
+		return Promise.all(removals).then(() => {
+			const styles = Array.isArray(styleRules) && styleRules.length > 0
+				? styleRules
+				: DEFAULT_STYLE_RULES;
+
+			browser.contextMenus.create({
+				id: TEXT_RULE_MENU_PARENT,
+				title: "Add selection as text rule",
+				contexts: ["selection"]
+			});
+
+			for (const styleRule of styles) {
+				const menuId = TEXT_RULE_MENU_PREFIX + styleRule.id;
+				browser.contextMenus.create({
+					id: menuId,
+					parentId: TEXT_RULE_MENU_PARENT,
+					title: styleRule.name || styleRule.id,
+					contexts: ["selection"]
+				});
+				textRuleMenuIds.push(menuId);
+			}
+		});
+	}).catch(onError);
+}
+
 createContextMenus();
 
 function getValidFolderId(folderId) {
@@ -294,6 +336,51 @@ function notifyAllTabsRefresh() {
 	}).catch(() => {});
 }
 
+function addSelectionAsTextRule(selection, site, styleId) {
+	const style = styleId || "blocked";
+	return browser.storage.local.get([
+		STORAGE_KEYS.textRules,
+		STORAGE_KEYS.textFilters
+	]).then(result => {
+		const existing = Array.isArray(result[STORAGE_KEYS.textRules])
+			? result[STORAGE_KEYS.textRules].slice()
+			: [];
+
+		if (!Array.isArray(result[STORAGE_KEYS.textRules]) && Array.isArray(result[STORAGE_KEYS.textFilters])) {
+			for (const filter of result[STORAGE_KEYS.textFilters]) {
+				if (!filter || typeof filter.filterText !== "string") continue;
+				const legacySite = typeof filter.site === "string" ? filter.site : "";
+				const texts = filter.filterText.split(',').map(text => text.trim()).filter(Boolean);
+				for (const text of texts) {
+					existing.push({
+						site: legacySite,
+						text,
+						style: "blocked"
+					});
+				}
+			}
+		}
+
+		const alreadyExists = existing.some(rule =>
+			(rule.site || "") === site &&
+			typeof rule.text === "string" &&
+			rule.text.trim().toLowerCase() === selection.toLowerCase() &&
+			(rule.style || "blocked") === style
+		);
+		if (!alreadyExists) {
+			existing.push({
+				site,
+				text: selection,
+				style
+			});
+		}
+
+		return browser.storage.local.set({
+			textRules: existing
+		}).then(() => browser.storage.local.remove([STORAGE_KEYS.textFilters]));
+	});
+}
+
 browser.contextMenus.onClicked.addListener((info, tab) => {
 	if (!info || !tab) return;
 
@@ -304,54 +391,26 @@ browser.contextMenus.onClicked.addListener((info, tab) => {
 		return;
 	}
 
-	if (info.menuItemId === 'addTextFilter') {
+	if (info.menuItemId === REFRESH_TAB_STYLING_MENU_ID) {
+		browser.tabs.sendMessage(tab.id, {
+			refresh: true,
+			mode: "authoritative"
+		}).catch(onError);
+		return;
+	}
+
+	if (
+		typeof info.menuItemId === "string" &&
+		info.menuItemId.startsWith(TEXT_RULE_MENU_PREFIX)
+	) {
 		const selection = (info.selectionText || '').trim();
 		if (!selection) return;
+		const styleId = info.menuItemId.slice(TEXT_RULE_MENU_PREFIX.length);
 		let site = '';
 		try { site = normalizeSiteForMatching(new URL(tab.url).hostname); }
 		catch (e) { site = tab.url || ''; }
 
-		browser.storage.local.get([
-			STORAGE_KEYS.textRules,
-			STORAGE_KEYS.textFilters
-		]).then(result => {
-			const existing = Array.isArray(result[STORAGE_KEYS.textRules])
-				? result[STORAGE_KEYS.textRules].slice()
-				: [];
-
-			if (!Array.isArray(result[STORAGE_KEYS.textRules]) && Array.isArray(result[STORAGE_KEYS.textFilters])) {
-				for (const filter of result[STORAGE_KEYS.textFilters]) {
-					if (!filter || typeof filter.filterText !== "string") continue;
-					const legacySite = typeof filter.site === "string" ? filter.site : "";
-					const texts = filter.filterText.split(',').map(text => text.trim()).filter(Boolean);
-					for (const text of texts) {
-						existing.push({
-							site: legacySite,
-							text,
-							style: "blocked"
-						});
-					}
-				}
-			}
-
-			const alreadyExists = existing.some(rule =>
-				(rule.site || "") === site &&
-				typeof rule.text === "string" &&
-				rule.text.trim().toLowerCase() === selection.toLowerCase() &&
-				(rule.style || "blocked") === "blocked"
-			);
-			if (!alreadyExists) {
-				existing.push({
-					site,
-					text: selection,
-					style: "blocked"
-				});
-			}
-
-			return browser.storage.local.set({
-				textRules: existing
-			}).then(() => browser.storage.local.remove([STORAGE_KEYS.textFilters]));
-		}).catch(onError);
+		addSelectionAsTextRule(selection, site, styleId).catch(onError);
 		return;
 	}
 
@@ -411,6 +470,7 @@ browser.storage.onChanged.addListener((changes, areaName) => {
 			styleRules: changes[STORAGE_KEYS.styleRules].newValue
 		});
 		invalidateBookmarkCaches();
+		refreshTextRuleContextMenus();
 		refreshRuleFolderContextMenus();
 	}
 
