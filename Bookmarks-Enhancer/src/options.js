@@ -1,3 +1,8 @@
+const FOLDER_STORAGE_KEYS = {
+    blockedFolderId: "blockedFolderId",
+    favoritedFolderId: "favoritedFolderId"
+};
+
 function mergeRowsBySite(rows, valueKey, parseValues, getValueKey = value => value) {
     const rowsBySite = new Map();
 
@@ -91,18 +96,115 @@ function replaceConfigurationRows(searchPairs, urlRules, textFilters) {
     textFilters.forEach(({ site, filterText }) => createTextFilterRow(site, filterText));
 }
 
+function collectFolderSelection(selectId) {
+    const value = document.querySelector(selectId)?.value;
+    return value || null;
+}
+
+function flattenBookmarkFolders(nodes, path = "") {
+    const folders = [];
+
+    for (const node of nodes || []) {
+        const isFolder = node.type === "folder" || (!node.url && Array.isArray(node.children));
+        if (!isFolder) continue;
+
+        const title = node.title || "Folder";
+        const nextPath = path ? `${path} / ${title}` : title;
+        const isRoot = node.id === "root________";
+
+        if (!isRoot) {
+            folders.push({ id: node.id, label: nextPath });
+        }
+
+        if (Array.isArray(node.children)) {
+            folders.push(...flattenBookmarkFolders(
+                node.children,
+                isRoot ? "" : nextPath
+            ));
+        }
+    }
+
+    return folders;
+}
+
+function populateFolderSelect(select, folders, selectedId) {
+    select.replaceChildren();
+
+    const defaultOption = document.createElement("option");
+    defaultOption.value = "";
+    defaultOption.textContent = "Default (find or create by name)";
+    select.appendChild(defaultOption);
+
+    let selectedExists = false;
+    for (const folder of folders) {
+        const option = document.createElement("option");
+        option.value = folder.id;
+        option.textContent = folder.label;
+        if (folder.id === selectedId) {
+            option.selected = true;
+            selectedExists = true;
+        }
+        select.appendChild(option);
+    }
+
+    if (selectedId && !selectedExists) {
+        const missingOption = document.createElement("option");
+        missingOption.value = selectedId;
+        missingOption.textContent = `Missing folder (${selectedId})`;
+        missingOption.selected = true;
+        select.appendChild(missingOption);
+    }
+}
+
+function loadFolderSelectors(selectedIds = {}) {
+    const blockedSelect = document.querySelector("#blockedFolderId");
+    const favoritedSelect = document.querySelector("#favoritedFolderId");
+    if (!blockedSelect || !favoritedSelect) return Promise.resolve();
+
+    return browser.bookmarks.getTree().then(tree => {
+        const folders = flattenBookmarkFolders(tree);
+        populateFolderSelect(
+            blockedSelect,
+            folders,
+            selectedIds.blockedFolderId || ""
+        );
+        populateFolderSelect(
+            favoritedSelect,
+            folders,
+            selectedIds.favoritedFolderId || ""
+        );
+    }).catch(err => {
+        console.error("Could not load bookmark folders:", err);
+        showStatus("Could not load bookmark folders", true);
+    });
+}
+
 function saveOptions(e) {
     e.preventDefault();
     const searchPairs = collectSearchPairs();
     const urlRules = collectUrlRules();
     const textFilters = collectTextFilters();
+    const blockedFolderId = collectFolderSelection("#blockedFolderId");
+    const favoritedFolderId = collectFolderSelection("#favoritedFolderId");
+
+    if (
+        blockedFolderId &&
+        favoritedFolderId &&
+        blockedFolderId === favoritedFolderId
+    ) {
+        showStatus("Blocked and Favorited must use different folders", true);
+        return;
+    }
+
     let obj = {
 		enableTopBorder: document.querySelector("#enableTopBorder").checked,
 		enableDeepSearch: document.querySelector("#enableDeepSearch").checked,
 		onlyUseSites: document.querySelector("#onlyUseSites").checked,
         searchPairs,
         urlRules,
-        textFilters
+        textFilters,
+        [FOLDER_STORAGE_KEYS.blockedFolderId]: blockedFolderId,
+        [FOLDER_STORAGE_KEYS.favoritedFolderId]: favoritedFolderId
     };
 
     browser.storage.local.set(obj)
@@ -239,6 +341,11 @@ function restoreOptions() {
                     createTextFilterRow(site, filterText)
             );
         }
+
+        return loadFolderSelectors({
+            blockedFolderId: result.blockedFolderId || "",
+            favoritedFolderId: result.favoritedFolderId || ""
+        });
     }
 
 
@@ -248,7 +355,9 @@ function restoreOptions() {
         "textFilters",
         "enableTopBorder",
         "enableDeepSearch",
-        "onlyUseSites"
+        "onlyUseSites",
+        FOLDER_STORAGE_KEYS.blockedFolderId,
+        FOLDER_STORAGE_KEYS.favoritedFolderId
     ])
     .then(handleStorage)
     .catch(console.error);
@@ -265,7 +374,9 @@ function exportToClipboard() {
         textFilters: collectTextFilters(),
         enableTopBorder: document.querySelector("#enableTopBorder").checked,
         onlyUseSites: document.querySelector("#onlyUseSites").checked,
-        enableDeepSearch: document.querySelector("#enableDeepSearch").checked
+        enableDeepSearch: document.querySelector("#enableDeepSearch").checked,
+        blockedFolderId: collectFolderSelection("#blockedFolderId"),
+        favoritedFolderId: collectFolderSelection("#favoritedFolderId")
     };
 
     navigator.clipboard.writeText(
@@ -333,6 +444,22 @@ function importFromJson(jsonString) {
         ) {
             throw new Error("Invalid onlyUseSites");
         }
+
+        if (
+            data.blockedFolderId !== undefined &&
+            data.blockedFolderId !== null &&
+            typeof data.blockedFolderId !== "string"
+        ) {
+            throw new Error("Invalid blockedFolderId");
+        }
+
+        if (
+            data.favoritedFolderId !== undefined &&
+            data.favoritedFolderId !== null &&
+            typeof data.favoritedFolderId !== "string"
+        ) {
+            throw new Error("Invalid favoritedFolderId");
+        }
     }
     catch (err) {
         console.error(err);
@@ -376,7 +503,12 @@ function importFromJson(jsonString) {
             data.onlyUseSites;
     }
 
-    showStatus("Imported configuration");
+    loadFolderSelectors({
+        blockedFolderId: data.blockedFolderId || "",
+        favoritedFolderId: data.favoritedFolderId || ""
+    }).then(() => {
+        showStatus("Imported configuration");
+    });
 }
 
 function isValidSearchPair(row) {
