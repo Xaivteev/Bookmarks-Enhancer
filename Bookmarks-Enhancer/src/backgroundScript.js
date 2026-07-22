@@ -75,78 +75,6 @@ function loadSettings() {
         });
 }
 
-function normalizeStoredFolderId(value) {
-	return typeof value === "string" && value.trim() ? value.trim() : null;
-}
-
-function isValidBookmarkRule(rule) {
-	if (!rule || typeof rule.folderId !== "string" || !rule.folderId.trim()) {
-		return false;
-	}
-	if (isUnmatchedBookmarkRule(rule)) {
-		return rule.style === undefined || typeof rule.style === "string";
-	}
-	return typeof rule.style === "string" && rule.style.trim() !== "";
-}
-
-function normalizeBookmarkRules(rules) {
-	if (!Array.isArray(rules)) return [];
-
-	const seenFolders = new Set();
-	const normalized = [];
-	let unmatchedStyle = null;
-
-	for (const rule of rules) {
-		if (isUnmatchedBookmarkRule(rule)) {
-			unmatchedStyle = typeof rule.style === "string" ? rule.style.trim() : "";
-			continue;
-		}
-		if (!isValidBookmarkRule(rule)) continue;
-		const folderId = rule.folderId.trim();
-		if (seenFolders.has(folderId)) continue;
-		seenFolders.add(folderId);
-		normalized.push({
-			folderId,
-			style: rule.style.trim()
-		});
-	}
-
-	if (unmatchedStyle !== null) {
-		normalized.push({
-			folderId: UNMATCHED_BOOKMARK_RULE_ID,
-			style: unmatchedStyle
-		});
-	}
-
-	return normalized;
-}
-
-function migrateBookmarkRulesFromStorage(result) {
-	let rules;
-	if (Array.isArray(result[STORAGE_KEYS.bookmarkRules])) {
-		rules = result[STORAGE_KEYS.bookmarkRules].slice();
-	} else {
-		rules = [];
-		const blockedFolderId = normalizeStoredFolderId(result[STORAGE_KEYS.blockedFolderId]);
-		const favoritedFolderId = normalizeStoredFolderId(result[STORAGE_KEYS.favoritedFolderId]);
-		if (blockedFolderId) {
-			rules.push({ folderId: blockedFolderId, style: "blocked" });
-		}
-		if (favoritedFolderId) {
-			rules.push({ folderId: favoritedFolderId, style: "favorited" });
-		}
-	}
-
-	if (!rules.some(isUnmatchedBookmarkRule)) {
-		rules.push({
-			folderId: UNMATCHED_BOOKMARK_RULE_ID,
-			style: migrateUnmatchedBookmarkStyle(result)
-		});
-	}
-
-	return normalizeBookmarkRules(rules);
-}
-
 const settingsReady = loadSettings().catch(onError);
 
 const RULE_LINK_MENU_PREFIX = "addLinkToRuleFolder:";
@@ -548,9 +476,11 @@ browser.storage.onChanged.addListener((changes, areaName) => {
 // Cache for URL normalization to avoid repeated calculations
 const urlNormalizationCache = new Map(); // href -> normalized href
 
-let bookmarkStatusMap = new Map(); // href -> { seen, blocked, favorited }
+let bookmarkStatusMap = new Map(); // href -> status string
 let bookmarkIndexPromise = null;
+let liveBookmarkIndex = null;
 let bookmarkCacheGeneration = 0;
+
 function searchhrefs(hrefs) {
 	const requestGeneration = bookmarkCacheGeneration;
 	// contentScript asks if links have been bookmarked
@@ -622,31 +552,41 @@ function buildStatusResponse(requestedHrefs) {
 
 function getBookmarkIndex() {
 	if (!bookmarkIndexPromise) {
-		bookmarkIndexPromise = buildBookmarkIndex().catch(error => {
-			bookmarkIndexPromise = null;
-			throw error;
-		});
+		bookmarkIndexPromise = buildBookmarkIndex()
+			.then(index => {
+				liveBookmarkIndex = index;
+				return index;
+			})
+			.catch(error => {
+				bookmarkIndexPromise = null;
+				liveBookmarkIndex = null;
+				throw error;
+			});
 	}
 	return bookmarkIndexPromise;
 }
 
-function buildBookmarkIndex() {
-	const stylePriorityById = getStyleRulePriorityMap(styleRules);
-	const shouldIndexUnmatched = !!(
+function indexesUnmatchedBookmarks(stylePriorityById) {
+	return !!(
 		unmatchedBookmarkStyle &&
 		stylePriorityById.has(unmatchedBookmarkStyle)
 	);
+}
+
+function buildBookmarkIndex() {
+	const stylePriorityById = getStyleRulePriorityMap(styleRules);
+	const shouldIndexUnmatched = indexesUnmatchedBookmarks(stylePriorityById);
 
 	return resolveConfiguredRules(bookmarkRules).then(rules => {
 		if (shouldIndexUnmatched) {
 			return browser.bookmarks.getTree().then(bookmarkTree => {
-				const { bookmarksByNormalizedUrl, parentById } = buildBookmarkMaps(bookmarkTree);
+				const maps = buildBookmarkMaps(bookmarkTree);
 				return {
 					rules,
 					unmatchedBookmarkStyle,
 					stylePriorityById,
-					bookmarksByNormalizedUrl,
-					parentById
+					indexesUnmatched: true,
+					...maps
 				};
 			});
 		}
@@ -657,8 +597,11 @@ function buildBookmarkIndex() {
 				rules,
 				unmatchedBookmarkStyle: "",
 				stylePriorityById,
+				indexesUnmatched: false,
 				bookmarksByNormalizedUrl: new Map(),
-				parentById: new Map()
+				parentById: new Map(),
+				bookmarkById: new Map(),
+				urlByBookmarkId: new Map()
 			};
 		}
 
@@ -667,15 +610,26 @@ function buildBookmarkIndex() {
 		).then(subtrees => {
 			const bookmarksByNormalizedUrl = new Map();
 			const parentById = new Map();
+			const bookmarkById = new Map();
+			const urlByBookmarkId = new Map();
 			for (const subtree of subtrees) {
-				addBookmarkTreeToMaps(subtree, bookmarksByNormalizedUrl, parentById);
+				addBookmarkTreeToMaps(
+					subtree,
+					bookmarksByNormalizedUrl,
+					parentById,
+					bookmarkById,
+					urlByBookmarkId
+				);
 			}
 			return {
 				rules,
 				unmatchedBookmarkStyle: "",
 				stylePriorityById,
+				indexesUnmatched: false,
 				bookmarksByNormalizedUrl,
-				parentById
+				parentById,
+				bookmarkById,
+				urlByBookmarkId
 			};
 		});
 	});
@@ -683,11 +637,13 @@ function buildBookmarkIndex() {
 
 function resolveConfiguredRules(rules) {
 	return Promise.all(
-		normalizeBookmarkRules(rules).map(rule =>
-			getValidFolderId(rule.folderId).then(folderId => (
-				folderId ? { folderId, style: rule.style } : null
-			))
-		)
+		normalizeBookmarkRules(rules)
+			.filter(rule => !isUnmatchedBookmarkRule(rule))
+			.map(rule =>
+				getValidFolderId(rule.folderId).then(folderId => (
+					folderId ? { folderId, style: rule.style } : null
+				))
+			)
 	).then(resolved => resolved.filter(Boolean));
 }
 
@@ -695,6 +651,192 @@ function invalidateBookmarkCaches() {
 	bookmarkCacheGeneration += 1;
 	bookmarkStatusMap = new Map();
 	bookmarkIndexPromise = null;
+	liveBookmarkIndex = null;
+}
+
+function clearStatusesForUrls(urls) {
+	for (const url of urls) {
+		if (url) bookmarkStatusMap.delete(url);
+	}
+}
+
+function isFolderNode(node) {
+	return !!node && (node.type === "folder" || (!node.url && Array.isArray(node.children)));
+}
+
+function shouldIndexBookmarkInIndex(index, node) {
+	if (!node || !node.url || !isValidBookmarkUrl(node.url)) return false;
+	if (index.indexesUnmatched) return true;
+	return index.rules.some(rule =>
+		isBookmarkUnderFolder(node, rule.folderId, index.parentById)
+	);
+}
+
+function removeBookmarkIdFromIndex(index, bookmarkId) {
+	const affected = [];
+	const normalized = index.urlByBookmarkId.get(bookmarkId);
+	if (normalized) {
+		affected.push(normalized);
+		const list = index.bookmarksByNormalizedUrl.get(normalized) || [];
+		const next = list.filter(node => node.id !== bookmarkId);
+		if (next.length > 0) {
+			index.bookmarksByNormalizedUrl.set(normalized, next);
+		} else {
+			index.bookmarksByNormalizedUrl.delete(normalized);
+		}
+	}
+	index.urlByBookmarkId.delete(bookmarkId);
+	index.bookmarkById.delete(bookmarkId);
+	index.parentById.delete(bookmarkId);
+	return affected;
+}
+
+function addBookmarkNodeToIndex(index, node) {
+	const affected = [];
+	if (!node || !node.id) return affected;
+
+	index.bookmarkById.set(node.id, node);
+	if (node.parentId) {
+		index.parentById.set(node.id, node.parentId);
+	}
+
+	if (!shouldIndexBookmarkInIndex(index, node)) {
+		return affected;
+	}
+
+	const normalized = normalizeHrefForSearch(node.url);
+	index.urlByBookmarkId.set(node.id, normalized);
+	if (!index.bookmarksByNormalizedUrl.has(normalized)) {
+		index.bookmarksByNormalizedUrl.set(normalized, []);
+	}
+	const list = index.bookmarksByNormalizedUrl.get(normalized);
+	if (!list.some(existing => existing.id === node.id)) {
+		list.push(node);
+	}
+	affected.push(normalized);
+	return affected;
+}
+
+function rebuildIndexAfterStructuralChange() {
+	invalidateBookmarkCaches();
+	scheduleConfigTabsRefresh();
+}
+
+function withLiveBookmarkIndex(mutator) {
+	return getBookmarkIndex()
+		.then(index => {
+			const affectedUrls = mutator(index) || [];
+			clearStatusesForUrls(affectedUrls);
+			scheduleConfigTabsRefresh();
+		})
+		.catch(() => {
+			rebuildIndexAfterStructuralChange();
+		});
+}
+
+function handleBookmarkCreated(id, bookmark) {
+	if (isFolderNode(bookmark)) {
+		return withLiveBookmarkIndex(index => {
+			index.bookmarkById.set(id, bookmark);
+			if (bookmark.parentId) {
+				index.parentById.set(id, bookmark.parentId);
+			}
+			return [];
+		});
+	}
+
+	return withLiveBookmarkIndex(index => addBookmarkNodeToIndex(index, { ...bookmark, id }));
+}
+
+function handleBookmarkRemoved(id, removeInfo) {
+	const node = removeInfo && removeInfo.node;
+	if (isFolderNode(node)) {
+		rebuildIndexAfterStructuralChange();
+		return Promise.resolve();
+	}
+
+	return withLiveBookmarkIndex(index => removeBookmarkIdFromIndex(index, id));
+}
+
+function handleBookmarkMoved(id, moveInfo) {
+	return browser.bookmarks.get(id).then(nodes => {
+		const node = nodes && nodes[0];
+		if (!node) {
+			rebuildIndexAfterStructuralChange();
+			return;
+		}
+
+		if (isFolderNode(node)) {
+			rebuildIndexAfterStructuralChange();
+			return;
+		}
+
+		return withLiveBookmarkIndex(index => {
+			const affected = removeBookmarkIdFromIndex(index, id);
+			const updated = {
+				...node,
+				parentId: moveInfo.parentId
+			};
+			affected.push(...addBookmarkNodeToIndex(index, updated));
+			return affected;
+		});
+	}).catch(() => {
+		rebuildIndexAfterStructuralChange();
+	});
+}
+
+function handleBookmarkChanged(id, changeInfo) {
+	return getBookmarkIndex()
+		.then(index => {
+			const existing = index.bookmarkById.get(id);
+			if (!existing) {
+				// Outside the current scoped index: only add if it now qualifies.
+				return browser.bookmarks.get(id).then(nodes => {
+					const node = nodes && nodes[0];
+					if (!node || isFolderNode(node)) return [];
+					return addBookmarkNodeToIndex(index, node);
+				});
+			}
+
+			if (isFolderNode(existing)) {
+				if (changeInfo.title !== undefined) {
+					index.bookmarkById.set(id, { ...existing, title: changeInfo.title });
+				}
+				return [];
+			}
+
+			const affected = [];
+			if (changeInfo.url !== undefined) {
+				affected.push(...removeBookmarkIdFromIndex(index, id));
+				const updated = {
+					...existing,
+					...changeInfo,
+					id,
+					parentId: existing.parentId
+				};
+				affected.push(...addBookmarkNodeToIndex(index, updated));
+				return affected;
+			}
+
+			const updated = { ...existing, ...changeInfo, id };
+			index.bookmarkById.set(id, updated);
+			const normalized = index.urlByBookmarkId.get(id);
+			if (normalized) {
+				const list = index.bookmarksByNormalizedUrl.get(normalized) || [];
+				index.bookmarksByNormalizedUrl.set(
+					normalized,
+					list.map(node => (node.id === id ? updated : node))
+				);
+			}
+			return affected;
+		})
+		.then(affectedUrls => {
+			clearStatusesForUrls(affectedUrls || []);
+			scheduleConfigTabsRefresh();
+		})
+		.catch(() => {
+			rebuildIndexAfterStructuralChange();
+		});
 }
 
 function findMatchingRuleStyle(bookmark, rules, parentById, stylePriorityById) {
@@ -728,18 +870,36 @@ function isBookmarkUnderFolder(bookmark, folderId, parentById) {
 function buildBookmarkMaps(bookmarkTree) {
 	const bookmarksByNormalizedUrl = new Map();
 	const parentById = new Map();
-	addBookmarkTreeToMaps(bookmarkTree, bookmarksByNormalizedUrl, parentById);
-	return { bookmarksByNormalizedUrl, parentById };
+	const bookmarkById = new Map();
+	const urlByBookmarkId = new Map();
+	addBookmarkTreeToMaps(
+		bookmarkTree,
+		bookmarksByNormalizedUrl,
+		parentById,
+		bookmarkById,
+		urlByBookmarkId
+	);
+	return { bookmarksByNormalizedUrl, parentById, bookmarkById, urlByBookmarkId };
 }
 
-function addBookmarkTreeToMaps(bookmarkTree, bookmarksByNormalizedUrl, parentById) {
+function addBookmarkTreeToMaps(
+	bookmarkTree,
+	bookmarksByNormalizedUrl,
+	parentById,
+	bookmarkById,
+	urlByBookmarkId
+) {
 	function visit(node, parentId = null) {
+		if (!node || !node.id) return;
+
+		bookmarkById.set(node.id, node);
 		if (parentId) {
 			parentById.set(node.id, parentId);
 		}
 
 		if (node.url && isValidBookmarkUrl(node.url)) {
 			const normalized = normalizeHrefForSearch(node.url);
+			urlByBookmarkId.set(node.id, normalized);
 			if (!bookmarksByNormalizedUrl.has(normalized)) {
 				bookmarksByNormalizedUrl.set(normalized, []);
 			}
@@ -763,7 +923,7 @@ function isValidBookmarkUrl(href) {
 	}
 }
 
-// Clear cached bookmarks when refreshed or navigated
+// Clear cached statuses when a tab finishes loading so the next query is fresh.
 browser.tabs.onUpdated.addListener((tabId, changeInfo, tab) => {
 	if (changeInfo.status === "complete") {
 		bookmarkStatusMap = new Map();
@@ -771,17 +931,17 @@ browser.tabs.onUpdated.addListener((tabId, changeInfo, tab) => {
 });
 
 browser.bookmarks.onRemoved.addListener((id, removeInfo) => {
-	invalidateBookmarkCaches();
+	handleBookmarkRemoved(id, removeInfo);
 });
 
 browser.bookmarks.onCreated.addListener((id, bookmark) => {
-	invalidateBookmarkCaches();
+	handleBookmarkCreated(id, bookmark);
 });
 
 browser.bookmarks.onMoved.addListener((id, moveInfo) => {
-	invalidateBookmarkCaches();
+	handleBookmarkMoved(id, moveInfo);
 });
 
 browser.bookmarks.onChanged.addListener((id, changeInfo) => {
-	invalidateBookmarkCaches();
+	handleBookmarkChanged(id, changeInfo);
 });

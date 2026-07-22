@@ -35,6 +35,80 @@ function migrateUnmatchedBookmarkStyle(result) {
 	return "";
 }
 
+function normalizeStoredFolderId(value) {
+	return typeof value === "string" && value.trim() ? value.trim() : null;
+}
+
+function isValidBookmarkRule(rule) {
+	if (!rule || typeof rule.folderId !== "string" || !rule.folderId.trim()) {
+		return false;
+	}
+	if (isUnmatchedBookmarkRule(rule)) {
+		return rule.style === undefined || typeof rule.style === "string";
+	}
+	return typeof rule.style === "string" && rule.style.trim() !== "";
+}
+
+function normalizeBookmarkRules(rules) {
+	if (!Array.isArray(rules)) return [];
+
+	const seenFolders = new Set();
+	const normalized = [];
+	let unmatchedStyle = null;
+
+	for (const rule of rules) {
+		if (isUnmatchedBookmarkRule(rule)) {
+			unmatchedStyle = typeof rule.style === "string" ? rule.style.trim() : "";
+			continue;
+		}
+		if (!isValidBookmarkRule(rule)) continue;
+		const folderId = rule.folderId.trim();
+		if (seenFolders.has(folderId)) continue;
+		seenFolders.add(folderId);
+		normalized.push({
+			folderId,
+			style: typeof rule.style === "string" && rule.style.trim()
+				? rule.style.trim()
+				: "blocked"
+		});
+	}
+
+	if (unmatchedStyle !== null) {
+		normalized.push({
+			folderId: UNMATCHED_BOOKMARK_RULE_ID,
+			style: unmatchedStyle
+		});
+	}
+
+	return normalized;
+}
+
+function migrateBookmarkRulesFromStorage(result) {
+	let rules;
+	if (Array.isArray(result?.bookmarkRules)) {
+		rules = result.bookmarkRules.slice();
+	} else {
+		rules = [];
+		const blockedFolderId = normalizeStoredFolderId(result?.blockedFolderId);
+		const favoritedFolderId = normalizeStoredFolderId(result?.favoritedFolderId);
+		if (blockedFolderId) {
+			rules.push({ folderId: blockedFolderId, style: "blocked" });
+		}
+		if (favoritedFolderId) {
+			rules.push({ folderId: favoritedFolderId, style: "favorited" });
+		}
+	}
+
+	if (!rules.some(isUnmatchedBookmarkRule)) {
+		rules.push({
+			folderId: UNMATCHED_BOOKMARK_RULE_ID,
+			style: migrateUnmatchedBookmarkStyle(result)
+		});
+	}
+
+	return normalizeBookmarkRules(rules);
+}
+
 const PREDEFINED_STYLE_CSS = {
 	blocked: "display: none !important;",
 	favorited: "text-decoration-line: underline !important; text-decoration-style: double !important;",
@@ -207,14 +281,36 @@ function hostnameMatchesSite(hostname, site) {
  * Normalize URL for search/comparison
  * Applies URL rules to keep only specified parameters
  * Caches results to avoid repeated calculations
- * 
+ *
  * Depends on: urlRules (array), urlNormalizationCache (Map)
  * These should be defined in the calling context
  */
+const URL_NORMALIZATION_CACHE_LIMIT = 2000;
+
+function readUrlNormalizationCache(href) {
+	if (!urlNormalizationCache.has(href)) return undefined;
+	const value = urlNormalizationCache.get(href);
+	// Refresh LRU insertion order.
+	urlNormalizationCache.delete(href);
+	urlNormalizationCache.set(href, value);
+	return value;
+}
+
+function writeUrlNormalizationCache(href, normalized) {
+	if (urlNormalizationCache.has(href)) {
+		urlNormalizationCache.delete(href);
+	}
+	urlNormalizationCache.set(href, normalized);
+	while (urlNormalizationCache.size > URL_NORMALIZATION_CACHE_LIMIT) {
+		urlNormalizationCache.delete(urlNormalizationCache.keys().next().value);
+	}
+}
+
 function normalizeHrefForSearch(href) {
 	try {
-		if (urlNormalizationCache.has(href)) {
-			return urlNormalizationCache.get(href);
+		const cached = readUrlNormalizationCache(href);
+		if (cached !== undefined) {
+			return cached;
 		}
 
 		const url = new URL(href, typeof window !== 'undefined' ? window.location.origin : undefined);
@@ -254,10 +350,10 @@ function normalizeHrefForSearch(href) {
 			normalized = normalized.slice(0, -1);
 		}
 
-		urlNormalizationCache.set(href, normalized);
+		writeUrlNormalizationCache(href, normalized);
 		return normalized;
 	} catch {
-		urlNormalizationCache.set(href, href);
+		writeUrlNormalizationCache(href, href);
 		return href;
 	}
 }

@@ -465,63 +465,6 @@ function collectBookmarkRules() {
     return rules;
 }
 
-function normalizeBookmarkRules(rules) {
-    if (!Array.isArray(rules)) return [];
-
-    const seenFolders = new Set();
-    const normalized = [];
-    let unmatchedStyle = null;
-
-    for (const rule of rules) {
-        if (isUnmatchedBookmarkRule(rule)) {
-            unmatchedStyle = typeof rule.style === "string" ? rule.style.trim() : "";
-            continue;
-        }
-        if (!isValidBookmarkRule(rule)) continue;
-        if (seenFolders.has(rule.folderId)) continue;
-        seenFolders.add(rule.folderId);
-        normalized.push({
-            folderId: rule.folderId,
-            style: typeof rule.style === "string" && rule.style.trim()
-                ? rule.style.trim()
-                : "blocked"
-        });
-    }
-
-    if (unmatchedStyle !== null) {
-        normalized.push({
-            folderId: UNMATCHED_BOOKMARK_RULE_ID,
-            style: unmatchedStyle
-        });
-    }
-
-    return normalized;
-}
-
-function migrateBookmarkRulesFromStorage(result) {
-    let rules;
-    if (Array.isArray(result.bookmarkRules)) {
-        rules = result.bookmarkRules.slice();
-    } else {
-        rules = [];
-        if (typeof result.blockedFolderId === "string" && result.blockedFolderId) {
-            rules.push({ folderId: result.blockedFolderId, style: "blocked" });
-        }
-        if (typeof result.favoritedFolderId === "string" && result.favoritedFolderId) {
-            rules.push({ folderId: result.favoritedFolderId, style: "favorited" });
-        }
-    }
-
-    if (!rules.some(isUnmatchedBookmarkRule)) {
-        rules.push({
-            folderId: UNMATCHED_BOOKMARK_RULE_ID,
-            style: migrateUnmatchedBookmarkStyle(result)
-        });
-    }
-
-    return normalizeBookmarkRules(rules);
-}
-
 function loadBookmarkRuleRows(rules) {
     return browser.bookmarks.getTree().then(tree => {
         cachedBookmarkFolders = flattenBookmarkFolders(tree);
@@ -1042,16 +985,6 @@ function isValidTextRule(row) {
             row.style === undefined ||
             (typeof row.style === "string" && row.style.trim() !== "")
         );
-}
-
-function isValidBookmarkRule(row) {
-    if (!row || typeof row.folderId !== "string" || !row.folderId.trim()) {
-        return false;
-    }
-    if (isUnmatchedBookmarkRule(row)) {
-        return row.style === undefined || typeof row.style === "string";
-    }
-    return typeof row.style === "string" && row.style.trim() !== "";
 }
 
 function importFromClipboard() {
