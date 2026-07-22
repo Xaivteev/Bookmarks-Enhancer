@@ -1,3 +1,6 @@
+if (!globalThis.__beClassPickerInstalled) {
+globalThis.__beClassPickerInstalled = true;
+
 const CLASS_PICKER_PREFIX = "be-class-picker-";
 const CLASS_PICKER_MATCH = `${CLASS_PICKER_PREFIX}match`;
 const CLASS_PICKER_CURRENT = `${CLASS_PICKER_PREFIX}current`;
@@ -7,19 +10,35 @@ const EXTENSION_CLASS_PREFIX = "be-bookmarks-enhancer-";
 
 let classPickerState = null;
 let classPickerSessionId = 0;
-
-window.addEventListener("pointerdown", suppressClassPickerPageEvent, true);
-window.addEventListener("pointerup", suppressClassPickerPageEvent, true);
-window.addEventListener("mousedown", suppressClassPickerPageEvent, true);
-window.addEventListener("mouseup", suppressClassPickerPageEvent, true);
-window.addEventListener("click", handleClassPickerClick, true);
-window.addEventListener("keydown", handleClassPickerKeyDown, true);
+let classPickerPageListenersAttached = false;
 
 browser.runtime.onMessage.addListener(message => {
 	if (message && message.startClassPicker) {
 		startClassPicker();
 	}
 });
+
+function attachClassPickerPageListeners() {
+	if (classPickerPageListenersAttached) return;
+	classPickerPageListenersAttached = true;
+	window.addEventListener("pointerdown", suppressClassPickerPageEvent, true);
+	window.addEventListener("pointerup", suppressClassPickerPageEvent, true);
+	window.addEventListener("mousedown", suppressClassPickerPageEvent, true);
+	window.addEventListener("mouseup", suppressClassPickerPageEvent, true);
+	window.addEventListener("click", handleClassPickerClick, true);
+	window.addEventListener("keydown", handleClassPickerKeyDown, true);
+}
+
+function detachClassPickerPageListeners() {
+	if (!classPickerPageListenersAttached) return;
+	classPickerPageListenersAttached = false;
+	window.removeEventListener("pointerdown", suppressClassPickerPageEvent, true);
+	window.removeEventListener("pointerup", suppressClassPickerPageEvent, true);
+	window.removeEventListener("mousedown", suppressClassPickerPageEvent, true);
+	window.removeEventListener("mouseup", suppressClassPickerPageEvent, true);
+	window.removeEventListener("click", handleClassPickerClick, true);
+	window.removeEventListener("keydown", handleClassPickerKeyDown, true);
+}
 
 function startClassPicker() {
 	stopClassPicker();
@@ -40,6 +59,7 @@ function startClassPicker() {
 		previouslyFocusedElement: document.activeElement
 	};
 
+	attachClassPickerPageListeners();
 	injectClassPickerStyles();
 	createClassPickerPanel();
 	document.addEventListener("pointermove", handleClassPickerPointerMove, true);
@@ -49,6 +69,7 @@ function stopClassPicker() {
 	if (!classPickerState) return;
 
 	document.removeEventListener("pointermove", handleClassPickerPointerMove, true);
+	detachClassPickerPageListeners();
 	clearClassPickerHighlights();
 	classPickerState.host?.remove();
 	document.getElementById(CLASS_PICKER_STYLE_ID)?.remove();
@@ -560,3 +581,5 @@ function clearClassPickerHighlights() {
 		element.classList.remove(CLASS_PICKER_CURRENT);
 	}
 }
+
+} // end __beClassPickerInstalled install guard

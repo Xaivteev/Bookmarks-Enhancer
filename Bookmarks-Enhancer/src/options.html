@@ -27,6 +27,13 @@
             font-weight: bold;
         }
 
+        .bookmarkFolderFilterRow input {
+            flex: 1;
+            min-width: 12rem;
+            font: inherit;
+            padding: 0.35rem 0.5rem;
+        }
+
         .hint {
             margin: 0.25rem 0 1rem;
             color: #4b5563;
@@ -216,8 +223,18 @@
         >
             <p class="hint">
                 Each rule maps a bookmark folder (including nested folders) to a style rule.
+                When a bookmark matches more than one folder rule, the higher row wins.
                 The last row styles bookmarks that are not under any folder rule. Choose None to leave them unstyled.
             </p>
+            <div class="settingRow bookmarkFolderFilterRow">
+                <label for="bookmarkFolderFilter">Filter folders</label>
+                <input
+                    type="search"
+                    id="bookmarkFolderFilter"
+                    placeholder="Type to narrow folder lists"
+                    autocomplete="off"
+                >
+            </div>
             <table id="bookmarkRuleTable">
                 <thead>
                     <tr>

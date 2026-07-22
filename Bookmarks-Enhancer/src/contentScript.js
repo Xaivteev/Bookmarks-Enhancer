@@ -17,7 +17,7 @@ let getting = browser.storage.local.get([
     STORAGE_KEYS.searchPairs,
     STORAGE_KEYS.urlRules,
     STORAGE_KEYS.textRules,
-    STORAGE_KEYS.textFilters,
+    LEGACY_STORAGE_KEYS.textFilters,
     STORAGE_KEYS.styleRules,
     STORAGE_KEYS.enableTopBorder,
     STORAGE_KEYS.enableDeepSearch,
@@ -32,7 +32,7 @@ function onError(error) {
 function refreshManagedClassNames() {
 	managedClassNames = [
 		...preparedStyleRules.map(rule => styleRuleClassName(rule)),
-		...LEGACY_MANAGED_CLASS_NAMES
+		...STALE_MANAGED_CLASS_NAMES
 	];
 }
 
@@ -113,8 +113,7 @@ browser.storage.onChanged.addListener((changes, areaName) => {
 		refreshManagedClassNames();
 		injectBookmarkStyles();
 		browser.storage.local.get([
-			STORAGE_KEYS.textRules,
-			STORAGE_KEYS.textFilters
+			STORAGE_KEYS.textRules
 		]).then(result => {
 			preparedTextRules = preprocessTextRules(migrateTextRulesFromStorage(result));
 			invalidateTextFilterCache();
@@ -124,10 +123,9 @@ browser.storage.onChanged.addListener((changes, areaName) => {
 		needsRefresh = true;
 	}
 
-	if (changes[STORAGE_KEYS.textRules] || changes[STORAGE_KEYS.textFilters]) {
+	if (changes[STORAGE_KEYS.textRules]) {
 		browser.storage.local.get([
-			STORAGE_KEYS.textRules,
-			STORAGE_KEYS.textFilters
+			STORAGE_KEYS.textRules
 		]).then(result => {
 			preparedTextRules = preprocessTextRules(migrateTextRulesFromStorage(result));
 			invalidateTextFilterCache();

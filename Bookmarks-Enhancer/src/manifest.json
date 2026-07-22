@@ -14,16 +14,6 @@
       ],
       "js": [
         "utils.js",
-        "classPicker.js"
-      ],
-      "run_at": "document_start"
-    },
-    {
-      "matches": [
-        "<all_urls>"
-      ],
-      "js": [
-        "utils.js",
         "contentScript.js"
       ]
     }

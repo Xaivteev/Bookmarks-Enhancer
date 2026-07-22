@@ -52,9 +52,11 @@ function loadSettings() {
 			STORAGE_KEYS.urlRules,
 			STORAGE_KEYS.bookmarkRules,
 			STORAGE_KEYS.styleRules,
-			STORAGE_KEYS.enableSeenStyling,
-			STORAGE_KEYS.blockedFolderId,
-			STORAGE_KEYS.favoritedFolderId
+			STORAGE_KEYS.textRules,
+			LEGACY_STORAGE_KEYS.textFilters,
+			LEGACY_STORAGE_KEYS.enableSeenStyling,
+			LEGACY_STORAGE_KEYS.blockedFolderId,
+			LEGACY_STORAGE_KEYS.favoritedFolderId
 		])
         .then(result => {
             urlRules = Array.isArray(result[STORAGE_KEYS.urlRules])
@@ -64,6 +66,7 @@ function loadSettings() {
 			bookmarkRules = migratedRules.filter(rule => !isUnmatchedBookmarkRule(rule));
 			unmatchedBookmarkStyle = migratedRules.find(isUnmatchedBookmarkRule)?.style || "";
 			styleRules = migrateStyleRulesFromStorage(result);
+			return purgeLegacyStorage(result);
         });
 }
 
@@ -274,7 +277,7 @@ function addSelectionAsTextRule(selection, site, styleId) {
 	const normalizedSite = normalizeSite(site) || site;
 	return browser.storage.local.get([
 		STORAGE_KEYS.textRules,
-		STORAGE_KEYS.textFilters
+		LEGACY_STORAGE_KEYS.textFilters
 	]).then(result => {
 		const existing = migrateTextRulesFromStorage(result);
 		const next = normalizeTextRules([
@@ -287,18 +290,31 @@ function addSelectionAsTextRule(selection, site, styleId) {
 		]);
 
 		return browser.storage.local.set({
-			textRules: next
-		}).then(() => browser.storage.local.remove([STORAGE_KEYS.textFilters]));
+			[STORAGE_KEYS.textRules]: next
+		}).then(() => browser.storage.local.remove([LEGACY_STORAGE_KEYS.textFilters]));
 	});
+}
+
+function startClassPickerOnTab(tabId) {
+	if (tabId == null) return Promise.resolve();
+
+	const start = () => browser.tabs.sendMessage(tabId, { startClassPicker: true });
+
+	return browser.tabs.executeScript(tabId, { file: "classPicker.js" })
+		.then(start)
+		.catch(error => {
+			// Picker may already be running from a prior inject; try messaging directly.
+			return start().catch(() => {
+				onError(error);
+			});
+		});
 }
 
 browser.contextMenus.onClicked.addListener((info, tab) => {
 	if (!info || !tab) return;
 
 	if (info.menuItemId === 'selectTargetClasses') {
-		browser.tabs.sendMessage(tab.id, {
-			startClassPicker: true
-		}).catch(onError);
+		startClassPickerOnTab(tab.id);
 		return;
 	}
 
@@ -390,37 +406,6 @@ browser.storage.onChanged.addListener((changes, areaName) => {
 		shouldRefreshTabs = true;
 	}
 
-	if (changes[STORAGE_KEYS.enableSeenStyling]) {
-		// Legacy key: keep unmatched style in sync until options are re-saved.
-		if (!Array.isArray(changes[STORAGE_KEYS.bookmarkRules]?.newValue)) {
-			unmatchedBookmarkStyle = changes[STORAGE_KEYS.enableSeenStyling].newValue === false
-				? ""
-				: "seen";
-			invalidateBookmarkCaches();
-			shouldRefreshTabs = true;
-		}
-	}
-
-	if (
-		changes[STORAGE_KEYS.blockedFolderId] ||
-		changes[STORAGE_KEYS.favoritedFolderId]
-	) {
-		browser.storage.local.get([
-			STORAGE_KEYS.bookmarkRules,
-			STORAGE_KEYS.blockedFolderId,
-			STORAGE_KEYS.favoritedFolderId
-		]).then(result => {
-			if (Array.isArray(result[STORAGE_KEYS.bookmarkRules])) return;
-			bookmarkRules = normalizeBookmarkRules(
-				migrateBookmarkRulesFromStorage(result)
-			).filter(rule => !isUnmatchedBookmarkRule(rule));
-			unmatchedBookmarkStyle = migrateUnmatchedBookmarkStyle(result);
-			invalidateBookmarkCaches();
-			refreshRuleFolderContextMenus();
-			scheduleConfigTabsRefresh();
-		}).catch(onError);
-	}
-
 	for (const key of Object.keys(changes)) {
 		if (CONFIG_REFRESH_STORAGE_KEY_SET.has(key)) {
 			shouldRefreshTabs = true;
@@ -496,8 +481,7 @@ function fillBookmarkStatuses(validHrefs) {
 				const matched = findMatchingRuleStyle(
 					bookmark,
 					index.rules,
-					index.parentById,
-					index.stylePriorityById
+					index.parentById
 				);
 				if (!matched) continue;
 				if (matched.priority < bestPriority) {
@@ -511,7 +495,7 @@ function fillBookmarkStatuses(validHrefs) {
 				status === "none" &&
 				index.unmatchedBookmarkStyle &&
 				bookmarkList.length > 0 &&
-				index.stylePriorityById.has(index.unmatchedBookmarkStyle)
+				index.styleIds.has(index.unmatchedBookmarkStyle)
 			) {
 				status = index.unmatchedBookmarkStyle;
 			}
@@ -571,16 +555,13 @@ function getBookmarkIndex() {
 	return bookmarkIndexPromise;
 }
 
-function indexesUnmatchedBookmarks(stylePriorityById) {
-	return !!(
-		unmatchedBookmarkStyle &&
-		stylePriorityById.has(unmatchedBookmarkStyle)
-	);
+function indexesUnmatchedBookmarks(styleIds) {
+	return !!(unmatchedBookmarkStyle && styleIds.has(unmatchedBookmarkStyle));
 }
 
 function buildBookmarkIndex() {
-	const stylePriorityById = getStyleRulePriorityMap(styleRules);
-	const shouldIndexUnmatched = indexesUnmatchedBookmarks(stylePriorityById);
+	const styleIds = new Set((styleRules || []).map(rule => rule.id));
+	const shouldIndexUnmatched = indexesUnmatchedBookmarks(styleIds);
 
 	return resolveConfiguredRules(bookmarkRules).then(rules => {
 		if (shouldIndexUnmatched) {
@@ -589,7 +570,7 @@ function buildBookmarkIndex() {
 				return {
 					rules,
 					unmatchedBookmarkStyle,
-					stylePriorityById,
+					styleIds,
 					indexesUnmatched: true,
 					...maps
 				};
@@ -601,7 +582,7 @@ function buildBookmarkIndex() {
 			return {
 				rules,
 				unmatchedBookmarkStyle: "",
-				stylePriorityById,
+				styleIds,
 				indexesUnmatched: false,
 				bookmarksByNormalizedUrl: new Map(),
 				parentById: new Map(),
@@ -629,7 +610,7 @@ function buildBookmarkIndex() {
 			return {
 				rules,
 				unmatchedBookmarkStyle: "",
-				stylePriorityById,
+				styleIds,
 				indexesUnmatched: false,
 				bookmarksByNormalizedUrl,
 				parentById,
@@ -849,19 +830,14 @@ function handleBookmarkChanged(id, changeInfo) {
 		});
 }
 
-function findMatchingRuleStyle(bookmark, rules, parentById, stylePriorityById) {
-	let best = null;
-	for (const rule of rules) {
+function findMatchingRuleStyle(bookmark, rules, parentById) {
+	// First matching bookmark rule wins (table order in Bookmark Rules).
+	for (let priority = 0; priority < rules.length; priority++) {
+		const rule = rules[priority];
 		if (!isBookmarkUnderFolder(bookmark, rule.folderId, parentById)) continue;
-		const priority = stylePriorityById.has(rule.style)
-			? stylePriorityById.get(rule.style)
-			: Number.MAX_SAFE_INTEGER;
-		if (!best || priority < best.priority) {
-			best = { styleId: rule.style, priority };
-			if (priority === 0) break;
-		}
+		return { styleId: rule.style, priority };
 	}
-	return best;
+	return null;
 }
 
 function isBookmarkUnderFolder(bookmark, folderId, parentById) {

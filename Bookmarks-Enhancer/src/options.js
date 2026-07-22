@@ -1,13 +1,10 @@
 const BOOKMARK_RULE_STORAGE_KEY = STORAGE_KEYS.bookmarkRules;
 const STYLE_RULE_STORAGE_KEY = STORAGE_KEYS.styleRules;
-const LEGACY_ENABLE_SEEN_STYLING_KEY = STORAGE_KEYS.enableSeenStyling;
-const LEGACY_FOLDER_STORAGE_KEYS = {
-    blockedFolderId: STORAGE_KEYS.blockedFolderId,
-    favoritedFolderId: STORAGE_KEYS.favoritedFolderId
-};
 
 let cachedBookmarkFolders = [];
 let cachedStyleRules = DEFAULT_STYLE_RULES.map(rule => ({ ...rule }));
+let suppressOptionsStorageReload = false;
+let optionsStorageReloadTimer = null;
 
 function getAvailableStyleRules() {
     const fromDom = collectStyleRules();
@@ -285,6 +282,7 @@ function populateFolderSelect(select, folders, selectedId) {
         const option = document.createElement("option");
         option.value = folder.id;
         option.textContent = folder.label;
+        option.dataset.folderLabel = folder.label.toLowerCase();
         if (folder.id === selectedId) {
             option.selected = true;
             selectedExists = true;
@@ -296,8 +294,42 @@ function populateFolderSelect(select, folders, selectedId) {
         const missingOption = document.createElement("option");
         missingOption.value = selectedId;
         missingOption.textContent = `Missing folder (${selectedId})`;
+        missingOption.dataset.folderLabel = missingOption.textContent.toLowerCase();
         missingOption.selected = true;
         select.appendChild(missingOption);
+    }
+
+    applyFolderFilterToSelect(select);
+}
+
+function getFolderFilterQuery() {
+    return (document.querySelector("#bookmarkFolderFilter")?.value || "")
+        .trim()
+        .toLowerCase();
+}
+
+function applyFolderFilterToSelect(select) {
+    if (!select) return;
+    const query = getFolderFilterQuery();
+    const selectedValue = select.value;
+
+    for (const option of select.options) {
+        if (!option.value) {
+            option.hidden = false;
+            continue;
+        }
+        if (option.value === selectedValue) {
+            option.hidden = false;
+            continue;
+        }
+        const label = option.dataset.folderLabel || option.textContent.toLowerCase();
+        option.hidden = query !== "" && !label.includes(query);
+    }
+}
+
+function applyFolderFilterToAllSelects() {
+    for (const select of document.querySelectorAll(".bookmarkRuleFolder")) {
+        applyFolderFilterToSelect(select);
     }
 }
 
@@ -547,13 +579,9 @@ function persistOptionsFromForm({ successMessage = "Options saved" } = {}) {
         }
     }
 
+    suppressOptionsStorageReload = true;
     return browser.storage.local.set(payload)
-        .then(() => browser.storage.local.remove([
-            LEGACY_FOLDER_STORAGE_KEYS.blockedFolderId,
-            LEGACY_FOLDER_STORAGE_KEYS.favoritedFolderId,
-            LEGACY_ENABLE_SEEN_STYLING_KEY,
-            STORAGE_KEYS.textFilters
-        ]))
+        .then(() => browser.storage.local.remove(Object.values(LEGACY_STORAGE_KEYS)))
         .then(() => {
             replaceConfigurationRows(
                 searchPairs,
@@ -565,6 +593,7 @@ function persistOptionsFromForm({ successMessage = "Options saved" } = {}) {
             return loadBookmarkRuleRows(bookmarkRules);
         })
         .then(() => {
+            suppressOptionsStorageReload = false;
             const warnings = [];
             if (dangling.length > 0) {
                 warnings.push(`${dangling.length} missing style reference(s)`);
@@ -577,6 +606,10 @@ function persistOptionsFromForm({ successMessage = "Options saved" } = {}) {
             } else {
                 showStatus(successMessage);
             }
+        })
+        .catch(error => {
+            suppressOptionsStorageReload = false;
+            throw error;
         });
 }
 
@@ -681,7 +714,14 @@ function createTextRuleRow(site = "", text = "", style = "blocked") {
 }
 
 function restoreOptions() {
+    suppressOptionsStorageReload = true;
+
     function handleStorage(result) {
+        clearSearchTable();
+        clearUrlRuleTable();
+        clearTextRuleTable();
+        clearBookmarkRuleTable();
+        clearStyleRuleTable();
 
         document.querySelector("#enableTopBorder").checked =
             !!result.enableTopBorder;
@@ -711,7 +751,7 @@ function restoreOptions() {
             );
         }
 
-        if (result.textFilters || result.textRules) {
+        if (result[LEGACY_STORAGE_KEYS.textFilters] || result.textRules) {
             const textRules = migrateTextRulesFromStorage(result);
             if (textRules.length === 0) {
                 createTextRuleRow();
@@ -726,31 +766,66 @@ function restoreOptions() {
             createTextRuleRow();
         }
 
-        return loadBookmarkRuleRows(migrateBookmarkRulesFromStorage(result));
+        return loadBookmarkRuleRows(migrateBookmarkRulesFromStorage(result))
+            .then(() => purgeLegacyStorage(result));
     }
 
 
-    browser.storage.local.get([
+    return browser.storage.local.get([
         STORAGE_KEYS.searchPairs,
         STORAGE_KEYS.urlRules,
         STORAGE_KEYS.textRules,
-        STORAGE_KEYS.textFilters,
+        LEGACY_STORAGE_KEYS.textFilters,
         STORAGE_KEYS.styleRules,
         STORAGE_KEYS.enableTopBorder,
         STORAGE_KEYS.enableDeepSearch,
         STORAGE_KEYS.onlyUseSites,
-        STORAGE_KEYS.enableSeenStyling,
+        LEGACY_STORAGE_KEYS.enableSeenStyling,
         STORAGE_KEYS.bookmarkRules,
-        STORAGE_KEYS.blockedFolderId,
-        STORAGE_KEYS.favoritedFolderId
+        LEGACY_STORAGE_KEYS.blockedFolderId,
+        LEGACY_STORAGE_KEYS.favoritedFolderId
     ])
     .then(handleStorage)
-    .catch(console.error);
+    .catch(error => {
+        console.error(error);
+    })
+    .finally(() => {
+        suppressOptionsStorageReload = false;
+    });
+}
+
+function scheduleOptionsStorageReload() {
+    if (suppressOptionsStorageReload) return;
+    if (optionsStorageReloadTimer) {
+        clearTimeout(optionsStorageReloadTimer);
+    }
+    optionsStorageReloadTimer = setTimeout(() => {
+        optionsStorageReloadTimer = null;
+        if (suppressOptionsStorageReload) return;
+        restoreOptions().then(() => {
+            showStatus("Options updated from another change");
+        });
+    }, 150);
 }
 
 function initSaveLoadEvents() {
     restoreOptions();
     document.querySelector("form").addEventListener("submit", saveOptions);
+
+    browser.storage.onChanged.addListener((changes, areaName) => {
+        if (areaName !== "local") return;
+        const relevant = Object.keys(changes).some(key =>
+            CONFIG_REFRESH_STORAGE_KEYS.includes(key) ||
+            Object.values(LEGACY_STORAGE_KEYS).includes(key)
+        );
+        if (relevant) {
+            scheduleOptionsStorageReload();
+        }
+    });
+
+    document.querySelector("#bookmarkFolderFilter")?.addEventListener("input", () => {
+        applyFolderFilterToAllSelects();
+    });
 }
 function exportToClipboard() {
     const data = {

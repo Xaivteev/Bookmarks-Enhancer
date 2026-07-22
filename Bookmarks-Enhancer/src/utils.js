@@ -2,12 +2,16 @@ const STORAGE_KEYS = {
 	searchPairs: "searchPairs",
 	urlRules: "urlRules",
 	textRules: "textRules",
-	textFilters: "textFilters",
 	styleRules: "styleRules",
 	bookmarkRules: "bookmarkRules",
 	enableTopBorder: "enableTopBorder",
 	enableDeepSearch: "enableDeepSearch",
-	onlyUseSites: "onlyUseSites",
+	onlyUseSites: "onlyUseSites"
+};
+
+// One-shot migration only — removed after first successful migrate/purge.
+const LEGACY_STORAGE_KEYS = {
+	textFilters: "textFilters",
 	enableSeenStyling: "enableSeenStyling",
 	blockedFolderId: "blockedFolderId",
 	favoritedFolderId: "favoritedFolderId"
@@ -17,13 +21,11 @@ const CONFIG_REFRESH_STORAGE_KEYS = [
 	STORAGE_KEYS.searchPairs,
 	STORAGE_KEYS.urlRules,
 	STORAGE_KEYS.textRules,
-	STORAGE_KEYS.textFilters,
 	STORAGE_KEYS.styleRules,
 	STORAGE_KEYS.bookmarkRules,
 	STORAGE_KEYS.enableTopBorder,
 	STORAGE_KEYS.enableDeepSearch,
-	STORAGE_KEYS.onlyUseSites,
-	STORAGE_KEYS.enableSeenStyling
+	STORAGE_KEYS.onlyUseSites
 ];
 
 const DEFAULT_STYLE_RULES = [
@@ -46,15 +48,15 @@ function migrateUnmatchedBookmarkStyle(result) {
 			return typeof unmatched.style === "string" ? unmatched.style.trim() : "";
 		}
 		// Existing folder rules without an unmatched row: migrate from the old checkbox.
-		if (result.enableSeenStyling === false) return "";
+		if (result[LEGACY_STORAGE_KEYS.enableSeenStyling] === false) return "";
 		return "seen";
 	}
 
-	if (result?.enableSeenStyling === false) return "";
+	if (result?.[LEGACY_STORAGE_KEYS.enableSeenStyling] === false) return "";
 	if (
-		result?.enableSeenStyling === true ||
-		typeof result?.blockedFolderId === "string" ||
-		typeof result?.favoritedFolderId === "string"
+		result?.[LEGACY_STORAGE_KEYS.enableSeenStyling] === true ||
+		typeof result?.[LEGACY_STORAGE_KEYS.blockedFolderId] === "string" ||
+		typeof result?.[LEGACY_STORAGE_KEYS.favoritedFolderId] === "string"
 	) {
 		return "seen";
 	}
@@ -117,8 +119,12 @@ function migrateBookmarkRulesFromStorage(result) {
 		rules = result.bookmarkRules.slice();
 	} else {
 		rules = [];
-		const blockedFolderId = normalizeStoredFolderId(result?.blockedFolderId);
-		const favoritedFolderId = normalizeStoredFolderId(result?.favoritedFolderId);
+		const blockedFolderId = normalizeStoredFolderId(
+			result?.[LEGACY_STORAGE_KEYS.blockedFolderId]
+		);
+		const favoritedFolderId = normalizeStoredFolderId(
+			result?.[LEGACY_STORAGE_KEYS.favoritedFolderId]
+		);
 		if (blockedFolderId) {
 			rules.push({ folderId: blockedFolderId, style: "blocked" });
 		}
@@ -135,6 +141,45 @@ function migrateBookmarkRulesFromStorage(result) {
 	}
 
 	return normalizeBookmarkRules(rules);
+}
+
+function listPresentLegacyStorageKeys(result) {
+	return Object.values(LEGACY_STORAGE_KEYS).filter(
+		key => result && Object.prototype.hasOwnProperty.call(result, key)
+	);
+}
+
+/**
+ * Persist migrated current-format keys and delete legacy keys when present.
+ * Safe to call on every startup; no-ops when already migrated.
+ */
+function purgeLegacyStorage(result) {
+	const legacyKeys = listPresentLegacyStorageKeys(result);
+	const writes = {};
+
+	if (!Array.isArray(result?.bookmarkRules)) {
+		writes[STORAGE_KEYS.bookmarkRules] = migrateBookmarkRulesFromStorage(result);
+	}
+
+	if (!Array.isArray(result?.textRules) && Array.isArray(result?.[LEGACY_STORAGE_KEYS.textFilters])) {
+		writes[STORAGE_KEYS.textRules] = migrateTextRulesFromStorage(result);
+	}
+
+	if (Object.keys(writes).length === 0 && legacyKeys.length === 0) {
+		return Promise.resolve(false);
+	}
+
+	const setPromise = Object.keys(writes).length > 0
+		? browser.storage.local.set(writes)
+		: Promise.resolve();
+
+	return setPromise
+		.then(() => (
+			legacyKeys.length > 0
+				? browser.storage.local.remove(legacyKeys)
+				: undefined
+		))
+		.then(() => true);
 }
 
 function parseCommaSeparatedValues(value) {
@@ -234,10 +279,10 @@ function migrateTextRulesFromStorage(result) {
 		return normalizeTextRules(result.textRules);
 	}
 
-	if (!Array.isArray(result?.textFilters)) return [];
+	if (!Array.isArray(result?.[LEGACY_STORAGE_KEYS.textFilters])) return [];
 
 	const migrated = [];
-	for (const filter of result.textFilters) {
+	for (const filter of result[LEGACY_STORAGE_KEYS.textFilters]) {
 		if (!filter || typeof filter.filterText !== "string") continue;
 		const site = typeof filter.site === "string" ? filter.site : "";
 		const texts = filter.filterText.split(',').map(text => text.trim()).filter(Boolean);
@@ -264,7 +309,8 @@ const PREDEFINED_STYLE_BORDERS = {
 	seen: "dashed white"
 };
 
-const LEGACY_MANAGED_CLASS_NAMES = [
+// Old class names to strip from pages after upgrades.
+const STALE_MANAGED_CLASS_NAMES = [
 	"be-bookmarks-enhancer-blocked",
 	"be-bookmarks-enhancer-favorited",
 	"be-bookmarks-enhancer-seen",
@@ -401,14 +447,6 @@ function migrateStyleRulesFromStorage(result) {
 		return normalizeStyleRules(result.styleRules);
 	}
 	return DEFAULT_STYLE_RULES.map(rule => ({ ...rule }));
-}
-
-function getStyleRulePriorityMap(styleRules) {
-	const priorityById = new Map();
-	(styleRules || []).forEach((rule, index) => {
-		priorityById.set(rule.id, index);
-	});
-	return priorityById;
 }
 
 /**
