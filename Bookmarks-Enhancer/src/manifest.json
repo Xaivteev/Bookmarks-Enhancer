@@ -1,5 +1,5 @@
 {
-  "manifest_version": 2,
+  "manifest_version": 3,
   "name": "Bookmarks Enhancer",
   "version": "1.0",
   "description": "Hides 'Blocked' bookmarked links. Marks bookmarked and 'Favorite' links.",
@@ -13,13 +13,16 @@
         "<all_urls>"
       ],
       "js": [
+        "browser-polyfill.js",
         "utils.js",
         "contentScript.js"
       ]
     }
   ],
   "background": {
+    "service_worker": "background.js",
     "scripts": [
+      "browser-polyfill.js",
       "utils.js",
       "backgroundScript.js"
     ]
@@ -30,23 +33,23 @@
     "activeTab",
     "clipboardWrite",
     "clipboardRead",
-    "contextMenus"
+    "contextMenus",
+    "scripting"
+  ],
+  "host_permissions": [
+    "<all_urls>"
   ],
   "options_ui": {
-	"page": "options.html"
-	},
-  "applications": {
+    "page": "options.html"
+  },
+  "browser_specific_settings": {
     "gecko": {
-      "id": "Bookmarks@Enhancer"
+      "id": "Bookmarks@Enhancer",
+      "strict_min_version": "121.0"
     }
   },
-  "browser_action": {
+  "action": {
     "default_icon": "icons/highlighter-48.png",
     "default_title": "Enhance Bookmarks"
-  },
-  "page_action": {
-	"default_icon": "icons/highlighter-48.png",
-    "default_title": "Enhance Bookmarks",
-	"show_matches": ["<all_urls>"]
   }
 }

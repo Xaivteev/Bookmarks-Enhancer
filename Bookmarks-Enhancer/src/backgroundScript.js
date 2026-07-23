@@ -14,11 +14,7 @@
 });
 
 // Full refresh when the toolbar icon is clicked
-browser.browserAction.onClicked.addListener(() => {
-	sendRefreshToActiveTab("authoritative");
-});
-
-browser.pageAction.onClicked.addListener(() => {
+browser.action.onClicked.addListener(() => {
 	sendRefreshToActiveTab("authoritative");
 });
 
@@ -89,12 +85,12 @@ function createContextMenus() {
 		{
 			id: 'selectTargetClasses',
 			title: 'Select Target Classes',
-			contexts: ['page', 'browser_action', 'page_action']
+			contexts: ['page', 'action']
 		},
 		{
 			id: REFRESH_TAB_STYLING_MENU_ID,
 			title: 'Refresh styling on this tab',
-			contexts: ['page', 'browser_action', 'page_action']
+			contexts: ['page', 'action']
 		}
 	];
 
@@ -233,7 +229,7 @@ createContextMenus();
 function getValidFolderId(folderId) {
 	if (!folderId) return Promise.resolve(null);
 	return browser.bookmarks.get(folderId).then(nodes => {
-		const folder = nodes.find(node => node.type === "folder");
+		const folder = nodes.find(isFolderNode);
 		return folder ? folder.id : null;
 	}).catch(() => null);
 }
@@ -300,7 +296,10 @@ function startClassPickerOnTab(tabId) {
 
 	const start = () => browser.tabs.sendMessage(tabId, { startClassPicker: true });
 
-	return browser.tabs.executeScript(tabId, { file: "classPicker.js" })
+	return browser.scripting.executeScript({
+		target: { tabId },
+		files: ["classPicker.js"]
+	})
 		.then(start)
 		.catch(error => {
 			// Picker may already be running from a prior inject; try messaging directly.
