@@ -68,7 +68,6 @@ function loadSettings() {
 }
 
 const SESSION_STATUS_CACHE_KEY = "beBookmarkStatusCache";
-const UNMATCHED_SEARCH_CONCURRENCY = 2;
 
 const settingsReady = loadSettings()
 	.then(() => restoreStatusCacheFromSession())
@@ -85,8 +84,8 @@ const LEGACY_LINK_MENU_IDS = ["addLinkBlocked", "addLinkFavorited", "addTextFilt
 let ruleFolderMenuIds = [];
 let textRuleMenuIds = [];
 
-// Lightweight menus only on wake; defer folder/text menus so they don't compete
-// with first-page bookmark lookups.
+// Lightweight menus only on wake; defer folder/text menus so they don't
+// compete with first-page bookmark index work.
 function createStaticContextMenus() {
 	const menuDefinitions = [
 		{
@@ -150,7 +149,7 @@ function createRuleFolderChildMenus(parentId, idPrefix, contexts) {
 			if (!folderId) return null;
 
 			return browser.bookmarks.get(folderId).then(nodes => {
-				const folder = nodes.find(isFolderNode) || nodes[0];
+				const folder = nodes.find(node => node.type === "folder") || nodes[0];
 				if (!folder) return null;
 
 				const menuId = idPrefix + folderId;
@@ -273,8 +272,6 @@ function notifyAllTabsRefresh(mode = "optimistic") {
 }
 
 let configRefreshNotifyTimer = null;
-let optimisticRefreshNotifyTimer = null;
-
 function scheduleConfigTabsRefresh() {
 	if (configRefreshNotifyTimer) {
 		clearTimeout(configRefreshNotifyTimer);
@@ -283,29 +280,6 @@ function scheduleConfigTabsRefresh() {
 		configRefreshNotifyTimer = null;
 		notifyAllTabsRefresh("authoritative");
 	}, 75);
-}
-
-// Bookmark create/edit/delete: optimistic only. Authoritative all-tab refresh
-// re-runs unmatched lookups and can starve the browser bookmarks UI.
-function scheduleOptimisticTabsRefresh() {
-	if (optimisticRefreshNotifyTimer) {
-		clearTimeout(optimisticRefreshNotifyTimer);
-	}
-	optimisticRefreshNotifyTimer = setTimeout(() => {
-		optimisticRefreshNotifyTimer = null;
-		notifyAllTabsRefresh("optimistic");
-	}, 75);
-}
-
-function notifyTabsStatusUpdates(statusByHref) {
-	if (!statusByHref || Object.keys(statusByHref).length === 0) {
-		return scheduleOptimisticTabsRefresh();
-	}
-	return browser.tabs.query({}).then(tabs => {
-		for (const t of tabs) {
-			browser.tabs.sendMessage(t.id, { statusUpdates: statusByHref }).catch(() => {});
-		}
-	}).catch(() => {});
 }
 
 const CONFIG_REFRESH_STORAGE_KEY_SET = new Set(CONFIG_REFRESH_STORAGE_KEYS);
@@ -404,7 +378,10 @@ browser.contextMenus.onClicked.addListener((info, tab) => {
 
 	settingsReady
 		.then(() => createBookmarkInFolder(folderId, url, title))
-		// bookmarks.onCreated updates the live index/status and notifies tabs.
+		.then(() => {
+			invalidateBookmarkCaches();
+			notifyAllTabsRefresh();
+		})
 		.catch(onError);
 });
 
@@ -457,17 +434,11 @@ browser.storage.onChanged.addListener((changes, areaName) => {
 });
 
 let bookmarkStatusMap = new Map(); // href -> status string
-let unmatchedUrlSet = new Set(); // normalized hrefs bookmarked outside rule folders
 let tabHrefSets = new Map(); // tabId -> Set of normalized hrefs seen from that tab
 let bookmarkIndexPromise = null;
 let liveBookmarkIndex = null;
 let bookmarkCacheGeneration = 0;
 let persistStatusCacheTimer = null;
-
-function isUnmatchedStylingEnabled() {
-	const styleIds = new Set((styleRules || []).map(rule => rule.id));
-	return !!(unmatchedBookmarkStyle && styleIds.has(unmatchedBookmarkStyle));
-}
 
 function getStatusCacheFingerprint() {
 	return JSON.stringify({
@@ -485,13 +456,9 @@ function restoreStatusCacheFromSession() {
 		const cached = result && result[SESSION_STATUS_CACHE_KEY];
 		if (!cached || typeof cached !== "object") return;
 		if (cached.fingerprint !== getStatusCacheFingerprint()) return;
+		if (!cached.statuses || typeof cached.statuses !== "object") return;
 
-		if (cached.statuses && typeof cached.statuses === "object") {
-			bookmarkStatusMap = new Map(Object.entries(cached.statuses));
-		}
-		if (Array.isArray(cached.unmatchedUrls)) {
-			unmatchedUrlSet = new Set(cached.unmatchedUrls.filter(Boolean));
-		}
+		bookmarkStatusMap = new Map(Object.entries(cached.statuses));
 	}).catch(() => {});
 }
 
@@ -511,12 +478,10 @@ function schedulePersistStatusCache() {
 	}
 	persistStatusCacheTimer = setTimeout(() => {
 		persistStatusCacheTimer = null;
-		const statuses = Object.fromEntries(bookmarkStatusMap);
 		browser.storage.session.set({
 			[SESSION_STATUS_CACHE_KEY]: {
 				fingerprint: getStatusCacheFingerprint(),
-				statuses,
-				unmatchedUrls: Array.from(unmatchedUrlSet)
+				statuses: Object.fromEntries(bookmarkStatusMap)
 			}
 		}).catch(() => {});
 	}, 400);
@@ -568,17 +533,12 @@ function fillBookmarkStatuses(validHrefs) {
 		return Promise.resolve(buildStatusResponse(validHrefs));
 	}
 
-	// Folder-only index for rule matches; unmatched uses live set + light URL search.
+	// getBookmarkIndex() chains through stale builds once for all waiters.
+	// Only re-run status fills if the cache generation moved after the index settled.
 	return getBookmarkIndex().then(index => {
 		if (index.generation !== bookmarkCacheGeneration) {
 			return fillBookmarkStatuses(validHrefs);
 		}
-
-		const needsUnmatchedSearch = [];
-		const unmatchedEnabled = !!(
-			index.unmatchedBookmarkStyle &&
-			index.styleIds.has(index.unmatchedBookmarkStyle)
-		);
 
 		for (const href of hrefsToSearch) {
 			if (bookmarkStatusMap.has(href)) continue;
@@ -601,129 +561,26 @@ function fillBookmarkStatuses(validHrefs) {
 				}
 			}
 
-			if (status !== "none") {
-				bookmarkStatusMap.set(href, status);
-			} else if (unmatchedEnabled && unmatchedUrlSet.has(href)) {
-				bookmarkStatusMap.set(href, index.unmatchedBookmarkStyle);
-			} else if (unmatchedEnabled) {
-				needsUnmatchedSearch.push(href);
-			} else {
-				bookmarkStatusMap.set(href, "none");
+			if (
+				status === "none" &&
+				index.unmatchedBookmarkStyle &&
+				bookmarkList.length > 0 &&
+				index.styleIds.has(index.unmatchedBookmarkStyle)
+			) {
+				status = index.unmatchedBookmarkStyle;
 			}
+
+			bookmarkStatusMap.set(href, status);
 		}
 
-		const finish = () => {
-			if (index.generation !== bookmarkCacheGeneration) {
-				return fillBookmarkStatuses(validHrefs);
-			}
-			schedulePersistStatusCache();
-			return buildStatusResponse(validHrefs);
-		};
-
-		if (needsUnmatchedSearch.length === 0) {
-			return finish();
+		if (index.generation !== bookmarkCacheGeneration) {
+			// invalidateBookmarkCaches() replaced the status map; retry against the new generation.
+			return fillBookmarkStatuses(validHrefs);
 		}
 
-		return resolveUnmatchedViaSearch(needsUnmatchedSearch, index).then(finish);
+		schedulePersistStatusCache();
+		return buildStatusResponse(validHrefs);
 	});
-}
-
-function urlSearchCandidates(href) {
-	const candidates = new Set();
-	if (!href) return [];
-	candidates.add(href);
-	try {
-		const url = new URL(href);
-		candidates.add(url.href);
-		if (url.href.endsWith("/")) {
-			candidates.add(url.href.replace(/\/+$/, "") || url.href);
-		} else {
-			candidates.add(`${url.href}/`);
-		}
-		url.hash = "";
-		candidates.add(url.href);
-	} catch {
-		// keep href only
-	}
-	return Array.from(candidates);
-}
-
-function findBookmarksForNormalizedHref(href) {
-	const matchesNormalized = results =>
-		(results || []).filter(bookmark =>
-			bookmark &&
-			bookmark.url &&
-			normalizeHrefForSearch(bookmark.url) === href
-		);
-
-	// Exact URL searches only (plus a few variants). Avoid bookmarks.search(string),
-	// which scans the whole library and stalls the native bookmarks UI.
-	const candidates = urlSearchCandidates(href);
-	let chain = Promise.resolve([]);
-
-	for (const candidate of candidates) {
-		chain = chain.then(found => {
-			if (found.length > 0) return found;
-			return browser.bookmarks.search({ url: candidate })
-				.catch(() => [])
-				.then(matchesNormalized);
-		});
-	}
-
-	return chain.then(found => {
-		if (found.length > 0) return found;
-
-		// Light query: host + path terms only (no full-URL string scan).
-		let lightQuery = "";
-		try {
-			const url = new URL(href);
-			lightQuery = `${url.hostname} ${url.pathname}`.trim();
-		} catch {
-			return [];
-		}
-		if (!lightQuery) return [];
-
-		return browser.bookmarks.search(lightQuery)
-			.catch(() => [])
-			.then(matchesNormalized);
-	});
-}
-
-function resolveUnmatchedViaSearch(hrefs, index) {
-	let nextIndex = 0;
-
-	const worker = () => {
-		if (nextIndex >= hrefs.length) return Promise.resolve();
-		if (index.generation !== bookmarkCacheGeneration) return Promise.resolve();
-
-		const href = hrefs[nextIndex++];
-		if (bookmarkStatusMap.has(href)) return worker();
-
-		return findBookmarksForNormalizedHref(href)
-			.then(bookmarks => {
-				if (index.generation !== bookmarkCacheGeneration) return;
-				if (bookmarkStatusMap.has(href)) return;
-				if (bookmarks.length > 0) {
-					unmatchedUrlSet.add(href);
-					bookmarkStatusMap.set(href, index.unmatchedBookmarkStyle);
-				} else {
-					bookmarkStatusMap.set(href, "none");
-				}
-			})
-			.catch(() => {
-				if (!bookmarkStatusMap.has(href)) {
-					bookmarkStatusMap.set(href, "none");
-				}
-			})
-			.then(() => worker());
-	};
-
-	const workers = [];
-	const count = Math.min(UNMATCHED_SEARCH_CONCURRENCY, hrefs.length);
-	for (let i = 0; i < count; i++) {
-		workers.push(worker());
-	}
-	return Promise.all(workers);
 }
 
 function buildStatusResponse(requestedHrefs) {
@@ -769,15 +626,33 @@ function getBookmarkIndex() {
 	return bookmarkIndexPromise;
 }
 
-// Folder-scoped index only. Unmatched bookmarks are resolved via per-URL search.
+function indexesUnmatchedBookmarks(styleIds) {
+	return !!(unmatchedBookmarkStyle && styleIds.has(unmatchedBookmarkStyle));
+}
+
 function buildBookmarkIndex() {
 	const styleIds = new Set((styleRules || []).map(rule => rule.id));
+	const shouldIndexUnmatched = indexesUnmatchedBookmarks(styleIds);
 
 	return resolveConfiguredRules(bookmarkRules).then(rules => {
+		if (shouldIndexUnmatched) {
+			return browser.bookmarks.getTree().then(bookmarkTree => {
+				const maps = buildBookmarkMaps(bookmarkTree);
+				return {
+					rules,
+					unmatchedBookmarkStyle,
+					styleIds,
+					indexesUnmatched: true,
+					...maps
+				};
+			});
+		}
+
+		// None for unmatched: only index bookmarks under configured rule folders.
 		if (rules.length === 0) {
 			return {
 				rules,
-				unmatchedBookmarkStyle,
+				unmatchedBookmarkStyle: "",
 				styleIds,
 				indexesUnmatched: false,
 				bookmarksByNormalizedUrl: new Map(),
@@ -805,7 +680,7 @@ function buildBookmarkIndex() {
 			}
 			return {
 				rules,
-				unmatchedBookmarkStyle,
+				unmatchedBookmarkStyle: "",
 				styleIds,
 				indexesUnmatched: false,
 				bookmarksByNormalizedUrl,
@@ -832,7 +707,6 @@ function resolveConfiguredRules(rules) {
 function invalidateBookmarkCaches() {
 	bookmarkCacheGeneration += 1;
 	bookmarkStatusMap = new Map();
-	unmatchedUrlSet = new Set();
 	tabHrefSets = new Map();
 	bookmarkIndexPromise = null;
 	liveBookmarkIndex = null;
@@ -856,6 +730,7 @@ function isFolderNode(node) {
 
 function shouldIndexBookmarkInIndex(index, node) {
 	if (!node || !node.url || !isValidBookmarkUrl(node.url)) return false;
+	if (index.indexesUnmatched) return true;
 	return index.rules.some(rule =>
 		isBookmarkUnderFolder(node, rule.folderId, index.parentById)
 	);
@@ -890,22 +765,10 @@ function addBookmarkNodeToIndex(index, node) {
 	}
 
 	if (!shouldIndexBookmarkInIndex(index, node)) {
-		// Outside rule folders: track for unmatched/"seen" without re-searching.
-		if (node.url && isValidBookmarkUrl(node.url)) {
-			const normalized = normalizeHrefForSearch(node.url);
-			affected.push(normalized);
-			unmatchedUrlSet.add(normalized);
-			if (isUnmatchedStylingEnabled()) {
-				bookmarkStatusMap.set(normalized, unmatchedBookmarkStyle);
-			} else {
-				bookmarkStatusMap.delete(normalized);
-			}
-		}
 		return affected;
 	}
 
 	const normalized = normalizeHrefForSearch(node.url);
-	unmatchedUrlSet.delete(normalized);
 	index.urlByBookmarkId.set(node.id, normalized);
 	if (!index.bookmarksByNormalizedUrl.has(normalized)) {
 		index.bookmarksByNormalizedUrl.set(normalized, []);
@@ -915,16 +778,6 @@ function addBookmarkNodeToIndex(index, node) {
 		list.push(node);
 	}
 	affected.push(normalized);
-
-	const matched = findMatchingRuleStyle(node, index.rules, index.parentById);
-	if (matched) {
-		bookmarkStatusMap.set(normalized, matched.styleId);
-	} else if (isUnmatchedStylingEnabled()) {
-		unmatchedUrlSet.add(normalized);
-		bookmarkStatusMap.set(normalized, unmatchedBookmarkStyle);
-	} else {
-		bookmarkStatusMap.set(normalized, "none");
-	}
 	return affected;
 }
 
@@ -937,18 +790,8 @@ function withLiveBookmarkIndex(mutator) {
 	return getBookmarkIndex()
 		.then(index => {
 			const affectedUrls = mutator(index) || [];
-			const statusByHref = {};
-			for (const url of affectedUrls) {
-				if (!url) continue;
-				const status = bookmarkStatusMap.get(url);
-				if (status) statusByHref[url] = status;
-				else statusByHref[url] = "none";
-			}
-			schedulePersistStatusCache();
-			if (Object.keys(statusByHref).length > 0) {
-				return notifyTabsStatusUpdates(statusByHref);
-			}
-			return scheduleOptimisticTabsRefresh();
+			clearStatusesForUrls(affectedUrls);
+			scheduleConfigTabsRefresh();
 		})
 		.catch(() => {
 			rebuildIndexAfterStructuralChange();
@@ -976,16 +819,7 @@ function handleBookmarkRemoved(id, removeInfo) {
 		return Promise.resolve();
 	}
 
-	return withLiveBookmarkIndex(index => {
-		const affected = removeBookmarkIdFromIndex(index, id);
-		if (node && node.url && isValidBookmarkUrl(node.url)) {
-			const normalized = normalizeHrefForSearch(node.url);
-			affected.push(normalized);
-			unmatchedUrlSet.delete(normalized);
-			bookmarkStatusMap.delete(normalized);
-		}
-		return affected;
-	});
+	return withLiveBookmarkIndex(index => removeBookmarkIdFromIndex(index, id));
 }
 
 function handleBookmarkMoved(id, moveInfo) {
@@ -1037,12 +871,7 @@ function handleBookmarkChanged(id, changeInfo) {
 
 			const affected = [];
 			if (changeInfo.url !== undefined) {
-				const previousNormalized = index.urlByBookmarkId.get(id);
 				affected.push(...removeBookmarkIdFromIndex(index, id));
-				if (previousNormalized) {
-					unmatchedUrlSet.delete(previousNormalized);
-					bookmarkStatusMap.delete(previousNormalized);
-				}
 				const updated = {
 					...existing,
 					...changeInfo,
@@ -1066,16 +895,8 @@ function handleBookmarkChanged(id, changeInfo) {
 			return affected;
 		})
 		.then(affectedUrls => {
-			const statusByHref = {};
-			for (const url of affectedUrls || []) {
-				if (!url) continue;
-				statusByHref[url] = bookmarkStatusMap.get(url) || "none";
-			}
-			schedulePersistStatusCache();
-			if (Object.keys(statusByHref).length > 0) {
-				return notifyTabsStatusUpdates(statusByHref);
-			}
-			return undefined;
+			clearStatusesForUrls(affectedUrls || []);
+			scheduleConfigTabsRefresh();
 		})
 		.catch(() => {
 			rebuildIndexAfterStructuralChange();
@@ -1103,6 +924,21 @@ function isBookmarkUnderFolder(bookmark, folderId, parentById) {
 		currentId = parentById.get(currentId);
 	}
 	return false;
+}
+
+function buildBookmarkMaps(bookmarkTree) {
+	const bookmarksByNormalizedUrl = new Map();
+	const parentById = new Map();
+	const bookmarkById = new Map();
+	const urlByBookmarkId = new Map();
+	addBookmarkTreeToMaps(
+		bookmarkTree,
+		bookmarksByNormalizedUrl,
+		parentById,
+		bookmarkById,
+		urlByBookmarkId
+	);
+	return { bookmarksByNormalizedUrl, parentById, bookmarkById, urlByBookmarkId };
 }
 
 function addBookmarkTreeToMaps(

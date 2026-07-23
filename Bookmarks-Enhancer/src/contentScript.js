@@ -243,28 +243,6 @@ function injectBookmarkStyles() {
 
 // Listen for explicit refresh messages from backgroundScript
 browser.runtime.onMessage.addListener(message => {
-	if (message && message.statusUpdates) {
-		if (!searchSite) return;
-		buildLinkMap(true);
-		const classNames = managedClassNames.filter(Boolean);
-		for (const [href, status] of Object.entries(message.statusUpdates)) {
-			processedHrefs.add(href);
-			const links = linkMap.get(href) || [];
-			for (const link of links) {
-				if (classNames.length) link.classList.remove(...classNames);
-			}
-			if (status && status !== "none") {
-				linkStatusMap.set(href, status);
-			} else {
-				linkStatusMap.delete(href);
-			}
-		}
-		applyBookmarkStyling({
-			statuses: Object.fromEntries(linkStatusMap)
-		}, true);
-		return;
-	}
-
 	if (message && message.refresh) {
 		if (message.mode === "authoritative") {
 			performAuthoritativeRefresh();
