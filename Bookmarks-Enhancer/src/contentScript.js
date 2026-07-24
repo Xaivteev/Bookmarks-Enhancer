@@ -1,3 +1,6 @@
+if (!globalThis.__beContentScriptInstalled) {
+globalThis.__beContentScriptInstalled = true;
+
 // Storage keys: STORAGE_KEYS from utils.js
 
 // Load settings from config
@@ -224,9 +227,12 @@ function requestBookmarkStatuses(hrefs) {
 	const requestGeneration = urlCacheGeneration;
 	browser.runtime.sendMessage({ hrefs })
 		.then(message => {
-			if (requestGeneration === urlCacheGeneration) {
-				applyBookmarkStyling(message);
+			if (requestGeneration !== urlCacheGeneration) return;
+			if (message && message.error) {
+				onError(message.error);
+				return;
 			}
+			applyBookmarkStyling(message);
 		})
 		.catch(onError);
 }
@@ -306,6 +312,9 @@ function sendAllHrefs() {
 function performAuthoritativeRefresh() {
 	if (!searchSite) return;
 
+	// Host pages sometimes remove our stylesheet; refresh must recreate it.
+	injectBookmarkStyles();
+
 	urlCacheGeneration += 1;
 	const refreshGeneration = urlCacheGeneration;
 	buildLinkMap(true);
@@ -314,6 +323,12 @@ function performAuthoritativeRefresh() {
 
 	function applyAuthoritativeResults(message) {
 		if (refreshGeneration !== urlCacheGeneration) return;
+
+		// Failed lookups used to return empty statuses and wipe the page.
+		if (message && message.error) {
+			onError(message.error);
+			return;
+		}
 
 		linkMap = authoritativeLinkMap;
 		linkStatusMap = new Map();
@@ -674,3 +689,5 @@ function initProcessing() {
 	// Start observing for incremental additions
 	startMutationObserver();
 }
+
+} // end __beContentScriptInstalled install guard

@@ -1,13 +1,19 @@
-﻿browser.runtime.onMessage.addListener((message, sender, sendResponse) => {
+﻿const INDEX_BUILD_TIMEOUT_MS = 45000;
+const SETTINGS_LOAD_TIMEOUT_MS = 15000;
+const MAX_STATUS_FILL_RETRIES = 8;
+const CONTENT_SCRIPT_FILES = ["browser-polyfill.js", "utils.js", "contentScript.js"];
+
+browser.runtime.onMessage.addListener((message, sender, sendResponse) => {
 	if (message && message.hrefs) {
 		const tabId = sender && sender.tab ? sender.tab.id : null;
 		const authoritative = !!(message.authoritative || message.mode === "authoritative");
-		settingsReady
+		ensureSettingsReady()
 			.then(() => searchhrefs(message.hrefs, tabId, { authoritative }))
 			.then(sendResponse)
 			.catch(error => {
 				onError(error);
-				sendResponse({ statuses: {} });
+				// Signal failure explicitly so content scripts do not wipe existing styles.
+				sendResponse({ statuses: {}, error: String(error && error.message ? error.message : error) });
 			});
 		return true;
 	}
@@ -25,14 +31,46 @@ function sendRefreshToActiveTab(mode) {
 		active: true
 	}).then(tabs => {
 		if (tabs.length > 0) {
-			return browser.tabs.sendMessage(tabs[0].id, { refresh: true, mode });
+			return refreshTabStyling(tabs[0].id, mode);
 		}
 		return undefined;
 	}).catch(onError);
 }
 
+function refreshTabStyling(tabId, mode = "authoritative") {
+	if (tabId == null) return Promise.resolve();
+
+	// Icon/menu refresh is the recovery path when the SW index is stuck.
+	recoverHungBookmarkIndex(true);
+
+	const payload = { refresh: true, mode };
+	return browser.tabs.sendMessage(tabId, payload)
+		.catch(() => ensureContentScripts(tabId).then(() => browser.tabs.sendMessage(tabId, payload)))
+		.catch(onError);
+}
+
+function ensureContentScripts(tabId) {
+	return browser.scripting.executeScript({
+		target: { tabId },
+		files: CONTENT_SCRIPT_FILES
+	});
+}
+
 function onError(error) {
 	console.log(`Error: ${error}`);
+}
+
+function withTimeout(promise, ms, message) {
+	let timeoutId = null;
+	const timeoutPromise = new Promise((_, reject) => {
+		timeoutId = setTimeout(() => {
+			reject(new Error(message || `Timed out after ${ms}ms`));
+		}, ms);
+	});
+
+	return Promise.race([promise, timeoutPromise]).finally(() => {
+		if (timeoutId) clearTimeout(timeoutId);
+	});
 }
 
 // Storage keys: STORAGE_KEYS from utils.js
@@ -42,6 +80,9 @@ let bookmarkRules = [];
 let unmatchedBookmarkStyle = "";
 let styleRules = DEFAULT_STYLE_RULES.map(rule => ({ ...rule }));
 const urlNormalizationCache = createUrlNormalizationCache();
+
+let settingsReady = null;
+let settingsLoadGeneration = 0;
 
 function loadSettings() {
     return browser.storage.local
@@ -67,11 +108,28 @@ function loadSettings() {
         });
 }
 
-const SESSION_STATUS_CACHE_KEY = "beBookmarkStatusCache";
+function ensureSettingsReady() {
+	if (!settingsReady) {
+		const loadGeneration = ++settingsLoadGeneration;
+		settingsReady = withTimeout(
+			loadSettings().then(() => restoreStatusCacheFromSession()),
+			SETTINGS_LOAD_TIMEOUT_MS,
+			"Settings load timed out"
+		).catch(error => {
+			onError(error);
+			// Allow a later request to retry instead of staying wedged forever.
+			if (loadGeneration === settingsLoadGeneration) {
+				settingsReady = null;
+			}
+			throw error;
+		});
+	}
+	return settingsReady;
+}
 
-const settingsReady = loadSettings()
-	.then(() => restoreStatusCacheFromSession())
-	.catch(onError);
+ensureSettingsReady().catch(onError);
+
+const SESSION_STATUS_CACHE_KEY = "beBookmarkStatusCache";
 
 const RULE_LINK_MENU_PREFIX = "addLinkToRuleFolder:";
 const RULE_PAGE_MENU_PREFIX = "addPageToRuleFolder:";
@@ -167,7 +225,7 @@ function createRuleFolderChildMenus(parentId, idPrefix, contexts) {
 }
 
 function refreshRuleFolderContextMenus() {
-	return settingsReady.then(() => {
+	return ensureSettingsReady().then(() => {
 		const removals = [
 			removeContextMenu(RULE_LINK_MENU_PARENT),
 			removeContextMenu(RULE_PAGE_MENU_PARENT),
@@ -207,7 +265,7 @@ function refreshRuleFolderContextMenus() {
 }
 
 function refreshTextRuleContextMenus() {
-	return settingsReady.then(() => {
+	return ensureSettingsReady().then(() => {
 		const removals = [
 			removeContextMenu(TEXT_RULE_MENU_PARENT),
 			...textRuleMenuIds.map(removeContextMenu)
@@ -240,7 +298,7 @@ function refreshTextRuleContextMenus() {
 }
 
 createStaticContextMenus();
-settingsReady.then(() => scheduleDeferredDynamicMenus()).catch(onError);
+ensureSettingsReady().then(() => scheduleDeferredDynamicMenus()).catch(onError);
 
 function getValidFolderId(folderId) {
 	if (!folderId) return Promise.resolve(null);
@@ -334,10 +392,7 @@ browser.contextMenus.onClicked.addListener((info, tab) => {
 	}
 
 	if (info.menuItemId === REFRESH_TAB_STYLING_MENU_ID) {
-		browser.tabs.sendMessage(tab.id, {
-			refresh: true,
-			mode: "authoritative"
-		}).catch(onError);
+		refreshTabStyling(tab.id, "authoritative");
 		return;
 	}
 
@@ -376,7 +431,7 @@ browser.contextMenus.onClicked.addListener((info, tab) => {
 		return;
 	}
 
-	settingsReady
+	ensureSettingsReady()
 		.then(() => createBookmarkInFolder(folderId, url, title))
 		.then(() => {
 			invalidateBookmarkCaches();
@@ -438,6 +493,9 @@ let tabHrefSets = new Map(); // tabId -> Set of normalized hrefs seen from that 
 let bookmarkIndexPromise = null;
 let liveBookmarkIndex = null;
 let bookmarkCacheGeneration = 0;
+let bookmarkIndexBuildId = 0;
+let bookmarkIndexStartedAt = 0;
+let bookmarkIndexBuilding = false;
 let persistStatusCacheTimer = null;
 
 function getStatusCacheFingerprint() {
@@ -527,7 +585,7 @@ function searchhrefs(hrefs, tabId = null, options = {}) {
 	return fillBookmarkStatuses(validHrefs);
 }
 
-function fillBookmarkStatuses(validHrefs) {
+function fillBookmarkStatuses(validHrefs, retryCount = 0) {
 	const hrefsToSearch = validHrefs.filter(href => !bookmarkStatusMap.has(href));
 	if (hrefsToSearch.length === 0) {
 		return Promise.resolve(buildStatusResponse(validHrefs));
@@ -537,7 +595,10 @@ function fillBookmarkStatuses(validHrefs) {
 	// Only re-run status fills if the cache generation moved after the index settled.
 	return getBookmarkIndex().then(index => {
 		if (index.generation !== bookmarkCacheGeneration) {
-			return fillBookmarkStatuses(validHrefs);
+			if (retryCount >= MAX_STATUS_FILL_RETRIES) {
+				throw new Error("Bookmark status lookup aborted after repeated cache invalidation");
+			}
+			return fillBookmarkStatuses(validHrefs, retryCount + 1);
 		}
 
 		for (const href of hrefsToSearch) {
@@ -575,7 +636,10 @@ function fillBookmarkStatuses(validHrefs) {
 
 		if (index.generation !== bookmarkCacheGeneration) {
 			// invalidateBookmarkCaches() replaced the status map; retry against the new generation.
-			return fillBookmarkStatuses(validHrefs);
+			if (retryCount >= MAX_STATUS_FILL_RETRIES) {
+				throw new Error("Bookmark status lookup aborted after repeated cache invalidation");
+			}
+			return fillBookmarkStatuses(validHrefs, retryCount + 1);
 		}
 
 		schedulePersistStatusCache();
@@ -597,33 +661,75 @@ function buildStatusResponse(requestedHrefs) {
 }
 
 function getBookmarkIndex() {
+	if (liveBookmarkIndex && liveBookmarkIndex.generation === bookmarkCacheGeneration) {
+		return Promise.resolve(liveBookmarkIndex);
+	}
+
+	// If a prior build exceeded the timeout but somehow remained pending, drop it
+	// so page reloads can recover without waiting on the dead promise.
+	recoverHungBookmarkIndex(false);
+
 	if (!bookmarkIndexPromise) {
 		const generationAtStart = bookmarkCacheGeneration;
-		const buildPromise = buildBookmarkIndex()
+		const buildId = ++bookmarkIndexBuildId;
+		bookmarkIndexStartedAt = Date.now();
+		bookmarkIndexBuilding = true;
+		const buildPromise = withTimeout(
+			buildBookmarkIndex(),
+			INDEX_BUILD_TIMEOUT_MS,
+			"Bookmark index build timed out"
+		)
 			.then(index => {
+				if (buildId !== bookmarkIndexBuildId) {
+					// A recovery/reset abandoned this build.
+					return getBookmarkIndex();
+				}
 				if (generationAtStart !== bookmarkCacheGeneration) {
 					// Drop stale work. If invalidate already started a newer build, join it;
 					// otherwise start one. All waiters on this promise share this single chain.
 					if (bookmarkIndexPromise === buildPromise) {
 						bookmarkIndexPromise = null;
 						liveBookmarkIndex = null;
+						bookmarkIndexBuilding = false;
 					}
 					return getBookmarkIndex();
 				}
 				index.generation = generationAtStart;
 				liveBookmarkIndex = index;
+				bookmarkIndexBuilding = false;
 				return index;
 			})
 			.catch(error => {
 				if (bookmarkIndexPromise === buildPromise) {
 					bookmarkIndexPromise = null;
 					liveBookmarkIndex = null;
+					bookmarkIndexBuilding = false;
+					bookmarkIndexStartedAt = 0;
 				}
 				throw error;
 			});
 		bookmarkIndexPromise = buildPromise;
 	}
 	return bookmarkIndexPromise;
+}
+
+function recoverHungBookmarkIndex(force = false) {
+	// Only abandon in-flight builds. Settled successful promises must stay so
+	// healthy icon clicks reuse liveBookmarkIndex instead of rebuilding getTree.
+	if (!bookmarkIndexBuilding) return;
+
+	const aged = bookmarkIndexStartedAt > 0 &&
+		(Date.now() - bookmarkIndexStartedAt > INDEX_BUILD_TIMEOUT_MS);
+
+	// Force (toolbar/menu refresh) abandons a pending build immediately; otherwise
+	// only abandon builds that have already exceeded the timeout window.
+	if (force || aged) {
+		bookmarkIndexBuildId += 1;
+		bookmarkIndexPromise = null;
+		bookmarkIndexStartedAt = 0;
+		bookmarkIndexBuilding = false;
+		liveBookmarkIndex = null;
+	}
 }
 
 function indexesUnmatchedBookmarks(styleIds) {
@@ -706,10 +812,13 @@ function resolveConfiguredRules(rules) {
 
 function invalidateBookmarkCaches() {
 	bookmarkCacheGeneration += 1;
+	bookmarkIndexBuildId += 1;
 	bookmarkStatusMap = new Map();
 	tabHrefSets = new Map();
 	bookmarkIndexPromise = null;
 	liveBookmarkIndex = null;
+	bookmarkIndexBuilding = false;
+	bookmarkIndexStartedAt = 0;
 	clearSessionStatusCache();
 }
 
