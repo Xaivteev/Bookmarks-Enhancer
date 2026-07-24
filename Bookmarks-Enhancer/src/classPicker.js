@@ -71,7 +71,14 @@ function stopClassPicker() {
 	document.removeEventListener("pointermove", handleClassPickerPointerMove, true);
 	detachClassPickerPageListeners();
 	clearClassPickerHighlights();
-	classPickerState.host?.remove();
+	if (classPickerState.host) {
+		try {
+			classPickerState.host.hidePopover?.();
+		} catch {
+			// Host may already be disconnected.
+		}
+		classPickerState.host.remove();
+	}
 	document.getElementById(CLASS_PICKER_STYLE_ID)?.remove();
 	if (classPickerState.previouslyFocusedElement?.isConnected) {
 		classPickerState.previouslyFocusedElement.focus();
@@ -97,9 +104,50 @@ function injectClassPickerStyles() {
 	(document.head || document.documentElement).appendChild(style);
 }
 
+function applyClassPickerHostStyles(host) {
+	// Inline !important beats page author styles that target bare divs / html>*.
+	// Explicit display:block is required: `all: initial` resets display to inline,
+	// which in Chrome can leave a shadow host with no visible box for the panel.
+	const hostStyles = [
+		["all", "initial"],
+		["display", "block"],
+		["position", "fixed"],
+		["z-index", "2147483647"],
+		["top", "16px"],
+		["right", "16px"],
+		["left", "auto"],
+		["bottom", "auto"],
+		["width", "min(380px, calc(100vw - 32px))"],
+		["max-width", "calc(100vw - 32px)"],
+		["max-height", "calc(100vh - 32px)"],
+		["margin", "0"],
+		["padding", "0"],
+		["border", "none"],
+		["background", "transparent"],
+		["overflow", "visible"],
+		["visibility", "visible"],
+		["opacity", "1"],
+		["pointer-events", "auto"],
+		["transform", "none"],
+		["filter", "none"],
+		["clip", "auto"],
+		["clip-path", "none"],
+		["contain", "none"],
+		["inset", "auto"],
+		["color-scheme", "dark"]
+	];
+
+	for (const [property, value] of hostStyles) {
+		host.style.setProperty(property, value, "important");
+	}
+}
+
 function createClassPickerPanel() {
 	const host = document.createElement("div");
 	host.id = CLASS_PICKER_HOST_ID;
+	host.setAttribute("data-be-class-picker", "host");
+	applyClassPickerHostStyles(host);
+
 	const shadow = host.attachShadow({ mode: "open" });
 	classPickerState.host = host;
 	classPickerState.shadow = shadow;
@@ -107,16 +155,13 @@ function createClassPickerPanel() {
 	const style = document.createElement("style");
 	style.textContent = `
 		:host {
-			all: initial !important;
-			position: fixed !important;
-			z-index: 2147483647 !important;
-			top: 16px !important;
-			right: 16px !important;
+			display: block !important;
 			color-scheme: dark !important;
 		}
 		.panel {
 			box-sizing: border-box;
-			width: min(380px, calc(100vw - 32px));
+			display: block;
+			width: 100%;
 			max-height: calc(100vh - 32px);
 			overflow: auto;
 			padding: 16px;
@@ -125,7 +170,7 @@ function createClassPickerPanel() {
 			background: #0f172a;
 			color: #f8fafc;
 			box-shadow: 0 16px 40px rgb(0 0 0 / 45%);
-			font: 14px/1.4 system-ui, sans-serif;
+			font: 14px/1.4 system-ui, -apple-system, sans-serif;
 		}
 		h2 {
 			margin: 0 0 8px;
@@ -194,7 +239,21 @@ function createClassPickerPanel() {
 		}
 	`;
 	shadow.appendChild(style);
-	document.documentElement.appendChild(host);
+
+	// Prefer body so html-level transforms/filters are less likely to trap fixed positioning.
+	const mountRoot = document.body || document.documentElement;
+	mountRoot.appendChild(host);
+
+	// Top layer escapes page stacking contexts / transforms that break position:fixed in Chrome.
+	if (typeof host.showPopover === "function") {
+		host.setAttribute("popover", "manual");
+		try {
+			host.showPopover();
+		} catch {
+			// Ignore if the UA rejects popover in this document.
+		}
+	}
+
 	renderClassPickerInstructions();
 }
 
@@ -306,8 +365,12 @@ function handleClassPickerKeyDown(event) {
 }
 
 function isClassPickerUiTarget(target) {
-	return target === classPickerState?.host ||
-		(target instanceof Node && classPickerState?.host?.contains(target));
+	if (!classPickerState?.host || !(target instanceof Node)) return false;
+	if (target === classPickerState.host || classPickerState.host.contains(target)) {
+		return true;
+	}
+	// Nodes inside the open shadow tree are not light-DOM descendants of the host.
+	return target.getRootNode() === classPickerState.shadow;
 }
 
 function selectClassPickerElement(element, preserveHistory) {
