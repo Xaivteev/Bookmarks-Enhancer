@@ -309,6 +309,9 @@ const PREDEFINED_STYLE_BORDERS = {
 	seen: "dashed white"
 };
 
+// Toggled on <html> to temporarily show items styled with display:none.
+const REVEAL_HIDDEN_CLASS = "be-reveal-hidden";
+
 // Old class names to strip from pages after upgrades.
 const STALE_MANAGED_CLASS_NAMES = [
 	"be-bookmarks-enhancer-blocked",
@@ -368,6 +371,10 @@ function getStyleRuleDeclarations(rule) {
 	return PREDEFINED_STYLE_CSS[rule.predefined] || "";
 }
 
+function styleRuleHidesElements(rule) {
+	return /display\s*:\s*none\b/i.test(getStyleRuleDeclarations(rule) || "");
+}
+
 function getStyleRuleBorder(rule) {
 	if (!rule || rule.kind === "custom") return "solid #9ca3af";
 	return PREDEFINED_STYLE_BORDERS[rule.predefined] || "solid #9ca3af";
@@ -379,7 +386,11 @@ function buildStyleRulesCss(styleRules) {
 	return styleRules.map(rule => {
 		const declarations = getStyleRuleDeclarations(rule).trim();
 		if (!declarations) return "";
-		return `.${styleRuleClassName(rule)} {\n\t\t\t${declarations}\n\t\t}`;
+		const className = styleRuleClassName(rule);
+		const selector = styleRuleHidesElements(rule)
+			? `html:not(.${REVEAL_HIDDEN_CLASS}) .${className}`
+			: `.${className}`;
+		return `${selector} {\n\t\t\t${declarations}\n\t\t}`;
 	}).filter(Boolean).join("\n\n\t\t");
 }
 

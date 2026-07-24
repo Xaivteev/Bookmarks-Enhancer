@@ -250,8 +250,33 @@ function injectBookmarkStyles() {
 	style.textContent = buildStyleRulesCss(preparedStyleRules);
 }
 
+function isRevealHidden() {
+	return document.documentElement.classList.contains(REVEAL_HIDDEN_CLASS);
+}
+
+function setRevealHidden(enabled) {
+	document.documentElement.classList.toggle(REVEAL_HIDDEN_CLASS, !!enabled);
+	return isRevealHidden();
+}
+
+function toggleRevealHidden() {
+	return setRevealHidden(!isRevealHidden());
+}
+
 // Listen for explicit refresh messages from backgroundScript
 browser.runtime.onMessage.addListener(message => {
+	if (message && message.toggleRevealHidden) {
+		return Promise.resolve({ revealHidden: toggleRevealHidden() });
+	}
+
+	if (message && message.getRevealHidden) {
+		return Promise.resolve({ revealHidden: isRevealHidden() });
+	}
+
+	if (message && typeof message.setRevealHidden === "boolean") {
+		return Promise.resolve({ revealHidden: setRevealHidden(message.setRevealHidden) });
+	}
+
 	if (message && message.statusUpdates) {
 		if (!searchSite) return;
 		buildLinkMap(true);

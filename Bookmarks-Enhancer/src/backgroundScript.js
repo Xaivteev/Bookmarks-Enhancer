@@ -38,16 +38,18 @@ function sendRefreshToActiveTab(mode) {
 	}).catch(onError);
 }
 
+function sendTabMessage(tabId, payload) {
+	return browser.tabs.sendMessage(tabId, payload)
+		.catch(() => ensureContentScripts(tabId).then(() => browser.tabs.sendMessage(tabId, payload)));
+}
+
 function refreshTabStyling(tabId, mode = "authoritative") {
 	if (tabId == null) return Promise.resolve();
 
 	// Icon/menu refresh is the recovery path when the SW index is stuck.
 	recoverHungBookmarkIndex(true);
 
-	const payload = { refresh: true, mode };
-	return browser.tabs.sendMessage(tabId, payload)
-		.catch(() => ensureContentScripts(tabId).then(() => browser.tabs.sendMessage(tabId, payload)))
-		.catch(onError);
+	return sendTabMessage(tabId, { refresh: true, mode }).catch(onError);
 }
 
 function ensureContentScripts(tabId) {
@@ -55,6 +57,38 @@ function ensureContentScripts(tabId) {
 		target: { tabId },
 		files: CONTENT_SCRIPT_FILES
 	});
+}
+
+function updateRevealHiddenMenuTitle(revealed) {
+	return browser.contextMenus.update(TOGGLE_REVEAL_HIDDEN_MENU_ID, {
+		title: revealed ? "Hide items again" : "Show hidden items"
+	}).catch(() => {});
+}
+
+function syncRevealHiddenMenuForTab(tabId) {
+	if (tabId == null) {
+		return updateRevealHiddenMenuTitle(false);
+	}
+
+	return browser.tabs.sendMessage(tabId, { getRevealHidden: true })
+		.then(response => updateRevealHiddenMenuTitle(response && response.revealHidden))
+		.catch(() => updateRevealHiddenMenuTitle(false));
+}
+
+function toggleRevealHiddenOnTab(tabId) {
+	if (tabId == null) {
+		return updateRevealHiddenMenuTitle(false).then(() => false);
+	}
+
+	return sendTabMessage(tabId, { toggleRevealHidden: true })
+		.then(response => {
+			const revealed = !!(response && response.revealHidden);
+			return updateRevealHiddenMenuTitle(revealed).then(() => revealed);
+		})
+		.catch(error => {
+			onError(error);
+			return updateRevealHiddenMenuTitle(false).then(() => false);
+		});
 }
 
 function onError(error) {
@@ -124,6 +158,7 @@ const RULE_PAGE_MENU_PARENT = "addPageToRuleFolderParent";
 const TEXT_RULE_MENU_PARENT = "addTextRuleParent";
 const TEXT_RULE_MENU_PREFIX = "addTextRuleStyle:";
 const REFRESH_TAB_STYLING_MENU_ID = "refreshTabStyling";
+const TOGGLE_REVEAL_HIDDEN_MENU_ID = "toggleRevealHidden";
 const LEGACY_LINK_MENU_IDS = ["addLinkBlocked", "addLinkFavorited", "addTextFilter"];
 let ruleFolderMenuIds = [];
 let textRuleMenuIds = [];
@@ -135,6 +170,11 @@ function createStaticContextMenus() {
 		{
 			id: 'selectTargetClasses',
 			title: 'Select Target Classes',
+			contexts: ['page', 'action']
+		},
+		{
+			id: TOGGLE_REVEAL_HIDDEN_MENU_ID,
+			title: 'Show hidden items',
 			contexts: ['page', 'action']
 		},
 		{
@@ -285,6 +325,11 @@ function refreshTextRuleContextMenus() {
 
 createStaticContextMenus();
 ensureSettingsReady().then(() => scheduleDeferredDynamicMenus()).catch(onError);
+browser.tabs.query({ currentWindow: true, active: true })
+	.then(tabs => {
+		if (tabs[0]) syncRevealHiddenMenuForTab(tabs[0].id);
+	})
+	.catch(() => {});
 
 function getValidFolderId(folderId) {
 	if (!folderId) return Promise.resolve(null);
@@ -394,11 +439,27 @@ function startClassPickerOnTab(tabId) {
 		});
 }
 
+browser.tabs.onActivated.addListener(({ tabId }) => {
+	syncRevealHiddenMenuForTab(tabId);
+});
+
+browser.tabs.onUpdated.addListener((tabId, changeInfo, tab) => {
+	// Navigations clear the page-level reveal class; keep the menu checkbox in sync.
+	if (changeInfo.status === "complete" && tab && tab.active) {
+		syncRevealHiddenMenuForTab(tabId);
+	}
+});
+
 browser.contextMenus.onClicked.addListener((info, tab) => {
 	if (!info || !tab) return;
 
 	if (info.menuItemId === 'selectTargetClasses') {
 		startClassPickerOnTab(tab.id);
+		return;
+	}
+
+	if (info.menuItemId === TOGGLE_REVEAL_HIDDEN_MENU_ID) {
+		toggleRevealHiddenOnTab(tab.id);
 		return;
 	}
 
