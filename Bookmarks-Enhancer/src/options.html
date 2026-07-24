@@ -94,6 +94,34 @@
             border-top: 1px solid #d1d5db;
         }
 
+        .actionsBar button:disabled {
+            opacity: 0.65;
+            cursor: wait;
+        }
+
+        .actionsBar button.is-loading {
+            position: relative;
+            padding-left: 1.75rem;
+        }
+
+        .actionsBar button.is-loading::before {
+            content: "";
+            position: absolute;
+            left: 0.55rem;
+            top: 50%;
+            width: 0.7rem;
+            height: 0.7rem;
+            margin-top: -0.35rem;
+            border: 2px solid currentColor;
+            border-right-color: transparent;
+            border-radius: 50%;
+            animation: actionBarSpin 0.7s linear infinite;
+        }
+
+        @keyframes actionBarSpin {
+            to { transform: rotate(360deg); }
+        }
+
         table {
             width: 100%;
             border-collapse: collapse;
@@ -351,7 +379,7 @@
         <div class="actionsBar">
             <button type="button" id="exportBtn">Export to Clipboard</button>
             <button type="button" id="importBtn">Import from Clipboard</button>
-            <button type="submit">Save</button>
+            <button type="submit" id="saveBtn">Save</button>
         </div>
     </form>
 

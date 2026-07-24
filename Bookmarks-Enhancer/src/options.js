@@ -560,7 +560,59 @@ function buildOptionsPayload() {
     };
 }
 
-function persistOptionsFromForm({ successMessage = "Options saved" } = {}) {
+let actionBarBusy = false;
+let actionBarBusyButton = null;
+
+function getActionBarButtons() {
+    return [
+        document.querySelector("#exportBtn"),
+        document.querySelector("#importBtn"),
+        document.querySelector("#saveBtn")
+    ].filter(Boolean);
+}
+
+function beginActionBarBusy(activeButton, busyLabel) {
+    if (actionBarBusy) return;
+    actionBarBusy = true;
+    actionBarBusyButton = activeButton || null;
+
+    for (const button of getActionBarButtons()) {
+        button.disabled = true;
+        button.setAttribute("aria-busy", "true");
+    }
+
+    if (actionBarBusyButton) {
+        if (!actionBarBusyButton.dataset.idleLabel) {
+            actionBarBusyButton.dataset.idleLabel = actionBarBusyButton.textContent;
+        }
+        actionBarBusyButton.textContent = busyLabel;
+        actionBarBusyButton.classList.add("is-loading");
+    }
+}
+
+function endActionBarBusy() {
+    if (!actionBarBusy) return;
+    actionBarBusy = false;
+
+    for (const button of getActionBarButtons()) {
+        button.disabled = false;
+        button.removeAttribute("aria-busy");
+        button.classList.remove("is-loading");
+        if (button.dataset.idleLabel) {
+            button.textContent = button.dataset.idleLabel;
+            delete button.dataset.idleLabel;
+        }
+    }
+
+    actionBarBusyButton = null;
+}
+
+function persistOptionsFromForm({
+    successMessage = "Options saved",
+    setBusy = true,
+    busyLabel = "Saving…",
+    busyButton = null
+} = {}) {
     const {
         styleRules,
         searchPairs,
@@ -600,6 +652,13 @@ function persistOptionsFromForm({ successMessage = "Options saved" } = {}) {
         }
     }
 
+    if (setBusy) {
+        beginActionBarBusy(
+            busyButton || document.querySelector("#saveBtn"),
+            busyLabel
+        );
+    }
+
     suppressOptionsStorageReload = true;
     return browser.storage.local.set(payload)
         .then(() => browser.storage.local.remove(Object.values(LEGACY_STORAGE_KEYS)))
@@ -631,12 +690,22 @@ function persistOptionsFromForm({ successMessage = "Options saved" } = {}) {
         .catch(error => {
             suppressOptionsStorageReload = false;
             throw error;
+        })
+        .finally(() => {
+            if (setBusy) {
+                endActionBarBusy();
+            }
         });
 }
 
 function saveOptions(e) {
     e.preventDefault();
-    persistOptionsFromForm({ successMessage: "Options saved" }).catch(err => {
+    if (actionBarBusy) return;
+    persistOptionsFromForm({
+        successMessage: "Options saved",
+        busyLabel: "Saving…",
+        busyButton: document.querySelector("#saveBtn")
+    }).catch(err => {
         console.error("Save failed:", err);
         showStatus("Could not save options", true);
     });
@@ -849,6 +918,8 @@ function initSaveLoadEvents() {
     });
 }
 function exportToClipboard() {
+    if (actionBarBusy) return;
+
     const data = {
         searchPairs: collectSearchPairs(),
         urlRules: collectUrlRules(),
@@ -860,6 +931,7 @@ function exportToClipboard() {
         bookmarkRules: normalizeBookmarkRules(collectBookmarkRules())
     };
 
+    beginActionBarBusy(document.querySelector("#exportBtn"), "Exporting…");
     navigator.clipboard.writeText(
         JSON.stringify(data, null, 2)
     )
@@ -867,6 +939,9 @@ function exportToClipboard() {
     .catch(err => {
         console.error(err);
         showStatus("Could not export", true);
+    })
+    .finally(() => {
+        endActionBarBusy();
     });
 }
 
@@ -982,7 +1057,7 @@ function importFromJson(jsonString) {
     catch (err) {
         console.error(err);
         showStatus("Import failed", true);
-        return;
+        return Promise.resolve();
     }
 
     clearSearchTable();
@@ -1028,9 +1103,10 @@ function importFromJson(jsonString) {
             data.onlyUseSites;
     }
 
-    loadBookmarkRuleRows(migrateBookmarkRulesFromStorage(data)).then(() => {
+    return loadBookmarkRuleRows(migrateBookmarkRulesFromStorage(data)).then(() => {
         return persistOptionsFromForm({
-            successMessage: "Imported and saved configuration"
+            successMessage: "Imported and saved configuration",
+            setBusy: false
         });
     }).catch(err => {
         console.error("Import failed:", err);
@@ -1060,11 +1136,17 @@ function isValidLegacyTextFilter(row) {
 }
 
 function importFromClipboard() {
+    if (actionBarBusy) return;
+
+    beginActionBarBusy(document.querySelector("#importBtn"), "Importing…");
     navigator.clipboard.readText()
         .then(text => importFromJson(text))
         .catch(err => {
             console.error("Clipboard read failed:", err);
             showStatus("Could not read from clipboard", true);
+        })
+        .finally(() => {
+            endActionBarBusy();
         });
 }
 function clearSearchTable() {
