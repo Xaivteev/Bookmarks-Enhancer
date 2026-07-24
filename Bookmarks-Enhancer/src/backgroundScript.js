@@ -1,7 +1,9 @@
-﻿const INDEX_BUILD_TIMEOUT_MS = 45000;
-const SETTINGS_LOAD_TIMEOUT_MS = 15000;
-const MAX_STATUS_FILL_RETRIES = 8;
+﻿const MAX_STATUS_FILL_RETRIES = 8;
 const CONTENT_SCRIPT_FILES = ["browser-polyfill.js", "utils.js", "contentScript.js"];
+// Only used for aged-build recovery heuristics (not Promise.race timeouts).
+// Chrome MV3 clamps service-worker timers near 30s, so racing getTree() against
+// setTimeout made large/cold libraries fail every lookup.
+const INDEX_BUILD_STALE_MS = 120000;
 
 browser.runtime.onMessage.addListener((message, sender, sendResponse) => {
 	if (message && message.hrefs) {
@@ -60,19 +62,6 @@ function onError(error) {
 	console.log(`Error: ${error}`);
 }
 
-function withTimeout(promise, ms, message) {
-	let timeoutId = null;
-	const timeoutPromise = new Promise((_, reject) => {
-		timeoutId = setTimeout(() => {
-			reject(new Error(message || `Timed out after ${ms}ms`));
-		}, ms);
-	});
-
-	return Promise.race([promise, timeoutPromise]).finally(() => {
-		if (timeoutId) clearTimeout(timeoutId);
-	});
-}
-
 // Storage keys: STORAGE_KEYS from utils.js
 
 let urlRules = [];
@@ -111,18 +100,16 @@ function loadSettings() {
 function ensureSettingsReady() {
 	if (!settingsReady) {
 		const loadGeneration = ++settingsLoadGeneration;
-		settingsReady = withTimeout(
-			loadSettings().then(() => restoreStatusCacheFromSession()),
-			SETTINGS_LOAD_TIMEOUT_MS,
-			"Settings load timed out"
-		).catch(error => {
-			onError(error);
-			// Allow a later request to retry instead of staying wedged forever.
-			if (loadGeneration === settingsLoadGeneration) {
-				settingsReady = null;
-			}
-			throw error;
-		});
+		settingsReady = loadSettings()
+			.then(() => restoreStatusCacheFromSession())
+			.catch(error => {
+				onError(error);
+				// Allow a later request to retry instead of staying wedged forever.
+				if (loadGeneration === settingsLoadGeneration) {
+					settingsReady = null;
+				}
+				throw error;
+			});
 	}
 	return settingsReady;
 }
@@ -665,8 +652,8 @@ function getBookmarkIndex() {
 		return Promise.resolve(liveBookmarkIndex);
 	}
 
-	// If a prior build exceeded the timeout but somehow remained pending, drop it
-	// so page reloads can recover without waiting on the dead promise.
+	// If a prior build has been in-flight far too long, drop it so a new request
+	// (page reload / later lookup) can start fresh without rejecting healthy builds.
 	recoverHungBookmarkIndex(false);
 
 	if (!bookmarkIndexPromise) {
@@ -674,11 +661,7 @@ function getBookmarkIndex() {
 		const buildId = ++bookmarkIndexBuildId;
 		bookmarkIndexStartedAt = Date.now();
 		bookmarkIndexBuilding = true;
-		const buildPromise = withTimeout(
-			buildBookmarkIndex(),
-			INDEX_BUILD_TIMEOUT_MS,
-			"Bookmark index build timed out"
-		)
+		const buildPromise = buildBookmarkIndex()
 			.then(index => {
 				if (buildId !== bookmarkIndexBuildId) {
 					// A recovery/reset abandoned this build.
@@ -719,10 +702,10 @@ function recoverHungBookmarkIndex(force = false) {
 	if (!bookmarkIndexBuilding) return;
 
 	const aged = bookmarkIndexStartedAt > 0 &&
-		(Date.now() - bookmarkIndexStartedAt > INDEX_BUILD_TIMEOUT_MS);
+		(Date.now() - bookmarkIndexStartedAt > INDEX_BUILD_STALE_MS);
 
 	// Force (toolbar/menu refresh) abandons a pending build immediately; otherwise
-	// only abandon builds that have already exceeded the timeout window.
+	// only abandon builds that have already exceeded the stale window.
 	if (force || aged) {
 		bookmarkIndexBuildId += 1;
 		bookmarkIndexPromise = null;
