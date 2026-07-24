@@ -1,3 +1,8 @@
+// Shared with utils.js (normalizeHrefForSearch). Must stay at content-script top
+// level — not inside the install guard — or URL normalization throws ReferenceError.
+var urlRules = urlRules || [];
+var urlNormalizationCache = urlNormalizationCache || createUrlNormalizationCache();
+
 if (!globalThis.__beContentScriptInstalled) {
 globalThis.__beContentScriptInstalled = true;
 
@@ -6,7 +11,6 @@ globalThis.__beContentScriptInstalled = true;
 // Load settings from config
 let searchPairs = [];
 let classesForSearch = [];
-let urlRules = [];
 let preparedStyleRules = DEFAULT_STYLE_RULES.map(rule => ({ ...rule }));
 let preparedTextRules = [];
 let searchSite = true;
@@ -14,7 +18,6 @@ let enableTopBorder = false;
 let enableDeepSearch = false;
 let onlyUseSites = false;
 let managedClassNames = [];
-const urlNormalizationCache = createUrlNormalizationCache();
 
 let getting = browser.storage.local.get([
     STORAGE_KEYS.searchPairs,
