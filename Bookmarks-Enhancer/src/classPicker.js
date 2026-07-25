@@ -115,17 +115,19 @@ function injectClassPickerStyles() {
 }
 
 function applyClassPickerHostStyles(host) {
-	// Prefer explicit overrides over `all: initial` — that reset has left the
-	// shadow host with no visible box on Firefox in practice.
+	// Inline !important beats page author styles that target bare divs / html>*.
+	// IMPORTANT: set `inset` before top/right/left/bottom. `inset` is a shorthand
+	// and would otherwise clear the explicit edges (Firefox then leaves the fixed
+	// host at its static position, often off-screen).
 	const hostStyles = [
 		["display", "block"],
 		["position", "fixed"],
 		["z-index", "2147483647"],
+		["inset", "auto"],
 		["top", "16px"],
 		["right", "16px"],
 		["left", "auto"],
 		["bottom", "auto"],
-		["inset", "auto"],
 		["width", "min(380px, calc(100vw - 32px))"],
 		["max-width", "calc(100vw - 32px)"],
 		["height", "auto"],
@@ -200,6 +202,16 @@ function createClassPickerPanel() {
 	style.textContent = `
 		:host {
 			display: block !important;
+			position: fixed !important;
+			z-index: 2147483647 !important;
+			inset: auto !important;
+			top: 16px !important;
+			right: 16px !important;
+			left: auto !important;
+			bottom: auto !important;
+			width: min(380px, calc(100vw - 32px)) !important;
+			max-width: calc(100vw - 32px) !important;
+			margin: 0 !important;
 			color-scheme: dark !important;
 		}
 		.panel {
