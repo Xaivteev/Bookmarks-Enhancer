@@ -1,5 +1,12 @@
+// Recover from a prior inject that set the guard then threw before exporting start.
+if (
+	globalThis.__beClassPickerInstalled &&
+	typeof globalThis.__beStartClassPicker !== "function"
+) {
+	globalThis.__beClassPickerInstalled = false;
+}
+
 if (!globalThis.__beClassPickerInstalled) {
-globalThis.__beClassPickerInstalled = true;
 
 const CLASS_PICKER_PREFIX = "be-class-picker-";
 const CLASS_PICKER_MATCH = `${CLASS_PICKER_PREFIX}match`;
@@ -108,12 +115,9 @@ function injectClassPickerStyles() {
 }
 
 function applyClassPickerHostStyles(host) {
-	// Inline !important beats page author styles that target bare divs / html>*.
-	// Explicit display:block is required: `all: initial` resets display to inline,
-	// which in Chrome can leave a shadow host with no visible box for the panel.
-	// Also overrides UA [popover] rules (inset:0; margin:auto; width:fit-content).
+	// Prefer explicit overrides over `all: initial` — that reset has left the
+	// shadow host with no visible box on Firefox in practice.
 	const hostStyles = [
-		["all", "initial"],
 		["display", "block"],
 		["position", "fixed"],
 		["z-index", "2147483647"],
@@ -124,7 +128,7 @@ function applyClassPickerHostStyles(host) {
 		["inset", "auto"],
 		["width", "min(380px, calc(100vw - 32px))"],
 		["max-width", "calc(100vw - 32px)"],
-		["height", "fit-content"],
+		["height", "auto"],
 		["max-height", "calc(100vh - 32px)"],
 		["margin", "0"],
 		["padding", "0"],
@@ -147,6 +151,10 @@ function applyClassPickerHostStyles(host) {
 	}
 }
 
+function isFirefoxBrowser() {
+	return typeof CSS !== "undefined" && CSS.supports("(-moz-appearance: none)");
+}
+
 function isClassPickerHostVisible(host) {
 	if (!host?.isConnected) return false;
 	const rect = host.getBoundingClientRect();
@@ -155,12 +163,8 @@ function isClassPickerHostVisible(host) {
 
 function promoteClassPickerHostToTopLayer(host) {
 	// Top layer escapes page stacking contexts / transforms that break
-	// position:fixed in Chrome. Skip on Firefox: popover UA styles have left
-	// this panel invisible there; plain fixed positioning works.
-	if (typeof host.showPopover !== "function") return;
-	if (typeof CSS !== "undefined" && CSS.supports("(-moz-appearance: none)")) {
-		return;
-	}
+	// position:fixed in Chrome. Skip on Firefox — fixed on <html> is reliable.
+	if (isFirefoxBrowser() || typeof host.showPopover !== "function") return;
 
 	try {
 		host.setAttribute("popover", "manual");
@@ -280,8 +284,11 @@ function createClassPickerPanel() {
 	`;
 	shadow.appendChild(style);
 
-	// Prefer body so html-level transforms/filters are less likely to trap fixed positioning.
-	const mountRoot = document.body || document.documentElement;
+	// Firefox: mount on <html> (pre-popover behavior). Chrome: prefer <body>,
+	// then promote to the top layer when possible.
+	const mountRoot = isFirefoxBrowser()
+		? document.documentElement
+		: (document.body || document.documentElement);
 	mountRoot.appendChild(host);
 
 	renderClassPickerInstructions();
@@ -676,4 +683,13 @@ function clearClassPickerHighlights() {
 	}
 }
 
+globalThis.__beClassPickerInstalled = true;
 } // end __beClassPickerInstalled install guard
+
+// Runs on every inject so a re-inject can still launch after a prior install.
+if (globalThis.__beLaunchClassPicker) {
+	globalThis.__beLaunchClassPicker = false;
+	if (typeof globalThis.__beStartClassPicker === "function") {
+		globalThis.__beStartClassPicker();
+	}
+}

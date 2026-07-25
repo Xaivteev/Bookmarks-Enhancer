@@ -421,11 +421,34 @@ function addSelectionAsTextRule(selection, site, styleId) {
 	});
 }
 
+function throwIfScriptInjectionFailed(results, label) {
+	for (const result of results || []) {
+		if (result && result.error != null) {
+			const detail = result.error && result.error.message
+				? result.error.message
+				: String(result.error);
+			throw new Error(`${label}: ${detail}`);
+		}
+	}
+	return results;
+}
+
 function startClassPickerOnTab(tabId) {
 	if (tabId == null) return Promise.resolve();
 
-	const startViaMessage = () => browser.tabs.sendMessage(tabId, { startClassPicker: true });
-	const startViaExecuteScript = () => browser.scripting.executeScript({
+	const armLaunchFlag = () => browser.scripting.executeScript({
+		target: { tabId },
+		func: () => {
+			globalThis.__beLaunchClassPicker = true;
+		}
+	}).then(results => throwIfScriptInjectionFailed(results, "arm class picker"));
+
+	const injectPicker = () => browser.scripting.executeScript({
+		target: { tabId },
+		files: ["classPicker.js"]
+	}).then(results => throwIfScriptInjectionFailed(results, "inject class picker"));
+
+	const startPicker = () => browser.scripting.executeScript({
 		target: { tabId },
 		func: () => {
 			const start = globalThis.__beStartClassPicker;
@@ -433,18 +456,17 @@ function startClassPickerOnTab(tabId) {
 				throw new Error("Class picker is not available on this page");
 			}
 			start();
+			return true;
 		}
-	});
+	}).then(results => throwIfScriptInjectionFailed(results, "start class picker"));
 
-	return browser.scripting.executeScript({
-		target: { tabId },
-		files: ["classPicker.js"]
-	})
-		.then(startViaExecuteScript)
+	return armLaunchFlag()
+		.then(injectPicker)
+		.then(startPicker)
 		.catch(error => {
-			// Picker may already be injected from a prior run; try starting it directly.
-			return startViaExecuteScript()
-				.catch(() => startViaMessage())
+			// Already-injected picker, or a transient inject failure: try starting again.
+			return startPicker()
+				.catch(() => browser.tabs.sendMessage(tabId, { startClassPicker: true }))
 				.catch(() => {
 					onError(error);
 				});
