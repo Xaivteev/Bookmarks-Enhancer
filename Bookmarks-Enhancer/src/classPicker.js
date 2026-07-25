@@ -65,6 +65,9 @@ function startClassPicker() {
 	document.addEventListener("pointermove", handleClassPickerPointerMove, true);
 }
 
+// Callable from background via scripting.executeScript (avoids message races).
+globalThis.__beStartClassPicker = startClassPicker;
+
 function stopClassPicker() {
 	if (!classPickerState) return;
 
@@ -108,6 +111,7 @@ function applyClassPickerHostStyles(host) {
 	// Inline !important beats page author styles that target bare divs / html>*.
 	// Explicit display:block is required: `all: initial` resets display to inline,
 	// which in Chrome can leave a shadow host with no visible box for the panel.
+	// Also overrides UA [popover] rules (inset:0; margin:auto; width:fit-content).
 	const hostStyles = [
 		["all", "initial"],
 		["display", "block"],
@@ -117,8 +121,10 @@ function applyClassPickerHostStyles(host) {
 		["right", "16px"],
 		["left", "auto"],
 		["bottom", "auto"],
+		["inset", "auto"],
 		["width", "min(380px, calc(100vw - 32px))"],
 		["max-width", "calc(100vw - 32px)"],
+		["height", "fit-content"],
 		["max-height", "calc(100vh - 32px)"],
 		["margin", "0"],
 		["padding", "0"],
@@ -133,13 +139,47 @@ function applyClassPickerHostStyles(host) {
 		["clip", "auto"],
 		["clip-path", "none"],
 		["contain", "none"],
-		["inset", "auto"],
 		["color-scheme", "dark"]
 	];
 
 	for (const [property, value] of hostStyles) {
 		host.style.setProperty(property, value, "important");
 	}
+}
+
+function isClassPickerHostVisible(host) {
+	if (!host?.isConnected) return false;
+	const rect = host.getBoundingClientRect();
+	return rect.width > 1 && rect.height > 1;
+}
+
+function promoteClassPickerHostToTopLayer(host) {
+	// Top layer escapes page stacking contexts / transforms that break
+	// position:fixed in Chrome. Skip on Firefox: popover UA styles have left
+	// this panel invisible there; plain fixed positioning works.
+	if (typeof host.showPopover !== "function") return;
+	if (typeof CSS !== "undefined" && CSS.supports("(-moz-appearance: none)")) {
+		return;
+	}
+
+	try {
+		host.setAttribute("popover", "manual");
+		host.showPopover();
+		applyClassPickerHostStyles(host);
+		if (host.matches(":popover-open") && isClassPickerHostVisible(host)) {
+			return;
+		}
+	} catch {
+		// Ignore if the UA rejects popover in this document.
+	}
+
+	try {
+		host.hidePopover?.();
+	} catch {
+		// Host may already be disconnected or not a popover.
+	}
+	host.removeAttribute("popover");
+	applyClassPickerHostStyles(host);
 }
 
 function createClassPickerPanel() {
@@ -244,17 +284,8 @@ function createClassPickerPanel() {
 	const mountRoot = document.body || document.documentElement;
 	mountRoot.appendChild(host);
 
-	// Top layer escapes page stacking contexts / transforms that break position:fixed in Chrome.
-	if (typeof host.showPopover === "function") {
-		host.setAttribute("popover", "manual");
-		try {
-			host.showPopover();
-		} catch {
-			// Ignore if the UA rejects popover in this document.
-		}
-	}
-
 	renderClassPickerInstructions();
+	promoteClassPickerHostToTopLayer(host);
 }
 
 function renderClassPickerInstructions() {

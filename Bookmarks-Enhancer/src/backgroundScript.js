@@ -424,19 +424,37 @@ function addSelectionAsTextRule(selection, site, styleId) {
 function startClassPickerOnTab(tabId) {
 	if (tabId == null) return Promise.resolve();
 
-	const start = () => browser.tabs.sendMessage(tabId, { startClassPicker: true });
+	const startViaMessage = () => browser.tabs.sendMessage(tabId, { startClassPicker: true });
+	const startViaExecuteScript = () => browser.scripting.executeScript({
+		target: { tabId },
+		func: () => {
+			const start = globalThis.__beStartClassPicker;
+			if (typeof start !== "function") {
+				throw new Error("Class picker is not available on this page");
+			}
+			start();
+		}
+	});
 
 	return browser.scripting.executeScript({
 		target: { tabId },
 		files: ["classPicker.js"]
 	})
-		.then(start)
+		.then(startViaExecuteScript)
 		.catch(error => {
-			// Picker may already be running from a prior inject; try messaging directly.
-			return start().catch(() => {
-				onError(error);
-			});
+			// Picker may already be injected from a prior run; try starting it directly.
+			return startViaExecuteScript()
+				.catch(() => startViaMessage())
+				.catch(() => {
+					onError(error);
+				});
 		});
+}
+
+function resolveContextMenuTab(tab) {
+	if (tab && tab.id != null) return Promise.resolve(tab);
+	return browser.tabs.query({ currentWindow: true, active: true })
+		.then(tabs => tabs[0] || null);
 }
 
 browser.tabs.onActivated.addListener(({ tabId }) => {
@@ -444,15 +462,22 @@ browser.tabs.onActivated.addListener(({ tabId }) => {
 });
 
 browser.tabs.onUpdated.addListener((tabId, changeInfo, tab) => {
-	// Navigations clear the page-level reveal class; keep the menu checkbox in sync.
+	// Navigations clear the page-level reveal class; keep the menu label in sync.
 	if (changeInfo.status === "complete" && tab && tab.active) {
 		syncRevealHiddenMenuForTab(tabId);
 	}
 });
 
 browser.contextMenus.onClicked.addListener((info, tab) => {
-	if (!info || !tab) return;
+	if (!info) return;
 
+	resolveContextMenuTab(tab).then(resolvedTab => {
+		if (!resolvedTab) return;
+		handleContextMenuClick(info, resolvedTab);
+	}).catch(onError);
+});
+
+function handleContextMenuClick(info, tab) {
 	if (info.menuItemId === 'selectTargetClasses') {
 		startClassPickerOnTab(tab.id);
 		return;
@@ -507,7 +532,7 @@ browser.contextMenus.onClicked.addListener((info, tab) => {
 		.then(() => createBookmarkInFolder(folderId, url, title))
 		// bookmarks.onCreated updates the live index/status and notifies tabs.
 		.catch(onError);
-});
+}
 
 // Listen for storage changes and update settings dynamically
 browser.storage.onChanged.addListener((changes, areaName) => {
