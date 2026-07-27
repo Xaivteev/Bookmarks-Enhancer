@@ -5,6 +5,9 @@ let cachedBookmarkFolders = [];
 let cachedStyleRules = DEFAULT_STYLE_RULES.map(rule => ({ ...rule }));
 let suppressOptionsStorageReload = false;
 let optionsStorageReloadTimer = null;
+// False while bookmark rule rows are cleared/awaiting bookmarks.getTree().
+// Prevents Save/Export from persisting an empty table as cleared rules.
+let bookmarkRulesReady = false;
 
 function getAvailableStyleRules() {
     const fromDom = collectStyleRules();
@@ -446,11 +449,23 @@ function refreshBookmarkFolderSelectOptions() {
     }
 }
 
+function setBookmarkRulesReady(ready) {
+    bookmarkRulesReady = ready;
+    // Keep Save/Export disabled until rows exist; Import may still run once busy ends.
+    const saveBtn = document.querySelector("#saveBtn");
+    const exportBtn = document.querySelector("#exportBtn");
+    if (!actionBarBusy) {
+        if (saveBtn) saveBtn.disabled = !ready;
+        if (exportBtn) exportBtn.disabled = !ready;
+    }
+}
+
 function loadBookmarkRuleRows(rules) {
     // Rebuild immediately from cache so saves don't flash an empty table while
     // waiting on bookmarks.getTree().
     if (cachedBookmarkFolders.length > 0) {
         renderBookmarkRuleRows(rules);
+        setBookmarkRulesReady(true);
         return browser.bookmarks.getTree().then(tree => {
             cachedBookmarkFolders = flattenBookmarkFolders(tree);
             refreshBookmarkFolderSelectOptions();
@@ -459,11 +474,17 @@ function loadBookmarkRuleRows(rules) {
         });
     }
 
+    setBookmarkRulesReady(false);
     return browser.bookmarks.getTree().then(tree => {
         cachedBookmarkFolders = flattenBookmarkFolders(tree);
         renderBookmarkRuleRows(rules);
+        setBookmarkRulesReady(true);
     }).catch(err => {
         console.error("Could not load bookmark folders:", err);
+        // Still render stored rules (folder selects show "Missing folder") so a
+        // later Save cannot overwrite storage with an empty table.
+        renderBookmarkRuleRows(rules);
+        setBookmarkRulesReady(true);
         showStatus("Could not load bookmark folders", true);
     });
 }
@@ -605,6 +626,8 @@ function endActionBarBusy() {
     }
 
     actionBarBusyButton = null;
+    // Re-apply hydration gate after busy ends (Save/Export stay off until ready).
+    setBookmarkRulesReady(bookmarkRulesReady);
 }
 
 function persistOptionsFromForm({
@@ -613,6 +636,11 @@ function persistOptionsFromForm({
     busyLabel = "Saving…",
     busyButton = null
 } = {}) {
+    if (!bookmarkRulesReady) {
+        showStatus("Bookmark rules are still loading — try saving again", true);
+        return Promise.resolve();
+    }
+
     const {
         styleRules,
         searchPairs,
@@ -805,12 +833,15 @@ function createTextRuleRow(site = "", text = "", style = "blocked") {
 
 function restoreOptions() {
     suppressOptionsStorageReload = true;
+    // Do not clear bookmark rows here — keep the previous table until
+    // loadBookmarkRuleRows/renderBookmarkRuleRows replaces it, so a mid-restore
+    // Save cannot persist an empty bookmarkRules array.
+    setBookmarkRulesReady(false);
 
     function handleStorage(result) {
         clearSearchTable();
         clearUrlRuleTable();
         clearTextRuleTable();
-        clearBookmarkRuleTable();
         clearStyleRuleTable();
 
         document.querySelector("#enableTopBorder").checked =
@@ -899,6 +930,7 @@ function scheduleOptionsStorageReload() {
 }
 
 function initSaveLoadEvents() {
+    setBookmarkRulesReady(false);
     restoreOptions();
     document.querySelector("form").addEventListener("submit", saveOptions);
 
@@ -919,6 +951,10 @@ function initSaveLoadEvents() {
 }
 function exportToClipboard() {
     if (actionBarBusy) return;
+    if (!bookmarkRulesReady) {
+        showStatus("Bookmark rules are still loading — try exporting again", true);
+        return;
+    }
 
     const data = {
         searchPairs: collectSearchPairs(),
