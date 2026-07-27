@@ -302,6 +302,8 @@ browser.runtime.onMessage.addListener(message => {
 	if (message && message.refresh) {
 		if (message.mode === "authoritative") {
 			performAuthoritativeRefresh();
+		} else if (message.mode === "requery") {
+			performRequeryRefresh();
 		} else {
 			sendUniqueHrefs();
 		}
@@ -359,6 +361,27 @@ function sendAllHrefs() {
 	requestBookmarkStatuses(allHrefs);
 }
 
+// Soft re-resolve after background cleared this tab's statuses (navigate/load).
+// Re-asks even for hrefs previously recorded as "none".
+function performRequeryRefresh() {
+	if (!searchSite) return;
+
+	buildLinkMap();
+	processedHrefs = new Set();
+	for (const [href, status] of Array.from(linkStatusMap.entries())) {
+		if (!status || status === "none") {
+			linkStatusMap.delete(href);
+		} else {
+			applyCachedLinkStatus(href);
+		}
+	}
+
+	const allHrefs = Array.from(linkMap.keys());
+	if (allHrefs.length === 0) return;
+	allHrefs.forEach(h => processedHrefs.add(h));
+	requestBookmarkStatuses(allHrefs);
+}
+
 function performAuthoritativeRefresh() {
 	if (!searchSite) return;
 
@@ -393,8 +416,8 @@ function performAuthoritativeRefresh() {
 		sendUniqueHrefs();
 	}
 
+	// No links yet — keep existing styles instead of wiping to empty.
 	if (allHrefs.length === 0) {
-		applyAuthoritativeResults({ statuses: {} });
 		return;
 	}
 

@@ -637,8 +637,12 @@ function restoreStatusCacheFromSession() {
 		if (!cached || typeof cached !== "object") return;
 		if (cached.fingerprint !== getStatusCacheFingerprint()) return;
 
+		// Never restore "none" — sticky negatives survive SW restarts and block
+		// restyling until an authoritative refresh. Positives are safe to reuse.
 		if (cached.statuses && typeof cached.statuses === "object") {
-			bookmarkStatusMap = new Map(Object.entries(cached.statuses));
+			bookmarkStatusMap = new Map(
+				Object.entries(cached.statuses).filter(([, status]) => status && status !== "none")
+			);
 		}
 		if (Array.isArray(cached.unmatchedUrls)) {
 			unmatchedUrlSet = new Set(cached.unmatchedUrls.filter(Boolean));
@@ -662,10 +666,16 @@ function schedulePersistStatusCache() {
 	}
 	persistStatusCacheTimer = setTimeout(() => {
 		persistStatusCacheTimer = null;
+		const statuses = {};
+		for (const [href, status] of bookmarkStatusMap) {
+			if (status && status !== "none") {
+				statuses[href] = status;
+			}
+		}
 		browser.storage.session.set({
 			[SESSION_STATUS_CACHE_KEY]: {
 				fingerprint: getStatusCacheFingerprint(),
-				statuses: Object.fromEntries(bookmarkStatusMap),
+				statuses,
 				unmatchedUrls: Array.from(unmatchedUrlSet)
 			}
 		}).catch(() => {});
@@ -697,6 +707,17 @@ function clearStatusesForTab(tabId) {
 	schedulePersistStatusCache();
 }
 
+// Drop a settled index so the next getBookmarkIndex() re-reads rule folders.
+// Unlike invalidateBookmarkCaches(), this keeps status maps (callers clear URLs).
+function invalidateLiveBookmarkIndex() {
+	bookmarkCacheGeneration += 1;
+	bookmarkIndexBuildId += 1;
+	bookmarkIndexPromise = null;
+	liveBookmarkIndex = null;
+	bookmarkIndexBuilding = false;
+	bookmarkIndexStartedAt = 0;
+}
+
 function searchhrefs(hrefs, tabId = null, options = {}) {
 	// contentScript asks if links have been bookmarked
 	// Normalize once; retries reuse validHrefs instead of re-entering searchhrefs.
@@ -704,9 +725,14 @@ function searchhrefs(hrefs, tabId = null, options = {}) {
 	const validHrefs = normalizedHrefs.filter(isValidBookmarkUrl);
 	rememberTabHrefs(tabId, validHrefs);
 
-	// Hard refresh must bypass in-memory/session status hits and re-resolve.
+	// Hard refresh must bypass in-memory/session status hits and re-resolve
+	// against a freshly built folder index (settled indexes can go stale).
 	if (options && options.authoritative) {
 		clearStatusesForUrls(validHrefs);
+		for (const href of validHrefs) {
+			unmatchedUrlSet.delete(href);
+		}
+		invalidateLiveBookmarkIndex();
 	}
 
 	return fillBookmarkStatuses(validHrefs);
@@ -761,9 +787,10 @@ function fillBookmarkStatuses(validHrefs, retryCount = 0) {
 				bookmarkStatusMap.set(href, index.unmatchedBookmarkStyle);
 			} else if (unmatchedEnabled) {
 				needsUnmatchedSearch.push(href);
-			} else {
-				bookmarkStatusMap.set(href, "none");
 			}
+			// Folder miss with unmatched disabled: do not cache "none".
+			// Re-checking the in-memory index map is cheap and avoids sticky
+			// negatives when the index was briefly incomplete.
 		}
 
 		const finish = () => {
@@ -869,9 +896,8 @@ function resolveUnmatchedViaSearch(hrefs, index) {
 				}
 			})
 			.catch(() => {
-				if (!bookmarkStatusMap.has(href)) {
-					bookmarkStatusMap.set(href, "none");
-				}
+				// Search failures are transient — do not cache "none" or a later
+				// pass can stick on an unstyled result until hard refresh.
 			})
 			.then(() => worker());
 	};
@@ -888,10 +914,8 @@ function buildStatusResponse(requestedHrefs) {
 	const statuses = {};
 
 	for (const href of new Set(requestedHrefs)) {
-		const status = bookmarkStatusMap.get(href);
-		if (!status) continue;
-
-		statuses[href] = status;
+		// Uncached folder misses report as "none" without polluting the map.
+		statuses[href] = bookmarkStatusMap.get(href) || "none";
 	}
 
 	return { statuses };
@@ -1346,10 +1370,13 @@ function isValidBookmarkUrl(href) {
 	}
 }
 
-// Clear only this tab's cached statuses when it navigates or finishes loading.
+// Clear this tab's cached statuses on navigate/load, then ask the content
+// script to re-query. Otherwise an early "none" can stick in processedHrefs
+// after the background cache was cleared.
 browser.tabs.onUpdated.addListener((tabId, changeInfo) => {
 	if (changeInfo.status === "complete" || changeInfo.url) {
 		clearStatusesForTab(tabId);
+		sendTabMessage(tabId, { refresh: true, mode: "requery" }).catch(() => {});
 	}
 });
 
