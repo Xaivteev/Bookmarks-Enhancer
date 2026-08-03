@@ -192,6 +192,131 @@ let observer = null;
 let pendingObservedHrefs = new Set();
 let mutationDebounceTimer = null;
 let originalBodyBorderTop = null;
+
+const STYLING_INDICATOR_DELAY_MS = 300;
+const STYLING_INDICATOR_HOST_ID = "bookmarks-enhancer-loading";
+let stylingIndicatorDepth = 0;
+let stylingIndicatorShowTimer = null;
+let stylingIndicatorHost = null;
+
+function beginStylingIndicator() {
+	stylingIndicatorDepth += 1;
+	if (stylingIndicatorDepth !== 1) return;
+	if (stylingIndicatorShowTimer) return;
+	stylingIndicatorShowTimer = setTimeout(() => {
+		stylingIndicatorShowTimer = null;
+		if (stylingIndicatorDepth > 0) {
+			showStylingIndicator();
+		}
+	}, STYLING_INDICATOR_DELAY_MS);
+}
+
+function endStylingIndicator() {
+	if (stylingIndicatorDepth <= 0) return;
+	stylingIndicatorDepth -= 1;
+	if (stylingIndicatorDepth > 0) return;
+	if (stylingIndicatorShowTimer) {
+		clearTimeout(stylingIndicatorShowTimer);
+		stylingIndicatorShowTimer = null;
+	}
+	hideStylingIndicator();
+}
+
+function showStylingIndicator() {
+	if (stylingIndicatorHost?.isConnected) {
+		stylingIndicatorHost.hidden = false;
+		return;
+	}
+
+	const existing = document.getElementById(STYLING_INDICATOR_HOST_ID);
+	if (existing) {
+		existing.remove();
+	}
+
+	const host = document.createElement("div");
+	host.id = STYLING_INDICATOR_HOST_ID;
+	host.setAttribute("data-be-styling-indicator", "host");
+	host.setAttribute("role", "status");
+	host.setAttribute("aria-live", "polite");
+	host.style.cssText = [
+		"all: initial",
+		"position: fixed",
+		"z-index: 2147483646",
+		"right: 16px",
+		"bottom: 16px",
+		"pointer-events: none"
+	].join(";");
+
+	const shadow = host.attachShadow({ mode: "open" });
+	const style = document.createElement("style");
+	style.textContent = `
+		:host {
+			display: block !important;
+		}
+		.toast {
+			display: flex;
+			align-items: center;
+			gap: 8px;
+			max-width: min(280px, calc(100vw - 32px));
+			padding: 10px 12px;
+			border: 1px solid #475569;
+			border-radius: 8px;
+			background: #0f172a;
+			color: #f8fafc;
+			box-shadow: 0 10px 28px rgb(0 0 0 / 35%);
+			font: 13px/1.35 system-ui, -apple-system, sans-serif;
+		}
+		.spinner {
+			box-sizing: border-box;
+			width: 14px;
+			height: 14px;
+			flex: 0 0 auto;
+			border: 2px solid #94a3b8;
+			border-top-color: #f8fafc;
+			border-radius: 50%;
+			animation: be-spin 0.7s linear infinite;
+		}
+		@keyframes be-spin {
+			to { transform: rotate(360deg); }
+		}
+	`;
+
+	const toast = document.createElement("div");
+	toast.className = "toast";
+
+	const spinner = document.createElement("div");
+	spinner.className = "spinner";
+	spinner.setAttribute("aria-hidden", "true");
+
+	const label = document.createElement("span");
+	label.textContent = "Applying bookmark styles…";
+
+	toast.append(spinner, label);
+	shadow.append(style, toast);
+
+	const root = document.documentElement || document.body;
+	if (!root) return;
+	root.appendChild(host);
+	stylingIndicatorHost = host;
+}
+
+function hideStylingIndicator() {
+	if (!stylingIndicatorHost) {
+		const existing = document.getElementById(STYLING_INDICATOR_HOST_ID);
+		if (existing) existing.remove();
+		return;
+	}
+	stylingIndicatorHost.remove();
+	stylingIndicatorHost = null;
+}
+
+function notifyRefreshBusyComplete(actionBusyGeneration) {
+	browser.runtime.sendMessage({
+		refreshBusyComplete: true,
+		actionBusyGeneration
+	}).catch(() => {});
+}
+
 const mutationDebounceDelay = 200;
 
 function removeStatusClasses(classNames) {
@@ -225,8 +350,10 @@ function invalidateTextFilterCache() {
 	removeStatusClasses(managedClassNames);
 }
 
-function requestBookmarkStatuses(hrefs) {
+function requestBookmarkStatuses(hrefs, options = {}) {
 	if (!hrefs || !hrefs.length) return;
+	const showLoading = !!options.showLoading;
+	if (showLoading) beginStylingIndicator();
 	const requestGeneration = urlCacheGeneration;
 	browser.runtime.sendMessage({ hrefs })
 		.then(message => {
@@ -237,7 +364,10 @@ function requestBookmarkStatuses(hrefs) {
 			}
 			applyBookmarkStyling(message);
 		})
-		.catch(onError);
+		.catch(onError)
+		.finally(() => {
+			if (showLoading) endStylingIndicator();
+		});
 }
 
 function injectBookmarkStyles() {
@@ -301,7 +431,10 @@ browser.runtime.onMessage.addListener(message => {
 
 	if (message && message.refresh) {
 		if (message.mode === "authoritative") {
-			performAuthoritativeRefresh();
+			performAuthoritativeRefresh({
+				showActionBusy: !!message.showActionBusy,
+				actionBusyGeneration: message.actionBusyGeneration
+			});
 		} else if (message.mode === "requery") {
 			performRequeryRefresh();
 		} else {
@@ -338,7 +471,7 @@ function collectLink(link, includeHidden = false) {
 	return normalized;
 }
 
-function sendUniqueHrefs() {
+function sendUniqueHrefs(options = {}) {
 	if (!searchSite) return; // skip if site not relevant
 	buildLinkMap();
 	const allHrefs = Array.from(linkMap.keys());
@@ -350,7 +483,7 @@ function sendUniqueHrefs() {
 	const newHrefs = allHrefs.filter(h => !processedHrefs.has(h));
 	if (newHrefs.length === 0) return;
 	newHrefs.forEach(h => processedHrefs.add(h));
-	requestBookmarkStatuses(newHrefs);
+	requestBookmarkStatuses(newHrefs, options);
 }
 
 function sendAllHrefs() {
@@ -382,8 +515,20 @@ function performRequeryRefresh() {
 	requestBookmarkStatuses(allHrefs);
 }
 
-function performAuthoritativeRefresh() {
-	if (!searchSite) return;
+function performAuthoritativeRefresh(options = {}) {
+	const showActionBusy = !!options.showActionBusy;
+	const actionBusyGeneration = options.actionBusyGeneration;
+	const finishBusy = () => {
+		endStylingIndicator();
+		if (showActionBusy) {
+			notifyRefreshBusyComplete(actionBusyGeneration);
+		}
+	};
+
+	if (!searchSite) {
+		if (showActionBusy) notifyRefreshBusyComplete(actionBusyGeneration);
+		return;
+	}
 
 	// Host pages sometimes remove our stylesheet; refresh must recreate it.
 	injectBookmarkStyles();
@@ -418,12 +563,15 @@ function performAuthoritativeRefresh() {
 
 	// No links yet — keep existing styles instead of wiping to empty.
 	if (allHrefs.length === 0) {
+		if (showActionBusy) notifyRefreshBusyComplete(actionBusyGeneration);
 		return;
 	}
 
+	beginStylingIndicator();
 	browser.runtime.sendMessage({ hrefs: allHrefs, authoritative: true })
 		.then(applyAuthoritativeResults)
-		.catch(onError);
+		.catch(onError)
+		.finally(finishBusy);
 }
 
 function applyBookmarkStyling(message, includeHidden = false) {
@@ -758,7 +906,7 @@ function initProcessing() {
 	if (!searchSite) return;
 	injectBookmarkStyles();
 	// Build initial map and send unique hrefs
-	sendUniqueHrefs();
+	sendUniqueHrefs({ showLoading: true });
 	// Start observing for incremental additions
 	startMutationObserver();
 }

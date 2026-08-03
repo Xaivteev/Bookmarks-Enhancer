@@ -4,7 +4,47 @@ const UNMATCHED_SEARCH_CONCURRENCY = 2;
 // Only used for aged-build recovery heuristics (not Promise.race timeouts).
 const INDEX_BUILD_STALE_MS = 120000;
 
+const DEFAULT_ACTION_TITLE = "Enhance Bookmarks";
+const ACTION_BUSY_TIMEOUT_MS = 60000;
+const ACTION_BUSY_BADGE_TEXT = "…";
+const ACTION_BUSY_BADGE_COLOR = "#475569";
+
+let actionBusyGeneration = 0;
+let actionBusyClearTimer = null;
+
+function beginActionBusy() {
+	actionBusyGeneration += 1;
+	const generation = actionBusyGeneration;
+	if (actionBusyClearTimer) {
+		clearTimeout(actionBusyClearTimer);
+	}
+	actionBusyClearTimer = setTimeout(() => {
+		endActionBusy(generation);
+	}, ACTION_BUSY_TIMEOUT_MS);
+
+	Promise.resolve(browser.action.setBadgeText({ text: ACTION_BUSY_BADGE_TEXT })).catch(() => {});
+	Promise.resolve(browser.action.setBadgeBackgroundColor({ color: ACTION_BUSY_BADGE_COLOR })).catch(() => {});
+	Promise.resolve(browser.action.setTitle({ title: "Refreshing bookmark styles…" })).catch(() => {});
+	return generation;
+}
+
+function endActionBusy(expectedGeneration) {
+	if (expectedGeneration == null || expectedGeneration !== actionBusyGeneration) return;
+	actionBusyGeneration += 1;
+	if (actionBusyClearTimer) {
+		clearTimeout(actionBusyClearTimer);
+		actionBusyClearTimer = null;
+	}
+	Promise.resolve(browser.action.setBadgeText({ text: "" })).catch(() => {});
+	Promise.resolve(browser.action.setTitle({ title: DEFAULT_ACTION_TITLE })).catch(() => {});
+}
+
 browser.runtime.onMessage.addListener((message, sender, sendResponse) => {
+	if (message && message.refreshBusyComplete) {
+		endActionBusy(message.actionBusyGeneration);
+		return false;
+	}
+
 	if (message && message.hrefs) {
 		const tabId = sender && sender.tab ? sender.tab.id : null;
 		const authoritative = !!(message.authoritative || message.mode === "authoritative");
@@ -23,16 +63,16 @@ browser.runtime.onMessage.addListener((message, sender, sendResponse) => {
 
 // Full refresh when the toolbar icon is clicked
 browser.action.onClicked.addListener(() => {
-	sendRefreshToActiveTab("authoritative");
+	sendRefreshToActiveTab("authoritative", { showActionBusy: true });
 });
 
-function sendRefreshToActiveTab(mode) {
+function sendRefreshToActiveTab(mode, options = {}) {
 	return browser.tabs.query({
 		currentWindow: true,
 		active: true
 	}).then(tabs => {
 		if (tabs.length > 0) {
-			return refreshTabStyling(tabs[0].id, mode);
+			return refreshTabStyling(tabs[0].id, mode, options);
 		}
 		return undefined;
 	}).catch(onError);
@@ -43,13 +83,29 @@ function sendTabMessage(tabId, payload) {
 		.catch(() => ensureContentScripts(tabId).then(() => browser.tabs.sendMessage(tabId, payload)));
 }
 
-function refreshTabStyling(tabId, mode = "authoritative") {
+function refreshTabStyling(tabId, mode = "authoritative", options = {}) {
 	if (tabId == null) return Promise.resolve();
 
 	// Icon/menu refresh is the recovery path when the SW index is stuck.
 	recoverHungBookmarkIndex(true);
 
-	return sendTabMessage(tabId, { refresh: true, mode }).catch(onError);
+	const showActionBusy = !!options.showActionBusy && mode === "authoritative";
+	let busyGeneration = null;
+	if (showActionBusy) {
+		busyGeneration = beginActionBusy();
+	}
+
+	return sendTabMessage(tabId, {
+		refresh: true,
+		mode,
+		showActionBusy,
+		actionBusyGeneration: busyGeneration
+	}).catch(error => {
+		if (busyGeneration != null) {
+			endActionBusy(busyGeneration);
+		}
+		onError(error);
+	});
 }
 
 function ensureContentScripts(tabId) {
@@ -511,7 +567,7 @@ function handleContextMenuClick(info, tab) {
 	}
 
 	if (info.menuItemId === REFRESH_TAB_STYLING_MENU_ID) {
-		refreshTabStyling(tab.id, "authoritative");
+		refreshTabStyling(tab.id, "authoritative", { showActionBusy: true });
 		return;
 	}
 
