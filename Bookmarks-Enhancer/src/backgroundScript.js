@@ -10,16 +10,18 @@ const ACTION_BUSY_BADGE_TEXT = "…";
 const ACTION_BUSY_BADGE_COLOR = "#475569";
 
 let actionBusyGeneration = 0;
+let actionBusyRemaining = 0;
 let actionBusyClearTimer = null;
 
-function beginActionBusy() {
+function beginActionBusy(tabCount = 1) {
 	actionBusyGeneration += 1;
 	const generation = actionBusyGeneration;
+	actionBusyRemaining = Math.max(1, tabCount | 0);
 	if (actionBusyClearTimer) {
 		clearTimeout(actionBusyClearTimer);
 	}
 	actionBusyClearTimer = setTimeout(() => {
-		endActionBusy(generation);
+		forceEndActionBusy(generation);
 	}, ACTION_BUSY_TIMEOUT_MS);
 
 	Promise.resolve(browser.action.setBadgeText({ text: ACTION_BUSY_BADGE_TEXT })).catch(() => {});
@@ -28,15 +30,28 @@ function beginActionBusy() {
 	return generation;
 }
 
-function endActionBusy(expectedGeneration) {
-	if (expectedGeneration == null || expectedGeneration !== actionBusyGeneration) return;
+function clearActionBusyUi(expectedGeneration) {
+	if (expectedGeneration !== actionBusyGeneration) return;
 	actionBusyGeneration += 1;
+	actionBusyRemaining = 0;
 	if (actionBusyClearTimer) {
 		clearTimeout(actionBusyClearTimer);
 		actionBusyClearTimer = null;
 	}
 	Promise.resolve(browser.action.setBadgeText({ text: "" })).catch(() => {});
 	Promise.resolve(browser.action.setTitle({ title: DEFAULT_ACTION_TITLE })).catch(() => {});
+}
+
+function endActionBusy(expectedGeneration) {
+	if (expectedGeneration == null || expectedGeneration !== actionBusyGeneration) return;
+	actionBusyRemaining = Math.max(0, actionBusyRemaining - 1);
+	if (actionBusyRemaining > 0) return;
+	clearActionBusyUi(expectedGeneration);
+}
+
+function forceEndActionBusy(expectedGeneration) {
+	if (expectedGeneration == null || expectedGeneration !== actionBusyGeneration) return;
+	clearActionBusyUi(expectedGeneration);
 }
 
 browser.runtime.onMessage.addListener((message, sender, sendResponse) => {
@@ -106,6 +121,42 @@ function refreshTabStyling(tabId, mode = "authoritative", options = {}) {
 		}
 		onError(error);
 	});
+}
+
+// One shared cache wipe + index rebuild, then each tab restyles without
+// re-invalidating the index (avoids N authoritative thrash).
+function refreshAllTabsStyling() {
+	return browser.tabs.query({}).then(tabs => {
+		const targets = tabs.filter(tab => tab && tab.id != null);
+		const busyGeneration = beginActionBusy(Math.max(targets.length, 1));
+
+		recoverHungBookmarkIndex(true);
+		invalidateBookmarkCaches();
+
+		return ensureSettingsReady()
+			.then(() => getBookmarkIndex())
+			.then(() => {
+				if (targets.length === 0) {
+					forceEndActionBusy(busyGeneration);
+					return;
+				}
+
+				for (const tab of targets) {
+					sendTabMessage(tab.id, {
+						refresh: true,
+						mode: "rebuild",
+						showActionBusy: true,
+						actionBusyGeneration: busyGeneration
+					}).catch(() => {
+						endActionBusy(busyGeneration);
+					});
+				}
+			})
+			.catch(error => {
+				forceEndActionBusy(busyGeneration);
+				onError(error);
+			});
+	}).catch(onError);
 }
 
 function ensureContentScripts(tabId) {
@@ -214,6 +265,7 @@ const RULE_PAGE_MENU_PARENT = "addPageToRuleFolderParent";
 const TEXT_RULE_MENU_PARENT = "addTextRuleParent";
 const TEXT_RULE_MENU_PREFIX = "addTextRuleStyle:";
 const REFRESH_TAB_STYLING_MENU_ID = "refreshTabStyling";
+const REFRESH_ALL_TABS_STYLING_MENU_ID = "refreshAllTabsStyling";
 const TOGGLE_REVEAL_HIDDEN_MENU_ID = "toggleRevealHidden";
 const LEGACY_LINK_MENU_IDS = ["addLinkBlocked", "addLinkFavorited", "addTextFilter"];
 let ruleFolderMenuIds = [];
@@ -237,6 +289,11 @@ function createStaticContextMenus() {
 			id: REFRESH_TAB_STYLING_MENU_ID,
 			title: 'Refresh styling on this tab',
 			contexts: ['page', 'action']
+		},
+		{
+			id: REFRESH_ALL_TABS_STYLING_MENU_ID,
+			title: 'Refresh styling on all tabs',
+			contexts: ['action']
 		}
 	];
 
@@ -568,6 +625,11 @@ function handleContextMenuClick(info, tab) {
 
 	if (info.menuItemId === REFRESH_TAB_STYLING_MENU_ID) {
 		refreshTabStyling(tab.id, "authoritative", { showActionBusy: true });
+		return;
+	}
+
+	if (info.menuItemId === REFRESH_ALL_TABS_STYLING_MENU_ID) {
+		refreshAllTabsStyling();
 		return;
 	}
 

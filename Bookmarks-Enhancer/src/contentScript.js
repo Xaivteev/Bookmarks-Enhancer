@@ -433,7 +433,15 @@ browser.runtime.onMessage.addListener(message => {
 		if (message.mode === "authoritative") {
 			performAuthoritativeRefresh({
 				showActionBusy: !!message.showActionBusy,
-				actionBusyGeneration: message.actionBusyGeneration
+				actionBusyGeneration: message.actionBusyGeneration,
+				authoritativeLookup: true
+			});
+		} else if (message.mode === "rebuild") {
+			// Background already wiped caches and rebuilt the index once.
+			performAuthoritativeRefresh({
+				showActionBusy: !!message.showActionBusy,
+				actionBusyGeneration: message.actionBusyGeneration,
+				authoritativeLookup: false
 			});
 		} else if (message.mode === "requery") {
 			performRequeryRefresh();
@@ -518,6 +526,7 @@ function performRequeryRefresh() {
 function performAuthoritativeRefresh(options = {}) {
 	const showActionBusy = !!options.showActionBusy;
 	const actionBusyGeneration = options.actionBusyGeneration;
+	const authoritativeLookup = options.authoritativeLookup !== false;
 	const finishBusy = () => {
 		endStylingIndicator();
 		if (showActionBusy) {
@@ -568,7 +577,10 @@ function performAuthoritativeRefresh(options = {}) {
 	}
 
 	beginStylingIndicator();
-	browser.runtime.sendMessage({ hrefs: allHrefs, authoritative: true })
+	const payload = authoritativeLookup
+		? { hrefs: allHrefs, authoritative: true }
+		: { hrefs: allHrefs };
+	browser.runtime.sendMessage(payload)
 		.then(applyAuthoritativeResults)
 		.catch(onError)
 		.finally(finishBusy);
