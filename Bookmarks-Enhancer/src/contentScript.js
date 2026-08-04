@@ -187,11 +187,15 @@ const textFilterCache = new Map(); // element -> normalized text
 let linkMap = new Map(); // normalizedHref -> [link elements]
 let linkStatusMap = new Map(); // normalizedHref -> status string
 let processedHrefs = new Set();
+let pendingStatusHrefs = new Set(); // in-flight lookups; not yet successfully processed
 let urlCacheGeneration = 0;
 let observer = null;
 let pendingObservedHrefs = new Set();
 let mutationDebounceTimer = null;
 let originalBodyBorderTop = null;
+let visibilityListenersAttached = false;
+let pageWasHidden = typeof document !== "undefined" && document.visibilityState === "hidden";
+let visibilityRescanTimer = null;
 
 const STYLING_INDICATOR_DELAY_MS = 300;
 const STYLING_INDICATOR_HOST_ID = "bookmarks-enhancer-loading";
@@ -335,6 +339,7 @@ function invalidateUrlDependentCaches() {
 	linkMap = new Map();
 	linkStatusMap = new Map();
 	processedHrefs = new Set();
+	pendingStatusHrefs = new Set();
 	pendingObservedHrefs = new Set();
 
 	if (mutationDebounceTimer) {
@@ -352,19 +357,48 @@ function invalidateTextFilterCache() {
 
 function requestBookmarkStatuses(hrefs, options = {}) {
 	if (!hrefs || !hrefs.length) return;
+
+	const unique = [];
+	for (const href of hrefs) {
+		if (!href) continue;
+		if (pendingStatusHrefs.has(href)) continue;
+		if (!options.force && processedHrefs.has(href)) continue;
+		pendingStatusHrefs.add(href);
+		unique.push(href);
+	}
+	if (!unique.length) return;
+
 	const showLoading = !!options.showLoading;
 	if (showLoading) beginStylingIndicator();
 	const requestGeneration = urlCacheGeneration;
-	browser.runtime.sendMessage({ hrefs })
+
+	const releasePending = () => {
+		for (const href of unique) {
+			pendingStatusHrefs.delete(href);
+		}
+	};
+
+	browser.runtime.sendMessage({ hrefs: unique })
 		.then(message => {
-			if (requestGeneration !== urlCacheGeneration) return;
+			if (requestGeneration !== urlCacheGeneration) {
+				releasePending();
+				return;
+			}
 			if (message && message.error) {
+				releasePending();
 				onError(message.error);
 				return;
 			}
+			releasePending();
+			for (const href of unique) {
+				processedHrefs.add(href);
+			}
 			applyBookmarkStyling(message);
 		})
-		.catch(onError)
+		.catch(error => {
+			releasePending();
+			onError(error);
+		})
 		.finally(() => {
 			if (showLoading) endStylingIndicator();
 		});
@@ -481,16 +515,15 @@ function collectLink(link, includeHidden = false) {
 
 function sendUniqueHrefs(options = {}) {
 	if (!searchSite) return; // skip if site not relevant
-	buildLinkMap();
+	buildLinkMap(!!options.includeHidden);
 	const allHrefs = Array.from(linkMap.keys());
 	for (const href of allHrefs) {
 		if (linkStatusMap.has(href)) {
 			applyCachedLinkStatus(href);
 		}
 	}
-	const newHrefs = allHrefs.filter(h => !processedHrefs.has(h));
+	const newHrefs = allHrefs.filter(h => !processedHrefs.has(h) && !pendingStatusHrefs.has(h));
 	if (newHrefs.length === 0) return;
-	newHrefs.forEach(h => processedHrefs.add(h));
 	requestBookmarkStatuses(newHrefs, options);
 }
 
@@ -498,8 +531,7 @@ function sendAllHrefs() {
 	if (!searchSite) return;
 	buildLinkMap();
 	const allHrefs = Array.from(linkMap.keys());
-	allHrefs.forEach(h => processedHrefs.add(h));
-	requestBookmarkStatuses(allHrefs);
+	requestBookmarkStatuses(allHrefs, { force: true });
 }
 
 // Soft re-resolve after background cleared this tab's statuses (navigate/load).
@@ -509,6 +541,7 @@ function performRequeryRefresh() {
 
 	buildLinkMap();
 	processedHrefs = new Set();
+	pendingStatusHrefs = new Set();
 	for (const [href, status] of Array.from(linkStatusMap.entries())) {
 		if (!status || status === "none") {
 			linkStatusMap.delete(href);
@@ -519,8 +552,7 @@ function performRequeryRefresh() {
 
 	const allHrefs = Array.from(linkMap.keys());
 	if (allHrefs.length === 0) return;
-	allHrefs.forEach(h => processedHrefs.add(h));
-	requestBookmarkStatuses(allHrefs);
+	requestBookmarkStatuses(allHrefs, { force: true });
 }
 
 function performAuthoritativeRefresh(options = {}) {
@@ -560,6 +592,7 @@ function performAuthoritativeRefresh(options = {}) {
 		linkMap = authoritativeLinkMap;
 		linkStatusMap = new Map();
 		processedHrefs = new Set(allHrefs);
+		pendingStatusHrefs = new Set();
 		pendingObservedHrefs = new Set();
 		textFilterCache.clear();
 		removeStatusClasses(managedClassNames);
@@ -892,8 +925,7 @@ function processObservedHrefs() {
 		if (linkStatusMap.has(norm)) {
 			applyCachedLinkStatus(norm);
 		}
-		if (!processedHrefs.has(norm)) {
-			processedHrefs.add(norm);
+		if (!processedHrefs.has(norm) && !pendingStatusHrefs.has(norm)) {
 			hrefsToRequest.push(norm);
 		}
 	}
@@ -914,13 +946,66 @@ function applyCachedLinkStatus(norm) {
 	}
 }
 
+function scheduleVisibilityRescan() {
+	if (visibilityRescanTimer) return;
+	visibilityRescanTimer = setTimeout(() => {
+		visibilityRescanTimer = null;
+		performVisibilityRescan();
+	}, 100);
+}
+
+function performVisibilityRescan() {
+	if (!searchSite) return;
+	if (document.visibilityState === "hidden") return;
+
+	// Include links that were skipped while the tab/page was hidden
+	// (inherited visibility:hidden, opacity fades, splash overlays).
+	sendUniqueHrefs({ includeHidden: true });
+}
+
+function onVisibilityChange() {
+	if (document.visibilityState === "hidden") {
+		pageWasHidden = true;
+		return;
+	}
+	if (!pageWasHidden) return;
+	pageWasHidden = false;
+	scheduleVisibilityRescan();
+}
+
+function onPageShow(event) {
+	if (document.visibilityState === "hidden") {
+		pageWasHidden = true;
+		return;
+	}
+	// bfcache restore, or a background tab that becomes usable on show.
+	if (event.persisted || pageWasHidden) {
+		pageWasHidden = false;
+		scheduleVisibilityRescan();
+	}
+}
+
+function ensureVisibilityRescanListeners() {
+	if (visibilityListenersAttached) return;
+	visibilityListenersAttached = true;
+	document.addEventListener("visibilitychange", onVisibilityChange);
+	window.addEventListener("pageshow", onPageShow);
+}
+
 function initProcessing() {
 	if (!searchSite) return;
 	injectBookmarkStyles();
+	ensureVisibilityRescanListeners();
 	// Build initial map and send unique hrefs
 	sendUniqueHrefs({ showLoading: true });
 	// Start observing for incremental additions
 	startMutationObserver();
+
+	// Background tabs often finish the first scan while still hidden; rescan
+	// once when the user first focuses the tab.
+	if (document.visibilityState === "hidden") {
+		pageWasHidden = true;
+	}
 }
 
 } // end __beContentScriptInstalled install guard
