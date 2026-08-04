@@ -856,6 +856,7 @@ function invalidateLiveBookmarkIndex() {
 	liveBookmarkIndex = null;
 	bookmarkIndexBuilding = false;
 	bookmarkIndexStartedAt = 0;
+	abandonUnmatchedSearches();
 }
 
 function searchhrefs(hrefs, tabId = null, options = {}) {
@@ -976,7 +977,7 @@ function fillBookmarkStatuses(validHrefs, retryCount = 0, tabId = null) {
 		schedulePersistStatusCache();
 		const earlyResponse = buildPartialStatusResponse(validHrefs, needsUnmatchedSearch);
 
-		resolveUnmatchedViaSearch(needsUnmatchedSearch, index)
+		resolveUnmatchedSearches(needsUnmatchedSearch, index)
 			.then(() => {
 				if (index.generation !== bookmarkCacheGeneration) {
 					if (retryCount >= MAX_STATUS_FILL_RETRIES) return;
@@ -1062,23 +1063,75 @@ function findBookmarksForNormalizedHref(href) {
 	});
 }
 
-function resolveUnmatchedViaSearch(hrefs, index) {
-	let nextIndex = 0;
+// Global unmatched-search queue: one in-flight search per href, shared across
+// tabs, capped at UNMATCHED_SEARCH_CONCURRENCY workers total (not per request).
+const unmatchedSearchWaiters = new Map(); // href -> { promise, resolve, generation, unmatchedStyle }
+let unmatchedSearchQueue = [];
+let unmatchedSearchActive = 0;
 
-	const worker = () => {
-		if (nextIndex >= hrefs.length) return Promise.resolve();
-		if (index.generation !== bookmarkCacheGeneration) return Promise.resolve();
+function abandonUnmatchedSearches() {
+	unmatchedSearchQueue = [];
+	const waiters = Array.from(unmatchedSearchWaiters.values());
+	unmatchedSearchWaiters.clear();
+	for (const entry of waiters) {
+		entry.resolve();
+	}
+}
 
-		const href = hrefs[nextIndex++];
-		if (bookmarkStatusMap.has(href)) return worker();
+function resolveUnmatchedSearches(hrefs, index) {
+	return Promise.all(hrefs.map(href => ensureUnmatchedSearch(href, index)));
+}
 
-		return findBookmarksForNormalizedHref(href)
+function ensureUnmatchedSearch(href, index) {
+	if (!href) return Promise.resolve();
+	if (bookmarkStatusMap.has(href)) return Promise.resolve();
+
+	const existing = unmatchedSearchWaiters.get(href);
+	if (existing) {
+		return existing.promise;
+	}
+
+	let resolveFn = null;
+	const promise = new Promise(resolve => {
+		resolveFn = resolve;
+	});
+	unmatchedSearchWaiters.set(href, {
+		promise,
+		resolve: resolveFn,
+		generation: index.generation,
+		unmatchedStyle: index.unmatchedBookmarkStyle
+	});
+	unmatchedSearchQueue.push(href);
+	pumpUnmatchedSearchQueue();
+	return promise;
+}
+
+function pumpUnmatchedSearchQueue() {
+	while (
+		unmatchedSearchActive < UNMATCHED_SEARCH_CONCURRENCY &&
+		unmatchedSearchQueue.length > 0
+	) {
+		const href = unmatchedSearchQueue.shift();
+		const entry = unmatchedSearchWaiters.get(href);
+		if (!entry) continue;
+
+		if (
+			bookmarkStatusMap.has(href) ||
+			entry.generation !== bookmarkCacheGeneration
+		) {
+			unmatchedSearchWaiters.delete(href);
+			entry.resolve();
+			continue;
+		}
+
+		unmatchedSearchActive += 1;
+		findBookmarksForNormalizedHref(href)
 			.then(bookmarks => {
-				if (index.generation !== bookmarkCacheGeneration) return;
+				if (entry.generation !== bookmarkCacheGeneration) return;
 				if (bookmarkStatusMap.has(href)) return;
 				if (bookmarks.length > 0) {
 					unmatchedUrlSet.add(href);
-					bookmarkStatusMap.set(href, index.unmatchedBookmarkStyle);
+					bookmarkStatusMap.set(href, entry.unmatchedStyle);
 				} else {
 					bookmarkStatusMap.set(href, "none");
 				}
@@ -1087,15 +1140,15 @@ function resolveUnmatchedViaSearch(hrefs, index) {
 				// Search failures are transient — do not cache "none" or a later
 				// pass can stick on an unstyled result until hard refresh.
 			})
-			.then(() => worker());
-	};
-
-	const workers = [];
-	const count = Math.min(UNMATCHED_SEARCH_CONCURRENCY, hrefs.length);
-	for (let i = 0; i < count; i++) {
-		workers.push(worker());
+			.finally(() => {
+				unmatchedSearchActive = Math.max(0, unmatchedSearchActive - 1);
+				if (unmatchedSearchWaiters.get(href) === entry) {
+					unmatchedSearchWaiters.delete(href);
+				}
+				entry.resolve();
+				pumpUnmatchedSearchQueue();
+			});
 	}
-	return Promise.all(workers);
 }
 
 function buildStatusResponse(requestedHrefs) {
@@ -1249,6 +1302,7 @@ function invalidateBookmarkCaches() {
 	liveBookmarkIndex = null;
 	bookmarkIndexBuilding = false;
 	bookmarkIndexStartedAt = 0;
+	abandonUnmatchedSearches();
 	clearSessionStatusCache();
 }
 
