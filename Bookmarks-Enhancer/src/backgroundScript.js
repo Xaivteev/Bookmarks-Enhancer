@@ -511,6 +511,50 @@ function notifyTabsStatusUpdates(statusByHref) {
 	}).catch(() => {});
 }
 
+// When any lookup discovers a positive, share it with all tabs so an earlier
+// "none" on another tab can upgrade without re-searching.
+let pendingPositiveBroadcasts = null;
+let positiveBroadcastTimer = null;
+const POSITIVE_BROADCAST_DEBOUNCE_MS = 25;
+
+function schedulePositiveStatusBroadcast(href, status) {
+	if (!href || !status || status === "none") return;
+	if (!pendingPositiveBroadcasts) {
+		pendingPositiveBroadcasts = {};
+	}
+	pendingPositiveBroadcasts[href] = status;
+	if (positiveBroadcastTimer) return;
+	positiveBroadcastTimer = setTimeout(() => {
+		positiveBroadcastTimer = null;
+		const batch = pendingPositiveBroadcasts;
+		pendingPositiveBroadcasts = null;
+		if (!batch || Object.keys(batch).length === 0) return;
+		notifyTabsStatusUpdates(batch);
+	}, POSITIVE_BROADCAST_DEBOUNCE_MS);
+}
+
+function clearPendingPositiveStatusBroadcasts() {
+	if (positiveBroadcastTimer) {
+		clearTimeout(positiveBroadcastTimer);
+		positiveBroadcastTimer = null;
+	}
+	pendingPositiveBroadcasts = null;
+}
+
+function setBookmarkStatus(href, status, { broadcastPositive = true } = {}) {
+	if (!href || status === undefined || status === null) return;
+	const previous = bookmarkStatusMap.has(href) ? bookmarkStatusMap.get(href) : null;
+	bookmarkStatusMap.set(href, status);
+	if (
+		broadcastPositive &&
+		status &&
+		status !== "none" &&
+		previous !== status
+	) {
+		schedulePositiveStatusBroadcast(href, status);
+	}
+}
+
 const CONFIG_REFRESH_STORAGE_KEY_SET = new Set(CONFIG_REFRESH_STORAGE_KEYS);
 
 function addSelectionAsTextRule(selection, site, styleId) {
@@ -946,9 +990,9 @@ function fillBookmarkStatuses(validHrefs, retryCount = 0, tabId = null) {
 			}
 
 			if (status !== "none") {
-				bookmarkStatusMap.set(href, status);
+				setBookmarkStatus(href, status);
 			} else if (unmatchedEnabled && unmatchedUrlSet.has(href)) {
-				bookmarkStatusMap.set(href, index.unmatchedBookmarkStyle);
+				setBookmarkStatus(href, index.unmatchedBookmarkStyle);
 			} else if (unmatchedEnabled) {
 				needsUnmatchedSearch.push(href);
 			}
@@ -1131,9 +1175,9 @@ function pumpUnmatchedSearchQueue() {
 				if (bookmarkStatusMap.has(href)) return;
 				if (bookmarks.length > 0) {
 					unmatchedUrlSet.add(href);
-					bookmarkStatusMap.set(href, entry.unmatchedStyle);
+					setBookmarkStatus(href, entry.unmatchedStyle);
 				} else {
-					bookmarkStatusMap.set(href, "none");
+					setBookmarkStatus(href, "none", { broadcastPositive: false });
 				}
 			})
 			.catch(() => {
@@ -1303,6 +1347,7 @@ function invalidateBookmarkCaches() {
 	bookmarkIndexBuilding = false;
 	bookmarkIndexStartedAt = 0;
 	abandonUnmatchedSearches();
+	clearPendingPositiveStatusBroadcasts();
 	clearSessionStatusCache();
 }
 
