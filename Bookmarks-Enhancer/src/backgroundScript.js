@@ -254,7 +254,9 @@ function ensureSettingsReady() {
 	return settingsReady;
 }
 
-ensureSettingsReady().catch(onError);
+ensureSettingsReady()
+	.then(() => getBookmarkIndex())
+	.catch(onError);
 
 const SESSION_STATUS_CACHE_KEY = "beBookmarkStatusCache";
 
