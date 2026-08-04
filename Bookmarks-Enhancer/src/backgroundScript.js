@@ -853,10 +853,33 @@ function searchhrefs(hrefs, tabId = null, options = {}) {
 		invalidateLiveBookmarkIndex();
 	}
 
-	return fillBookmarkStatuses(validHrefs);
+	return fillBookmarkStatuses(validHrefs, 0, tabId);
 }
 
-function fillBookmarkStatuses(validHrefs, retryCount = 0) {
+function deliverStatusFollowUp(tabId, statusByHref) {
+	if (!statusByHref || Object.keys(statusByHref).length === 0) return;
+	if (tabId != null) {
+		sendTabMessage(tabId, { statusUpdates: statusByHref }).catch(() => {});
+		return;
+	}
+	notifyTabsStatusUpdates(statusByHref);
+}
+
+function buildPartialStatusResponse(requestedHrefs, pendingHrefs) {
+	const pending = new Set(pendingHrefs);
+	const statuses = {};
+
+	for (const href of new Set(requestedHrefs)) {
+		// Omit URLs still waiting on unmatched search so the content script
+		// does not treat them as definitive "none" before the follow-up arrives.
+		if (pending.has(href)) continue;
+		statuses[href] = bookmarkStatusMap.get(href) || "none";
+	}
+
+	return { statuses, partial: true };
+}
+
+function fillBookmarkStatuses(validHrefs, retryCount = 0, tabId = null) {
 	const hrefsToSearch = validHrefs.filter(href => !bookmarkStatusMap.has(href));
 	if (hrefsToSearch.length === 0) {
 		return Promise.resolve(buildStatusResponse(validHrefs));
@@ -869,7 +892,7 @@ function fillBookmarkStatuses(validHrefs, retryCount = 0) {
 			if (retryCount >= MAX_STATUS_FILL_RETRIES) {
 				throw new Error("Bookmark status lookup aborted after repeated cache invalidation");
 			}
-			return fillBookmarkStatuses(validHrefs, retryCount + 1);
+			return fillBookmarkStatuses(validHrefs, retryCount + 1, tabId);
 		}
 
 		const needsUnmatchedSearch = [];
@@ -916,7 +939,7 @@ function fillBookmarkStatuses(validHrefs, retryCount = 0) {
 				if (retryCount >= MAX_STATUS_FILL_RETRIES) {
 					throw new Error("Bookmark status lookup aborted after repeated cache invalidation");
 				}
-				return fillBookmarkStatuses(validHrefs, retryCount + 1);
+				return fillBookmarkStatuses(validHrefs, retryCount + 1, tabId);
 			}
 			schedulePersistStatusCache();
 			return buildStatusResponse(validHrefs);
@@ -926,7 +949,32 @@ function fillBookmarkStatuses(validHrefs, retryCount = 0) {
 			return finish();
 		}
 
-		return resolveUnmatchedViaSearch(needsUnmatchedSearch, index).then(finish);
+		// Return folder / cached hits immediately; finish unmatched search in the
+		// background and push those statuses to the requesting tab afterward.
+		schedulePersistStatusCache();
+		const earlyResponse = buildPartialStatusResponse(validHrefs, needsUnmatchedSearch);
+
+		resolveUnmatchedViaSearch(needsUnmatchedSearch, index)
+			.then(() => {
+				if (index.generation !== bookmarkCacheGeneration) {
+					if (retryCount >= MAX_STATUS_FILL_RETRIES) return;
+					return fillBookmarkStatuses(validHrefs, retryCount + 1, tabId).then(response => {
+						if (response && response.statuses) {
+							deliverStatusFollowUp(tabId, response.statuses);
+						}
+					});
+				}
+
+				schedulePersistStatusCache();
+				const updates = {};
+				for (const href of needsUnmatchedSearch) {
+					updates[href] = bookmarkStatusMap.get(href) || "none";
+				}
+				deliverStatusFollowUp(tabId, updates);
+			})
+			.catch(onError);
+
+		return earlyResponse;
 	});
 }
 

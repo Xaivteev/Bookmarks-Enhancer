@@ -389,9 +389,21 @@ function requestBookmarkStatuses(hrefs, options = {}) {
 				onError(message.error);
 				return;
 			}
-			releasePending();
+
+			const statuses = message && message.statuses && typeof message.statuses === "object"
+				? message.statuses
+				: {};
+			const partial = !!(message && message.partial);
+
 			for (const href of unique) {
-				processedHrefs.add(href);
+				pendingStatusHrefs.delete(href);
+				// Partial responses omit URLs still in unmatched search; keep those
+				// pending until statusUpdates arrives so we do not stick on "none".
+				if (!partial || Object.prototype.hasOwnProperty.call(statuses, href)) {
+					processedHrefs.add(href);
+				} else {
+					pendingStatusHrefs.add(href);
+				}
 			}
 			applyBookmarkStyling(message);
 		})
@@ -446,6 +458,7 @@ browser.runtime.onMessage.addListener(message => {
 		buildLinkMap(true);
 		const classNames = managedClassNames.filter(Boolean);
 		for (const [href, status] of Object.entries(message.statusUpdates)) {
+			pendingStatusHrefs.delete(href);
 			processedHrefs.add(href);
 			const links = linkMap.get(href) || [];
 			for (const link of links) {
@@ -589,14 +602,28 @@ function performAuthoritativeRefresh(options = {}) {
 			return;
 		}
 
+		const statuses = message && message.statuses && typeof message.statuses === "object"
+			? message.statuses
+			: {};
+		const partial = !!(message && message.partial);
+
 		linkMap = authoritativeLinkMap;
 		linkStatusMap = new Map();
-		processedHrefs = new Set(allHrefs);
-		pendingStatusHrefs = new Set();
 		pendingObservedHrefs = new Set();
 		textFilterCache.clear();
 		removeStatusClasses(managedClassNames);
 		clearExtensionTopBorder();
+
+		if (partial) {
+			processedHrefs = new Set(Object.keys(statuses));
+			pendingStatusHrefs = new Set(
+				allHrefs.filter(href => !Object.prototype.hasOwnProperty.call(statuses, href))
+			);
+		} else {
+			processedHrefs = new Set(allHrefs);
+			pendingStatusHrefs = new Set();
+		}
+
 		applyBookmarkStyling(message, true);
 
 		// Pick up any links added while the authoritative request was running.
