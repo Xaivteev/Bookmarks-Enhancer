@@ -800,6 +800,14 @@ function schedulePersistStatusCache() {
 	}, 400);
 }
 
+function hrefReferencedByOtherTab(exceptTabId, href) {
+	for (const [tabId, hrefSet] of tabHrefSets) {
+		if (tabId === exceptTabId) continue;
+		if (hrefSet.has(href)) return true;
+	}
+	return false;
+}
+
 function rememberTabHrefs(tabId, hrefs) {
 	if (tabId == null || tabId === undefined) return;
 
@@ -814,15 +822,27 @@ function rememberTabHrefs(tabId, hrefs) {
 	}
 }
 
-function clearStatusesForTab(tabId) {
+// Drop per-tab href tracking without wiping the global status map.
+// Shared URLs must stay warm for other tabs; optionally drop exclusive
+// "none" entries so this tab's requery can re-resolve soft misses.
+function forgetTabHrefTracking(tabId, { dropExclusiveNones = false } = {}) {
 	const hrefSet = tabHrefSets.get(tabId);
 	if (!hrefSet) return;
 
-	for (const href of hrefSet) {
-		bookmarkStatusMap.delete(href);
+	if (dropExclusiveNones) {
+		let changed = false;
+		for (const href of hrefSet) {
+			if (bookmarkStatusMap.get(href) !== "none") continue;
+			if (hrefReferencedByOtherTab(tabId, href)) continue;
+			bookmarkStatusMap.delete(href);
+			changed = true;
+		}
+		if (changed) {
+			schedulePersistStatusCache();
+		}
 	}
+
 	tabHrefSets.delete(tabId);
-	schedulePersistStatusCache();
 }
 
 // Drop a settled index so the next getBookmarkIndex() re-reads rule folders.
@@ -1536,18 +1556,17 @@ function isValidBookmarkUrl(href) {
 	}
 }
 
-// Clear this tab's cached statuses on navigate/load, then ask the content
-// script to re-query. Otherwise an early "none" can stick in processedHrefs
-// after the background cache was cleared.
+// On navigate/load, reset this tab's content-side processed state via requery.
+// Do not wipe global statuses for URLs still useful to other tabs.
 browser.tabs.onUpdated.addListener((tabId, changeInfo) => {
 	if (changeInfo.status === "complete" || changeInfo.url) {
-		clearStatusesForTab(tabId);
+		forgetTabHrefTracking(tabId, { dropExclusiveNones: true });
 		sendTabMessage(tabId, { refresh: true, mode: "requery" }).catch(() => {});
 	}
 });
 
 browser.tabs.onRemoved.addListener(tabId => {
-	clearStatusesForTab(tabId);
+	forgetTabHrefTracking(tabId);
 });
 
 browser.bookmarks.onRemoved.addListener((id, removeInfo) => {
