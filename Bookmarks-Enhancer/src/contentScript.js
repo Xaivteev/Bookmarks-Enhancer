@@ -186,7 +186,10 @@ const textFilterCache = new Map(); // element -> normalized text
 // Link map state
 let linkMap = new Map(); // normalizedHref -> [link elements]
 let linkStatusMap = new Map(); // normalizedHref -> status string
-let processedHrefs = new Set();
+let processedHrefs = new Set(); // positive resolutions only
+// Soft "none" results — skipped on ordinary scans to avoid message spam, cleared
+// on requery / visibility / authoritative so folder re-checks can recover.
+let softMissHrefs = new Set();
 let pendingStatusHrefs = new Set(); // in-flight lookups; not yet successfully processed
 let urlCacheGeneration = 0;
 let observer = null;
@@ -339,6 +342,7 @@ function invalidateUrlDependentCaches() {
 	linkMap = new Map();
 	linkStatusMap = new Map();
 	processedHrefs = new Set();
+	softMissHrefs = new Set();
 	pendingStatusHrefs = new Set();
 	pendingObservedHrefs = new Set();
 
@@ -362,7 +366,7 @@ function requestBookmarkStatuses(hrefs, options = {}) {
 	for (const href of hrefs) {
 		if (!href) continue;
 		if (pendingStatusHrefs.has(href)) continue;
-		if (!options.force && processedHrefs.has(href)) continue;
+		if (!options.force && (processedHrefs.has(href) || softMissHrefs.has(href))) continue;
 		pendingStatusHrefs.add(href);
 		unique.push(href);
 	}
@@ -400,7 +404,16 @@ function requestBookmarkStatuses(hrefs, options = {}) {
 				// Partial responses omit URLs still in unmatched search; keep those
 				// pending until statusUpdates arrives so we do not stick on "none".
 				if (!partial || Object.prototype.hasOwnProperty.call(statuses, href)) {
-					processedHrefs.add(href);
+					const status = statuses[href];
+					if (status && status !== "none") {
+						processedHrefs.add(href);
+						softMissHrefs.delete(href);
+					} else {
+						// Soft miss — retry on requery / visibility, not every mutation.
+						softMissHrefs.add(href);
+						processedHrefs.delete(href);
+						linkStatusMap.delete(href);
+					}
 				} else {
 					pendingStatusHrefs.add(href);
 				}
@@ -459,15 +472,18 @@ browser.runtime.onMessage.addListener(message => {
 		const classNames = managedClassNames.filter(Boolean);
 		for (const [href, status] of Object.entries(message.statusUpdates)) {
 			pendingStatusHrefs.delete(href);
-			processedHrefs.add(href);
+			if (status && status !== "none") {
+				processedHrefs.add(href);
+				softMissHrefs.delete(href);
+				linkStatusMap.set(href, status);
+			} else {
+				softMissHrefs.add(href);
+				processedHrefs.delete(href);
+				linkStatusMap.delete(href);
+			}
 			const links = linkMap.get(href) || [];
 			for (const link of links) {
 				if (classNames.length) link.classList.remove(...classNames);
-			}
-			if (status && status !== "none") {
-				linkStatusMap.set(href, status);
-			} else {
-				linkStatusMap.delete(href);
 			}
 		}
 		applyBookmarkStyling({
@@ -535,7 +551,11 @@ function sendUniqueHrefs(options = {}) {
 			applyCachedLinkStatus(href);
 		}
 	}
-	const newHrefs = allHrefs.filter(h => !processedHrefs.has(h) && !pendingStatusHrefs.has(h));
+	const newHrefs = allHrefs.filter(h =>
+		!processedHrefs.has(h) &&
+		!softMissHrefs.has(h) &&
+		!pendingStatusHrefs.has(h)
+	);
 	if (newHrefs.length === 0) return;
 	requestBookmarkStatuses(newHrefs, options);
 }
@@ -548,12 +568,13 @@ function sendAllHrefs() {
 }
 
 // Soft re-resolve after background cleared this tab's statuses (navigate/load).
-// Re-asks even for hrefs previously recorded as "none".
+// Re-asks even for hrefs previously recorded as soft misses.
 function performRequeryRefresh() {
 	if (!searchSite) return;
 
 	buildLinkMap();
 	processedHrefs = new Set();
+	softMissHrefs = new Set();
 	pendingStatusHrefs = new Set();
 	for (const [href, status] of Array.from(linkStatusMap.entries())) {
 		if (!status || status === "none") {
@@ -589,6 +610,7 @@ function performAuthoritativeRefresh(options = {}) {
 
 	urlCacheGeneration += 1;
 	const refreshGeneration = urlCacheGeneration;
+	softMissHrefs = new Set();
 	buildLinkMap(true);
 	const authoritativeLinkMap = linkMap;
 	const allHrefs = Array.from(authoritativeLinkMap.keys());
@@ -610,18 +632,25 @@ function performAuthoritativeRefresh(options = {}) {
 		linkMap = authoritativeLinkMap;
 		linkStatusMap = new Map();
 		pendingObservedHrefs = new Set();
+		softMissHrefs = new Set();
 		textFilterCache.clear();
 		removeStatusClasses(managedClassNames);
 		clearExtensionTopBorder();
 
-		if (partial) {
-			processedHrefs = new Set(Object.keys(statuses));
-			pendingStatusHrefs = new Set(
-				allHrefs.filter(href => !Object.prototype.hasOwnProperty.call(statuses, href))
-			);
-		} else {
-			processedHrefs = new Set(allHrefs);
-			pendingStatusHrefs = new Set();
+		processedHrefs = new Set();
+		pendingStatusHrefs = new Set();
+		for (const href of allHrefs) {
+			if (!Object.prototype.hasOwnProperty.call(statuses, href)) {
+				if (partial) pendingStatusHrefs.add(href);
+				else softMissHrefs.add(href);
+				continue;
+			}
+			const status = statuses[href];
+			if (status && status !== "none") {
+				processedHrefs.add(href);
+			} else {
+				softMissHrefs.add(href);
+			}
 		}
 
 		applyBookmarkStyling(message, true);
@@ -655,8 +684,14 @@ function applyBookmarkStyling(message, includeHidden = false) {
 	const statusLookup = buildBookmarkStatusLookup(statuses);
 
 	for (const [normalized, status] of Object.entries(statuses)) {
-		if (status === "none" || getStyleConfigById(status)) {
+		if (status && status !== "none" && getStyleConfigById(status)) {
 			linkStatusMap.set(normalized, status);
+			softMissHrefs.delete(normalized);
+			processedHrefs.add(normalized);
+		} else if (status === "none") {
+			linkStatusMap.delete(normalized);
+			softMissHrefs.add(normalized);
+			processedHrefs.delete(normalized);
 		}
 	}
 
@@ -952,7 +987,11 @@ function processObservedHrefs() {
 		if (linkStatusMap.has(norm)) {
 			applyCachedLinkStatus(norm);
 		}
-		if (!processedHrefs.has(norm) && !pendingStatusHrefs.has(norm)) {
+		if (
+			!processedHrefs.has(norm) &&
+			!softMissHrefs.has(norm) &&
+			!pendingStatusHrefs.has(norm)
+		) {
 			hrefsToRequest.push(norm);
 		}
 	}
@@ -984,6 +1023,10 @@ function scheduleVisibilityRescan() {
 function performVisibilityRescan() {
 	if (!searchSite) return;
 	if (document.visibilityState === "hidden") return;
+
+	// Retry soft misses: a prior pass may have resolved before the folder index
+	// was complete. Background re-checks the folder map cheaply.
+	softMissHrefs = new Set();
 
 	// Include links that were skipped while the tab/page was hidden
 	// (inherited visibility:hidden, opacity fades, splash overlays).

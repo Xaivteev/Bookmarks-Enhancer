@@ -543,15 +543,33 @@ function clearPendingPositiveStatusBroadcasts() {
 
 function setBookmarkStatus(href, status, { broadcastPositive = true } = {}) {
 	if (!href || status === undefined || status === null) return;
+	// Positives only — never cache "none". Sticky negatives blocked folder
+	// re-checks and required an authoritative refresh to recover.
+	if (!status || status === "none") {
+		bookmarkStatusMap.delete(href);
+		return;
+	}
+	unmatchedMissSet.delete(href);
 	const previous = bookmarkStatusMap.has(href) ? bookmarkStatusMap.get(href) : null;
 	bookmarkStatusMap.set(href, status);
-	if (
-		broadcastPositive &&
-		status &&
-		status !== "none" &&
-		previous !== status
-	) {
+	if (broadcastPositive && previous !== status) {
 		schedulePositiveStatusBroadcast(href, status);
+	}
+}
+
+function rememberUnmatchedMiss(href) {
+	if (!href) return;
+	if (bookmarkStatusMap.has(href)) return;
+	unmatchedMissSet.add(href);
+}
+
+function clearUnmatchedMisses(hrefs) {
+	if (!hrefs) {
+		unmatchedMissSet = new Set();
+		return;
+	}
+	for (const href of hrefs) {
+		if (href) unmatchedMissSet.delete(href);
 	}
 }
 
@@ -768,8 +786,12 @@ browser.storage.onChanged.addListener((changes, areaName) => {
 	}
 });
 
-let bookmarkStatusMap = new Map(); // href -> status string
+let bookmarkStatusMap = new Map(); // href -> positive status string only (never "none")
 let unmatchedUrlSet = new Set(); // normalized hrefs bookmarked outside rule folders
+// Soft unmatched-search misses for the current index generation. Cleared whenever
+// bookmarkCacheGeneration bumps so folder re-checks can recover without re-searching
+// every non-match on each scan.
+let unmatchedMissSet = new Set();
 let tabHrefSets = new Map(); // tabId -> Set of normalized hrefs seen from that tab
 let bookmarkIndexPromise = null;
 let liveBookmarkIndex = null;
@@ -801,8 +823,7 @@ function restoreStatusCacheFromSession() {
 		if (!cached || typeof cached !== "object") return;
 		if (cached.fingerprint !== getStatusCacheFingerprint()) return;
 
-		// Never restore "none" — sticky negatives survive SW restarts and block
-		// restyling until an authoritative refresh. Positives are safe to reuse.
+		// Positives only — never restore "none" (or any negative).
 		if (cached.statuses && typeof cached.statuses === "object") {
 			bookmarkStatusMap = new Map(
 				Object.entries(cached.statuses).filter(([, status]) => status && status !== "none")
@@ -811,6 +832,8 @@ function restoreStatusCacheFromSession() {
 		if (Array.isArray(cached.unmatchedUrls)) {
 			unmatchedUrlSet = new Set(cached.unmatchedUrls.filter(Boolean));
 		}
+		// Miss memos are generation-scoped and not persisted across SW restarts.
+		unmatchedMissSet = new Set();
 	}).catch(() => {});
 }
 
@@ -832,7 +855,7 @@ function schedulePersistStatusCache() {
 		persistStatusCacheTimer = null;
 		const statuses = {};
 		for (const [href, status] of bookmarkStatusMap) {
-			if (status && status !== "none") {
+			if (status) {
 				statuses[href] = status;
 			}
 		}
@@ -870,21 +893,16 @@ function rememberTabHrefs(tabId, hrefs) {
 
 // Drop per-tab href tracking without wiping the global status map.
 // Shared URLs must stay warm for other tabs; optionally drop exclusive
-// "none" entries so this tab's requery can re-resolve soft misses.
+// unmatched soft-miss memos so this tab's requery can re-search.
 function forgetTabHrefTracking(tabId, { dropExclusiveNones = false } = {}) {
 	const hrefSet = tabHrefSets.get(tabId);
 	if (!hrefSet) return;
 
 	if (dropExclusiveNones) {
-		let changed = false;
 		for (const href of hrefSet) {
-			if (bookmarkStatusMap.get(href) !== "none") continue;
+			if (!unmatchedMissSet.has(href)) continue;
 			if (hrefReferencedByOtherTab(tabId, href)) continue;
-			bookmarkStatusMap.delete(href);
-			changed = true;
-		}
-		if (changed) {
-			schedulePersistStatusCache();
+			unmatchedMissSet.delete(href);
 		}
 	}
 
@@ -900,6 +918,7 @@ function invalidateLiveBookmarkIndex() {
 	liveBookmarkIndex = null;
 	bookmarkIndexBuilding = false;
 	bookmarkIndexStartedAt = 0;
+	clearUnmatchedMisses();
 	abandonUnmatchedSearches();
 }
 
@@ -914,6 +933,7 @@ function searchhrefs(hrefs, tabId = null, options = {}) {
 	// against a freshly built folder index (settled indexes can go stale).
 	if (options && options.authoritative) {
 		clearStatusesForUrls(validHrefs);
+		clearUnmatchedMisses(validHrefs);
 		for (const href of validHrefs) {
 			unmatchedUrlSet.delete(href);
 		}
@@ -947,6 +967,8 @@ function buildPartialStatusResponse(requestedHrefs, pendingHrefs) {
 }
 
 function fillBookmarkStatuses(validHrefs, retryCount = 0, tabId = null) {
+	// Positives only in bookmarkStatusMap — unknowns always re-check the folder
+	// index (cheap Map.get) so a prior soft miss cannot stick.
 	const hrefsToSearch = validHrefs.filter(href => !bookmarkStatusMap.has(href));
 	if (hrefsToSearch.length === 0) {
 		return Promise.resolve(buildStatusResponse(validHrefs));
@@ -993,12 +1015,12 @@ function fillBookmarkStatuses(validHrefs, retryCount = 0, tabId = null) {
 				setBookmarkStatus(href, status);
 			} else if (unmatchedEnabled && unmatchedUrlSet.has(href)) {
 				setBookmarkStatus(href, index.unmatchedBookmarkStyle);
+			} else if (unmatchedEnabled && unmatchedMissSet.has(href)) {
+				// Generation-scoped soft miss — report "none" without re-searching.
 			} else if (unmatchedEnabled) {
 				needsUnmatchedSearch.push(href);
 			}
-			// Folder miss with unmatched disabled: do not cache "none".
-			// Re-checking the in-memory index map is cheap and avoids sticky
-			// negatives when the index was briefly incomplete.
+			// Folder miss with unmatched disabled: do not cache a negative.
 		}
 
 		const finish = () => {
@@ -1129,6 +1151,7 @@ function resolveUnmatchedSearches(hrefs, index) {
 function ensureUnmatchedSearch(href, index) {
 	if (!href) return Promise.resolve();
 	if (bookmarkStatusMap.has(href)) return Promise.resolve();
+	if (unmatchedMissSet.has(href)) return Promise.resolve();
 
 	const existing = unmatchedSearchWaiters.get(href);
 	if (existing) {
@@ -1161,6 +1184,7 @@ function pumpUnmatchedSearchQueue() {
 
 		if (
 			bookmarkStatusMap.has(href) ||
+			unmatchedMissSet.has(href) ||
 			entry.generation !== bookmarkCacheGeneration
 		) {
 			unmatchedSearchWaiters.delete(href);
@@ -1177,11 +1201,13 @@ function pumpUnmatchedSearchQueue() {
 					unmatchedUrlSet.add(href);
 					setBookmarkStatus(href, entry.unmatchedStyle);
 				} else {
-					setBookmarkStatus(href, "none", { broadcastPositive: false });
+					// Soft miss for this index generation only — never poison
+					// bookmarkStatusMap with "none".
+					rememberUnmatchedMiss(href);
 				}
 			})
 			.catch(() => {
-				// Search failures are transient — do not cache "none" or a later
+				// Search failures are transient — do not memoize a miss or a later
 				// pass can stick on an unstyled result until hard refresh.
 			})
 			.finally(() => {
@@ -1199,7 +1225,7 @@ function buildStatusResponse(requestedHrefs) {
 	const statuses = {};
 
 	for (const href of new Set(requestedHrefs)) {
-		// Uncached folder misses report as "none" without polluting the map.
+		// Unknowns report as "none" without polluting the positive-only map.
 		statuses[href] = bookmarkStatusMap.get(href) || "none";
 	}
 
@@ -1341,6 +1367,7 @@ function invalidateBookmarkCaches() {
 	bookmarkIndexBuildId += 1;
 	bookmarkStatusMap = new Map();
 	unmatchedUrlSet = new Set();
+	unmatchedMissSet = new Set();
 	tabHrefSets = new Map();
 	bookmarkIndexPromise = null;
 	liveBookmarkIndex = null;
@@ -1355,6 +1382,7 @@ function clearStatusesForUrls(urls) {
 	for (const url of urls || []) {
 		if (!url) continue;
 		bookmarkStatusMap.delete(url);
+		unmatchedMissSet.delete(url);
 		for (const hrefSet of tabHrefSets.values()) {
 			hrefSet.delete(url);
 		}
@@ -1408,9 +1436,10 @@ function addBookmarkNodeToIndex(index, node) {
 			affected.push(normalized);
 			unmatchedUrlSet.add(normalized);
 			if (isUnmatchedStylingEnabled()) {
-				bookmarkStatusMap.set(normalized, unmatchedBookmarkStyle);
+				setBookmarkStatus(normalized, unmatchedBookmarkStyle);
 			} else {
 				bookmarkStatusMap.delete(normalized);
+				unmatchedMissSet.delete(normalized);
 			}
 		}
 		return affected;
@@ -1430,12 +1459,13 @@ function addBookmarkNodeToIndex(index, node) {
 
 	const matched = findMatchingRuleStyle(node, index.rules, index.parentById);
 	if (matched) {
-		bookmarkStatusMap.set(normalized, matched.styleId);
+		setBookmarkStatus(normalized, matched.styleId);
 	} else if (isUnmatchedStylingEnabled()) {
 		unmatchedUrlSet.add(normalized);
-		bookmarkStatusMap.set(normalized, unmatchedBookmarkStyle);
+		setBookmarkStatus(normalized, unmatchedBookmarkStyle);
 	} else {
-		bookmarkStatusMap.set(normalized, "none");
+		bookmarkStatusMap.delete(normalized);
+		unmatchedMissSet.delete(normalized);
 	}
 	return affected;
 }
