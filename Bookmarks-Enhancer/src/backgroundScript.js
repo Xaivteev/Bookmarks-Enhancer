@@ -242,6 +242,7 @@ function ensureSettingsReady() {
 		const loadGeneration = ++settingsLoadGeneration;
 		settingsReady = loadSettings()
 			.then(() => restoreStatusCacheFromSession())
+			.then(() => restoreStyleIndexFromSession())
 			.catch(error => {
 				onError(error);
 				// Allow a later request to retry instead of staying wedged forever.
@@ -254,11 +255,19 @@ function ensureSettingsReady() {
 	return settingsReady;
 }
 
+// Prefer a restored styles-only index after SW sleep; only cold-build when none exists.
 ensureSettingsReady()
-	.then(() => getBookmarkIndex())
+	.then(() => {
+		if (liveBookmarkIndex) {
+			notifyBookmarkIndexReady();
+			return liveBookmarkIndex;
+		}
+		return getBookmarkIndex();
+	})
 	.catch(onError);
 
 const SESSION_STATUS_CACHE_KEY = "beBookmarkStatusCache";
+const SESSION_STYLE_INDEX_CACHE_KEY = "beBookmarkStyleIndexCache";
 
 const RULE_LINK_MENU_PREFIX = "addLinkToRuleFolder:";
 const RULE_PAGE_MENU_PREFIX = "addPageToRuleFolder:";
@@ -794,12 +803,14 @@ let unmatchedUrlSet = new Set(); // normalized hrefs bookmarked outside rule fol
 let unmatchedMissSet = new Set();
 let tabHrefSets = new Map(); // tabId -> Set of normalized hrefs seen from that tab
 let bookmarkIndexPromise = null;
+let fullIndexUpgradePromise = null;
 let liveBookmarkIndex = null;
 let bookmarkCacheGeneration = 0;
 let bookmarkIndexBuildId = 0;
 let bookmarkIndexStartedAt = 0;
 let bookmarkIndexBuilding = false;
 let persistStatusCacheTimer = null;
+let persistStyleIndexCacheTimer = null;
 
 function isUnmatchedStylingEnabled() {
 	const styleIds = new Set((styleRules || []).map(rule => rule.id));
@@ -869,6 +880,85 @@ function schedulePersistStatusCache() {
 	}, 400);
 }
 
+/**
+ * Styles-only warm index: enough for fillBookmarkStatuses after SW sleep.
+ * Parent/id graphs are empty until ensureFullBookmarkIndex() upgrades via getSubTree.
+ */
+function createStylesOnlyBookmarkIndex(styleByNormalizedUrl) {
+	const styleIds = new Set((styleRules || []).map(rule => rule.id));
+	return {
+		generation: bookmarkCacheGeneration,
+		stylesOnly: true,
+		rules: [],
+		unmatchedBookmarkStyle,
+		styleIds,
+		indexesUnmatched: false,
+		bookmarksByNormalizedUrl: new Map(),
+		styleByNormalizedUrl: styleByNormalizedUrl || new Map(),
+		parentById: new Map(),
+		bookmarkById: new Map(),
+		urlByBookmarkId: new Map()
+	};
+}
+
+function restoreStyleIndexFromSession() {
+	if (!browser.storage.session) return Promise.resolve(false);
+	if (liveBookmarkIndex) return Promise.resolve(false);
+
+	return browser.storage.session.get(SESSION_STYLE_INDEX_CACHE_KEY).then(result => {
+		if (liveBookmarkIndex) return false;
+		const cached = result && result[SESSION_STYLE_INDEX_CACHE_KEY];
+		if (!cached || typeof cached !== "object") return false;
+		if (cached.fingerprint !== getStatusCacheFingerprint()) {
+			browser.storage.session.remove(SESSION_STYLE_INDEX_CACHE_KEY).catch(() => {});
+			return false;
+		}
+		if (!cached.styles || typeof cached.styles !== "object") return false;
+
+		const styleByNormalizedUrl = new Map(
+			Object.entries(cached.styles).filter(([, styleId]) => typeof styleId === "string" && styleId)
+		);
+		liveBookmarkIndex = createStylesOnlyBookmarkIndex(styleByNormalizedUrl);
+		return true;
+	}).catch(() => false);
+}
+
+function clearSessionStyleIndexCache() {
+	if (persistStyleIndexCacheTimer) {
+		clearTimeout(persistStyleIndexCacheTimer);
+		persistStyleIndexCacheTimer = null;
+	}
+	if (!browser.storage.session) return;
+	browser.storage.session.remove(SESSION_STYLE_INDEX_CACHE_KEY).catch(() => {});
+}
+
+function schedulePersistStyleIndexCache() {
+	if (!browser.storage.session) return;
+	const index = liveBookmarkIndex;
+	// Only persist full builds — styles-only is already the session source.
+	if (!index || index.stylesOnly || !index.styleByNormalizedUrl) return;
+
+	if (persistStyleIndexCacheTimer) {
+		clearTimeout(persistStyleIndexCacheTimer);
+	}
+	persistStyleIndexCacheTimer = setTimeout(() => {
+		persistStyleIndexCacheTimer = null;
+		const current = liveBookmarkIndex;
+		if (!current || current.stylesOnly || !current.styleByNormalizedUrl) return;
+
+		const styles = {};
+		for (const [href, styleId] of current.styleByNormalizedUrl) {
+			if (href && styleId) styles[href] = styleId;
+		}
+		browser.storage.session.set({
+			[SESSION_STYLE_INDEX_CACHE_KEY]: {
+				fingerprint: getStatusCacheFingerprint(),
+				styles
+			}
+		}).catch(() => {});
+	}, 400);
+}
+
 function hrefReferencedByOtherTab(exceptTabId, href) {
 	for (const [tabId, hrefSet] of tabHrefSets) {
 		if (tabId === exceptTabId) continue;
@@ -911,15 +1001,18 @@ function forgetTabHrefTracking(tabId, { dropExclusiveNones = false } = {}) {
 
 // Drop a settled index so the next getBookmarkIndex() re-reads rule folders.
 // Unlike invalidateBookmarkCaches(), this keeps status maps (callers clear URLs).
+// Clears the session style index so authoritative refresh cannot rehydrate a stale map.
 function invalidateLiveBookmarkIndex() {
 	bookmarkCacheGeneration += 1;
 	bookmarkIndexBuildId += 1;
 	bookmarkIndexPromise = null;
+	fullIndexUpgradePromise = null;
 	liveBookmarkIndex = null;
 	bookmarkIndexBuilding = false;
 	bookmarkIndexStartedAt = 0;
 	clearUnmatchedMisses();
 	abandonUnmatchedSearches();
+	clearSessionStyleIndexCache();
 }
 
 function searchhrefs(hrefs, tabId = null, options = {}) {
@@ -1247,8 +1340,10 @@ function getBookmarkIndex() {
 					return getBookmarkIndex();
 				}
 				index.generation = generationAtStart;
+				index.stylesOnly = false;
 				liveBookmarkIndex = index;
 				bookmarkIndexBuilding = false;
+				schedulePersistStyleIndexCache();
 				// Tell tabs the folder map is usable so cold-start soft misses can
 				// retry (folder re-check is cheap; unmatched miss memos stay).
 				notifyBookmarkIndexReady();
@@ -1266,6 +1361,56 @@ function getBookmarkIndex() {
 		bookmarkIndexPromise = buildPromise;
 	}
 	return bookmarkIndexPromise;
+}
+
+/**
+ * Lookups can use a styles-only session restore; mutations need the parent/id graph.
+ * Upgrades in place without bumping generation (status maps stay valid).
+ */
+function ensureFullBookmarkIndex() {
+	return getBookmarkIndex().then(index => {
+		if (!index.stylesOnly) return index;
+		return upgradeStylesOnlyToFullIndex();
+	});
+}
+
+function upgradeStylesOnlyToFullIndex() {
+	if (fullIndexUpgradePromise) return fullIndexUpgradePromise;
+
+	// Drop session copy so a mid-upgrade SW kill cannot restore pre-mutation styles.
+	clearSessionStyleIndexCache();
+
+	const generationAtStart = bookmarkCacheGeneration;
+	const buildId = ++bookmarkIndexBuildId;
+	bookmarkIndexStartedAt = Date.now();
+	bookmarkIndexBuilding = true;
+
+	fullIndexUpgradePromise = buildBookmarkIndex()
+		.then(index => {
+			if (buildId !== bookmarkIndexBuildId ||
+				generationAtStart !== bookmarkCacheGeneration) {
+				fullIndexUpgradePromise = null;
+				bookmarkIndexBuilding = false;
+				bookmarkIndexStartedAt = 0;
+				return ensureFullBookmarkIndex();
+			}
+			index.generation = generationAtStart;
+			index.stylesOnly = false;
+			liveBookmarkIndex = index;
+			bookmarkIndexBuilding = false;
+			bookmarkIndexStartedAt = 0;
+			fullIndexUpgradePromise = null;
+			schedulePersistStyleIndexCache();
+			return index;
+		})
+		.catch(error => {
+			fullIndexUpgradePromise = null;
+			bookmarkIndexBuilding = false;
+			bookmarkIndexStartedAt = 0;
+			throw error;
+		});
+
+	return fullIndexUpgradePromise;
 }
 
 let bookmarkIndexReadyNotifyTimer = null;
@@ -1299,9 +1444,13 @@ function recoverHungBookmarkIndex(force = false) {
 	if (force || aged) {
 		bookmarkIndexBuildId += 1;
 		bookmarkIndexPromise = null;
+		fullIndexUpgradePromise = null;
 		bookmarkIndexStartedAt = 0;
 		bookmarkIndexBuilding = false;
-		liveBookmarkIndex = null;
+		// Keep serving a styles-only restore if an upgrade hung; otherwise drop.
+		if (!liveBookmarkIndex || !liveBookmarkIndex.stylesOnly) {
+			liveBookmarkIndex = null;
+		}
 	}
 }
 
@@ -1372,12 +1521,14 @@ function invalidateBookmarkCaches() {
 	unmatchedMissSet = new Set();
 	tabHrefSets = new Map();
 	bookmarkIndexPromise = null;
+	fullIndexUpgradePromise = null;
 	liveBookmarkIndex = null;
 	bookmarkIndexBuilding = false;
 	bookmarkIndexStartedAt = 0;
 	abandonUnmatchedSearches();
 	clearPendingPositiveStatusBroadcasts();
 	clearSessionStatusCache();
+	clearSessionStyleIndexCache();
 }
 
 function clearStatusesForUrls(urls) {
@@ -1540,7 +1691,7 @@ function rebuildIndexAfterStructuralChange() {
 }
 
 function withLiveBookmarkIndex(mutator) {
-	return getBookmarkIndex()
+	return ensureFullBookmarkIndex()
 		.then(index => {
 			const affectedUrls = mutator(index) || [];
 			const statusByHref = {};
@@ -1549,6 +1700,7 @@ function withLiveBookmarkIndex(mutator) {
 				statusByHref[url] = bookmarkStatusMap.get(url) || "none";
 			}
 			schedulePersistStatusCache();
+			schedulePersistStyleIndexCache();
 			if (Object.keys(statusByHref).length > 0) {
 				return notifyTabsStatusUpdates(statusByHref);
 			}
@@ -1626,7 +1778,7 @@ function handleBookmarkMoved(id, moveInfo) {
 }
 
 function handleBookmarkChanged(id, changeInfo) {
-	return getBookmarkIndex()
+	return ensureFullBookmarkIndex()
 		.then(index => {
 			const existing = index.bookmarkById.get(id);
 			if (!existing) {
@@ -1669,6 +1821,7 @@ function handleBookmarkChanged(id, changeInfo) {
 				statusByHref[url] = bookmarkStatusMap.get(url) || "none";
 			}
 			schedulePersistStatusCache();
+			schedulePersistStyleIndexCache();
 			if (Object.keys(statusByHref).length > 0) {
 				return notifyTabsStatusUpdates(statusByHref);
 			}
