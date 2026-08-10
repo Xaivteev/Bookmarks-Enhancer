@@ -1412,7 +1412,23 @@ function clearStatusesForUrls(urls) {
 }
 
 function isFolderNode(node) {
-	return !!node && (node.type === "folder" || (!node.url && Array.isArray(node.children)));
+	if (!node) return false;
+	// Slim index entries set isFolder explicitly; Chrome nodes use type/url/children.
+	if (node.isFolder === true) return true;
+	if (node.isFolder === false) return false;
+	return node.type === "folder" || (!node.url && Array.isArray(node.children));
+}
+
+/**
+ * Compact index record — matching only needs id + parentId (+ folder flag).
+ * Avoid retaining full bookmark nodes (title, dates, children arrays).
+ */
+function toIndexEntry(node, parentId) {
+	return {
+		id: node.id,
+		parentId: parentId ?? node.parentId ?? null,
+		isFolder: isFolderNode(node)
+	};
 }
 
 function shouldIndexBookmarkInIndex(index, node) {
@@ -1428,7 +1444,7 @@ function removeBookmarkIdFromIndex(index, bookmarkId) {
 	if (normalized) {
 		affected.push(normalized);
 		const list = index.bookmarksByNormalizedUrl.get(normalized) || [];
-		const next = list.filter(node => node.id !== bookmarkId);
+		const next = list.filter(entry => entry.id !== bookmarkId);
 		if (next.length > 0) {
 			index.bookmarksByNormalizedUrl.set(normalized, next);
 		} else {
@@ -1445,9 +1461,10 @@ function addBookmarkNodeToIndex(index, node) {
 	const affected = [];
 	if (!node || !node.id) return affected;
 
-	index.bookmarkById.set(node.id, node);
-	if (node.parentId) {
-		index.parentById.set(node.id, node.parentId);
+	const entry = toIndexEntry(node);
+	index.bookmarkById.set(node.id, entry);
+	if (entry.parentId) {
+		index.parentById.set(node.id, entry.parentId);
 	}
 
 	if (!shouldIndexBookmarkInIndex(index, node)) {
@@ -1474,11 +1491,11 @@ function addBookmarkNodeToIndex(index, node) {
 	}
 	const list = index.bookmarksByNormalizedUrl.get(normalized);
 	if (!list.some(existing => existing.id === node.id)) {
-		list.push(node);
+		list.push(entry);
 	}
 	affected.push(normalized);
 
-	const matched = findMatchingRuleStyle(node, index.rules, index.parentById);
+	const matched = findMatchingRuleStyle(entry, index.rules, index.parentById);
 	if (matched) {
 		setBookmarkStatus(normalized, matched.styleId);
 	} else if (isUnmatchedStylingEnabled()) {
@@ -1519,9 +1536,10 @@ function withLiveBookmarkIndex(mutator) {
 function handleBookmarkCreated(id, bookmark) {
 	if (isFolderNode(bookmark)) {
 		return withLiveBookmarkIndex(index => {
-			index.bookmarkById.set(id, bookmark);
-			if (bookmark.parentId) {
-				index.parentById.set(id, bookmark.parentId);
+			const entry = toIndexEntry({ ...bookmark, id });
+			index.bookmarkById.set(id, entry);
+			if (entry.parentId) {
+				index.parentById.set(id, entry.parentId);
 			}
 			return [];
 		});
@@ -1590,41 +1608,23 @@ function handleBookmarkChanged(id, changeInfo) {
 				});
 			}
 
-			if (isFolderNode(existing)) {
-				if (changeInfo.title !== undefined) {
-					index.bookmarkById.set(id, { ...existing, title: changeInfo.title });
-				}
+			// Title-only (and other non-URL) changes do not affect matching.
+			if (isFolderNode(existing) || changeInfo.url === undefined) {
 				return [];
 			}
 
-			const affected = [];
-			if (changeInfo.url !== undefined) {
-				const previousNormalized = index.urlByBookmarkId.get(id);
-				affected.push(...removeBookmarkIdFromIndex(index, id));
-				if (previousNormalized) {
-					unmatchedUrlSet.delete(previousNormalized);
-					bookmarkStatusMap.delete(previousNormalized);
-				}
-				const updated = {
-					...existing,
-					...changeInfo,
-					id,
-					parentId: existing.parentId
-				};
-				affected.push(...addBookmarkNodeToIndex(index, updated));
-				return affected;
+			const previousNormalized = index.urlByBookmarkId.get(id);
+			const affected = removeBookmarkIdFromIndex(index, id);
+			if (previousNormalized) {
+				unmatchedUrlSet.delete(previousNormalized);
+				bookmarkStatusMap.delete(previousNormalized);
 			}
-
-			const updated = { ...existing, ...changeInfo, id };
-			index.bookmarkById.set(id, updated);
-			const normalized = index.urlByBookmarkId.get(id);
-			if (normalized) {
-				const list = index.bookmarksByNormalizedUrl.get(normalized) || [];
-				index.bookmarksByNormalizedUrl.set(
-					normalized,
-					list.map(node => (node.id === id ? updated : node))
-				);
-			}
+			affected.push(...addBookmarkNodeToIndex(index, {
+				id,
+				parentId: existing.parentId,
+				url: changeInfo.url,
+				isFolder: false
+			}));
 			return affected;
 		})
 		.then(affectedUrls => {
@@ -1674,12 +1674,13 @@ function addBookmarkTreeToMaps(
 	bookmarkById,
 	urlByBookmarkId
 ) {
-	function visit(node, parentId = null) {
+	function visit(node, parentId) {
 		if (!node || !node.id) return;
 
-		bookmarkById.set(node.id, node);
-		if (parentId) {
-			parentById.set(node.id, parentId);
+		const entry = toIndexEntry(node, parentId);
+		bookmarkById.set(node.id, entry);
+		if (entry.parentId) {
+			parentById.set(node.id, entry.parentId);
 		}
 
 		if (node.url && isValidBookmarkUrl(node.url)) {
@@ -1688,7 +1689,7 @@ function addBookmarkTreeToMaps(
 			if (!bookmarksByNormalizedUrl.has(normalized)) {
 				bookmarksByNormalizedUrl.set(normalized, []);
 			}
-			bookmarksByNormalizedUrl.get(normalized).push(node);
+			bookmarksByNormalizedUrl.get(normalized).push(entry);
 		}
 
 		if (Array.isArray(node.children)) {
@@ -1696,7 +1697,8 @@ function addBookmarkTreeToMaps(
 		}
 	}
 
-	(bookmarkTree || []).forEach(node => visit(node, null));
+	// parentId undefined → toIndexEntry keeps each subtree root's real parentId.
+	(bookmarkTree || []).forEach(node => visit(node, undefined));
 }
 
 function isValidBookmarkUrl(href) {
