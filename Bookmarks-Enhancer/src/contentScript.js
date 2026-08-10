@@ -199,6 +199,10 @@ let originalBodyBorderTop = null;
 let visibilityListenersAttached = false;
 let pageWasHidden = typeof document !== "undefined" && document.visibilityState === "hidden";
 let visibilityRescanTimer = null;
+let lookupRetryTimer = null;
+let lookupRetryHrefs = new Set();
+let lookupRetryAttempt = 0;
+let warmupRescanTimers = [];
 
 const STYLING_INDICATOR_DELAY_MS = 300;
 const STYLING_INDICATOR_HOST_ID = "bookmarks-enhancer-loading";
@@ -345,6 +349,12 @@ function invalidateUrlDependentCaches() {
 	softMissHrefs = new Set();
 	pendingStatusHrefs = new Set();
 	pendingObservedHrefs = new Set();
+	lookupRetryHrefs = new Set();
+	lookupRetryAttempt = 0;
+	if (lookupRetryTimer) {
+		clearTimeout(lookupRetryTimer);
+		lookupRetryTimer = null;
+	}
 
 	if (mutationDebounceTimer) {
 		clearTimeout(mutationDebounceTimer);
@@ -357,6 +367,48 @@ function invalidateUrlDependentCaches() {
 function invalidateTextFilterCache() {
 	textFilterCache.clear();
 	removeStatusClasses(managedClassNames);
+}
+
+function scheduleLookupRetry(hrefs) {
+	if (!hrefs || !hrefs.length) return;
+	for (const href of hrefs) {
+		if (href) lookupRetryHrefs.add(href);
+	}
+	if (lookupRetryTimer || lookupRetryHrefs.size === 0) return;
+
+	const delay = Math.min(8000, 400 * (2 ** Math.min(lookupRetryAttempt, 4)));
+	lookupRetryAttempt += 1;
+	lookupRetryTimer = setTimeout(() => {
+		lookupRetryTimer = null;
+		const batch = Array.from(lookupRetryHrefs);
+		lookupRetryHrefs = new Set();
+		for (const href of batch) {
+			softMissHrefs.delete(href);
+			pendingStatusHrefs.delete(href);
+		}
+		requestBookmarkStatuses(batch, { force: true });
+	}, delay);
+}
+
+function clearSoftMissesAndRescan(options = {}) {
+	if (!searchSite) return;
+	softMissHrefs = new Set();
+	sendUniqueHrefs({ includeHidden: true, ...options });
+}
+
+function scheduleWarmupRescans() {
+	for (const timer of warmupRescanTimers) {
+		clearTimeout(timer);
+	}
+	warmupRescanTimers = [];
+	// Cold SW / folder index often settles shortly after first paint when the
+	// Firefox window was just focused. Retry soft misses without waiting for
+	// another visibility edge.
+	for (const delay of [1200, 3500]) {
+		warmupRescanTimers.push(setTimeout(() => {
+			clearSoftMissesAndRescan();
+		}, delay));
+	}
 }
 
 function requestBookmarkStatuses(hrefs, options = {}) {
@@ -391,6 +443,8 @@ function requestBookmarkStatuses(hrefs, options = {}) {
 			if (message && message.error) {
 				releasePending();
 				onError(message.error);
+				// Cold SW / index build races often surface as errors; retry shortly.
+				scheduleLookupRetry(unique);
 				return;
 			}
 
@@ -398,6 +452,7 @@ function requestBookmarkStatuses(hrefs, options = {}) {
 				? message.statuses
 				: {};
 			const partial = !!(message && message.partial);
+			let sawPositive = false;
 
 			for (const href of unique) {
 				pendingStatusHrefs.delete(href);
@@ -408,8 +463,9 @@ function requestBookmarkStatuses(hrefs, options = {}) {
 					if (status && status !== "none") {
 						processedHrefs.add(href);
 						softMissHrefs.delete(href);
+						sawPositive = true;
 					} else {
-						// Soft miss — retry on requery / visibility, not every mutation.
+						// Soft miss — retry on requery / visibility / index-ready.
 						softMissHrefs.add(href);
 						processedHrefs.delete(href);
 						linkStatusMap.delete(href);
@@ -418,11 +474,15 @@ function requestBookmarkStatuses(hrefs, options = {}) {
 					pendingStatusHrefs.add(href);
 				}
 			}
+			if (sawPositive) {
+				lookupRetryAttempt = 0;
+			}
 			applyBookmarkStyling(message);
 		})
 		.catch(error => {
 			releasePending();
 			onError(error);
+			scheduleLookupRetry(unique);
 		})
 		.finally(() => {
 			if (showLoading) endStylingIndicator();
@@ -464,6 +524,12 @@ browser.runtime.onMessage.addListener(message => {
 
 	if (message && typeof message.setRevealHidden === "boolean") {
 		return Promise.resolve({ revealHidden: setRevealHidden(message.setRevealHidden) });
+	}
+
+	if (message && message.bookmarkIndexReady) {
+		// Folder index settled after SW wake — retry soft misses cheaply.
+		clearSoftMissesAndRescan();
+		return;
 	}
 
 	if (message && message.statusUpdates) {
@@ -1026,11 +1092,7 @@ function performVisibilityRescan() {
 
 	// Retry soft misses: a prior pass may have resolved before the folder index
 	// was complete. Background re-checks the folder map cheaply.
-	softMissHrefs = new Set();
-
-	// Include links that were skipped while the tab/page was hidden
-	// (inherited visibility:hidden, opacity fades, splash overlays).
-	sendUniqueHrefs({ includeHidden: true });
+	clearSoftMissesAndRescan();
 }
 
 function onVisibilityChange() {
@@ -1055,11 +1117,23 @@ function onPageShow(event) {
 	}
 }
 
+function onWindowFocus() {
+	// Focusing the Firefox window does not always flip document.visibilityState
+	// when this tab was already the active tab in a backgrounded window.
+	if (document.visibilityState === "hidden") {
+		pageWasHidden = true;
+		return;
+	}
+	if (softMissHrefs.size === 0 && lookupRetryHrefs.size === 0) return;
+	scheduleVisibilityRescan();
+}
+
 function ensureVisibilityRescanListeners() {
 	if (visibilityListenersAttached) return;
 	visibilityListenersAttached = true;
 	document.addEventListener("visibilitychange", onVisibilityChange);
 	window.addEventListener("pageshow", onPageShow);
+	window.addEventListener("focus", onWindowFocus);
 }
 
 function initProcessing() {
@@ -1070,6 +1144,7 @@ function initProcessing() {
 	sendUniqueHrefs({ showLoading: true });
 	// Start observing for incremental additions
 	startMutationObserver();
+	scheduleWarmupRescans();
 
 	// Background tabs often finish the first scan while still hidden; rescan
 	// once when the user first focuses the tab.

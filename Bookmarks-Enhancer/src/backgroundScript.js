@@ -1265,6 +1265,9 @@ function getBookmarkIndex() {
 				index.generation = generationAtStart;
 				liveBookmarkIndex = index;
 				bookmarkIndexBuilding = false;
+				// Tell tabs the folder map is usable so cold-start soft misses can
+				// retry (folder re-check is cheap; unmatched miss memos stay).
+				notifyBookmarkIndexReady();
 				return index;
 			})
 			.catch(error => {
@@ -1279,6 +1282,24 @@ function getBookmarkIndex() {
 		bookmarkIndexPromise = buildPromise;
 	}
 	return bookmarkIndexPromise;
+}
+
+let bookmarkIndexReadyNotifyTimer = null;
+function notifyBookmarkIndexReady() {
+	// Debounce: wake-up can settle the index once while several tabs ask at once.
+	if (bookmarkIndexReadyNotifyTimer) {
+		clearTimeout(bookmarkIndexReadyNotifyTimer);
+	}
+	bookmarkIndexReadyNotifyTimer = setTimeout(() => {
+		bookmarkIndexReadyNotifyTimer = null;
+		browser.tabs.query({}).then(tabs => {
+			for (const tab of tabs) {
+				if (tab && tab.id != null) {
+					browser.tabs.sendMessage(tab.id, { bookmarkIndexReady: true }).catch(() => {});
+				}
+			}
+		}).catch(() => {});
+	}, 50);
 }
 
 function recoverHungBookmarkIndex(force = false) {
