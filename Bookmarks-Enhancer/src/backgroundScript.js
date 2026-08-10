@@ -993,26 +993,10 @@ function fillBookmarkStatuses(validHrefs, retryCount = 0, tabId = null) {
 		for (const href of hrefsToSearch) {
 			if (bookmarkStatusMap.has(href)) continue;
 
-			const bookmarkList = index.bookmarksByNormalizedUrl.get(href) || [];
-			let status = "none";
-			let bestPriority = Infinity;
-
-			for (const bookmark of bookmarkList) {
-				const matched = findMatchingRuleStyle(
-					bookmark,
-					index.rules,
-					index.parentById
-				);
-				if (!matched) continue;
-				if (matched.priority < bestPriority) {
-					status = matched.styleId;
-					bestPriority = matched.priority;
-					if (bestPriority === 0) break;
-				}
-			}
-
-			if (status !== "none") {
-				setBookmarkStatus(href, status);
+			// Precomputed at index build / maintained on live bookmark edits.
+			const folderStyle = index.styleByNormalizedUrl.get(href);
+			if (folderStyle) {
+				setBookmarkStatus(href, folderStyle);
 			} else if (unmatchedEnabled && unmatchedUrlSet.has(href)) {
 				setBookmarkStatus(href, index.unmatchedBookmarkStyle);
 			} else if (unmatchedEnabled && unmatchedMissSet.has(href)) {
@@ -1321,6 +1305,16 @@ function recoverHungBookmarkIndex(force = false) {
 	}
 }
 
+function createEmptyBookmarkIndexMaps() {
+	return {
+		bookmarksByNormalizedUrl: new Map(),
+		styleByNormalizedUrl: new Map(),
+		parentById: new Map(),
+		bookmarkById: new Map(),
+		urlByBookmarkId: new Map()
+	};
+}
+
 // Folder-scoped index only. Unmatched bookmarks are resolved via per-URL search.
 // Never use bookmarks.getTree() — a hung/cold getTree wedges the MV3 service worker
 // until the browser kills it (matches "leave the window until it goes cold").
@@ -1334,38 +1328,25 @@ function buildBookmarkIndex() {
 				unmatchedBookmarkStyle,
 				styleIds,
 				indexesUnmatched: false,
-				bookmarksByNormalizedUrl: new Map(),
-				parentById: new Map(),
-				bookmarkById: new Map(),
-				urlByBookmarkId: new Map()
+				...createEmptyBookmarkIndexMaps()
 			};
 		}
 
 		return Promise.all(
 			rules.map(rule => browser.bookmarks.getSubTree(rule.folderId))
 		).then(subtrees => {
-			const bookmarksByNormalizedUrl = new Map();
-			const parentById = new Map();
-			const bookmarkById = new Map();
-			const urlByBookmarkId = new Map();
-			for (const subtree of subtrees) {
-				addBookmarkTreeToMaps(
-					subtree,
-					bookmarksByNormalizedUrl,
-					parentById,
-					bookmarkById,
-					urlByBookmarkId
-				);
+			const maps = createEmptyBookmarkIndexMaps();
+			// Process rules in table order so the first matching folder style wins
+			// without parent-chain walks (every node in getSubTree is under that folder).
+			for (let i = 0; i < subtrees.length; i++) {
+				addBookmarkTreeToMaps(subtrees[i], maps, rules[i].style);
 			}
 			return {
 				rules,
 				unmatchedBookmarkStyle,
 				styleIds,
 				indexesUnmatched: false,
-				bookmarksByNormalizedUrl,
-				parentById,
-				bookmarkById,
-				urlByBookmarkId
+				...maps
 			};
 		});
 	});
@@ -1438,6 +1419,45 @@ function shouldIndexBookmarkInIndex(index, node) {
 	);
 }
 
+/**
+ * Recompute the best folder style for a normalized URL from remaining index entries.
+ * Used after live create/move/remove (build time assigns styles without parent walks).
+ */
+function recomputeFolderStyleForUrl(index, normalized) {
+	if (!normalized || !index.styleByNormalizedUrl) return null;
+
+	const list = index.bookmarksByNormalizedUrl.get(normalized) || [];
+	let best = null;
+	for (const entry of list) {
+		const matched = findMatchingRuleStyle(entry, index.rules, index.parentById);
+		if (!matched) continue;
+		if (!best || matched.priority < best.priority) {
+			best = matched;
+			if (best.priority === 0) break;
+		}
+	}
+
+	if (best) {
+		index.styleByNormalizedUrl.set(normalized, best.styleId);
+		return best.styleId;
+	}
+	index.styleByNormalizedUrl.delete(normalized);
+	return null;
+}
+
+function applyIndexStyleToStatus(index, normalized) {
+	if (!normalized) return;
+	const styleId = index.styleByNormalizedUrl.get(normalized);
+	if (styleId) {
+		unmatchedUrlSet.delete(normalized);
+		unmatchedMissSet.delete(normalized);
+		setBookmarkStatus(normalized, styleId);
+		return;
+	}
+
+	bookmarkStatusMap.delete(normalized);
+}
+
 function removeBookmarkIdFromIndex(index, bookmarkId) {
 	const affected = [];
 	const normalized = index.urlByBookmarkId.get(bookmarkId);
@@ -1450,6 +1470,7 @@ function removeBookmarkIdFromIndex(index, bookmarkId) {
 		} else {
 			index.bookmarksByNormalizedUrl.delete(normalized);
 		}
+		recomputeFolderStyleForUrl(index, normalized);
 	}
 	index.urlByBookmarkId.delete(bookmarkId);
 	index.bookmarkById.delete(bookmarkId);
@@ -1472,12 +1493,17 @@ function addBookmarkNodeToIndex(index, node) {
 		if (node.url && isValidBookmarkUrl(node.url)) {
 			const normalized = normalizeHrefForSearch(node.url);
 			affected.push(normalized);
-			unmatchedUrlSet.add(normalized);
-			if (isUnmatchedStylingEnabled()) {
-				setBookmarkStatus(normalized, unmatchedBookmarkStyle);
+			// Another copy may still live under a rule folder.
+			if (!index.styleByNormalizedUrl.has(normalized)) {
+				unmatchedUrlSet.add(normalized);
+				if (isUnmatchedStylingEnabled()) {
+					setBookmarkStatus(normalized, unmatchedBookmarkStyle);
+				} else {
+					bookmarkStatusMap.delete(normalized);
+					unmatchedMissSet.delete(normalized);
+				}
 			} else {
-				bookmarkStatusMap.delete(normalized);
-				unmatchedMissSet.delete(normalized);
+				applyIndexStyleToStatus(index, normalized);
 			}
 		}
 		return affected;
@@ -1495,9 +1521,9 @@ function addBookmarkNodeToIndex(index, node) {
 	}
 	affected.push(normalized);
 
-	const matched = findMatchingRuleStyle(entry, index.rules, index.parentById);
-	if (matched) {
-		setBookmarkStatus(normalized, matched.styleId);
+	recomputeFolderStyleForUrl(index, normalized);
+	if (index.styleByNormalizedUrl.has(normalized)) {
+		applyIndexStyleToStatus(index, normalized);
 	} else if (isUnmatchedStylingEnabled()) {
 		unmatchedUrlSet.add(normalized);
 		setBookmarkStatus(normalized, unmatchedBookmarkStyle);
@@ -1558,10 +1584,15 @@ function handleBookmarkRemoved(id, removeInfo) {
 	return withLiveBookmarkIndex(index => {
 		const affected = removeBookmarkIdFromIndex(index, id);
 		if (node && node.url && isValidBookmarkUrl(node.url)) {
-			const normalized = normalizeHrefForSearch(node.url);
-			affected.push(normalized);
-			unmatchedUrlSet.delete(normalized);
-			bookmarkStatusMap.delete(normalized);
+			affected.push(normalizeHrefForSearch(node.url));
+		}
+		for (const href of new Set(affected)) {
+			if (index.styleByNormalizedUrl.has(href)) {
+				applyIndexStyleToStatus(index, href);
+			} else {
+				unmatchedUrlSet.delete(href);
+				bookmarkStatusMap.delete(href);
+			}
 		}
 		return affected;
 	});
@@ -1616,8 +1647,12 @@ function handleBookmarkChanged(id, changeInfo) {
 			const previousNormalized = index.urlByBookmarkId.get(id);
 			const affected = removeBookmarkIdFromIndex(index, id);
 			if (previousNormalized) {
-				unmatchedUrlSet.delete(previousNormalized);
-				bookmarkStatusMap.delete(previousNormalized);
+				if (index.styleByNormalizedUrl.has(previousNormalized)) {
+					applyIndexStyleToStatus(index, previousNormalized);
+				} else {
+					unmatchedUrlSet.delete(previousNormalized);
+					bookmarkStatusMap.delete(previousNormalized);
+				}
 			}
 			affected.push(...addBookmarkNodeToIndex(index, {
 				id,
@@ -1667,13 +1702,15 @@ function isBookmarkUnderFolder(bookmark, folderId, parentById) {
 	return false;
 }
 
-function addBookmarkTreeToMaps(
-	bookmarkTree,
-	bookmarksByNormalizedUrl,
-	parentById,
-	bookmarkById,
-	urlByBookmarkId
-) {
+function addBookmarkTreeToMaps(bookmarkTree, maps, folderStyleId) {
+	const {
+		bookmarksByNormalizedUrl,
+		styleByNormalizedUrl,
+		parentById,
+		bookmarkById,
+		urlByBookmarkId
+	} = maps;
+
 	function visit(node, parentId) {
 		if (!node || !node.id) return;
 
@@ -1689,7 +1726,14 @@ function addBookmarkTreeToMaps(
 			if (!bookmarksByNormalizedUrl.has(normalized)) {
 				bookmarksByNormalizedUrl.set(normalized, []);
 			}
-			bookmarksByNormalizedUrl.get(normalized).push(entry);
+			const list = bookmarksByNormalizedUrl.get(normalized);
+			if (!list.some(existing => existing.id === entry.id)) {
+				list.push(entry);
+			}
+			// First rule in table order wins (caller processes rules in order).
+			if (folderStyleId && !styleByNormalizedUrl.has(normalized)) {
+				styleByNormalizedUrl.set(normalized, folderStyleId);
+			}
 		}
 
 		if (Array.isArray(node.children)) {
