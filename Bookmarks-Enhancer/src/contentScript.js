@@ -18,6 +18,11 @@ let enableTopBorder = false;
 let enableDeepSearch = false;
 let onlyUseSites = false;
 let managedClassNames = [];
+// Defaults only include built-in ids (blocked/favorited/seen). Custom UUID styles
+// arrive via storage — gate lookups until then so early requery cannot stick
+// positives in processedHrefs that applyBookmarkStyling silently skips.
+let settingsLoaded = false;
+let pendingRuntimeMessages = [];
 
 let getting = browser.storage.local.get([
     STORAGE_KEYS.searchPairs,
@@ -90,8 +95,10 @@ function onGot(item) {
 	enableDeepSearch = !!item[STORAGE_KEYS.enableDeepSearch];
 	onlyUseSites = !!item[STORAGE_KEYS.onlyUseSites];
 	updateClassesForSearch();
+	settingsLoaded = true;
 	// Start processing links now that settings are loaded
 	try { initProcessing(); } catch (e) { /* initProcessing may be defined later */ }
+	flushPendingRuntimeMessages();
 }
 
 // Listen for storage changes and update settings dynamically
@@ -203,6 +210,53 @@ let lookupRetryTimer = null;
 let lookupRetryHrefs = new Set();
 let lookupRetryAttempt = 0;
 let warmupRescanTimers = [];
+
+function isResolvableStyleId(styleId) {
+	return !!(styleId && styleId !== "none" && getStyleConfigById(styleId));
+}
+
+// Only mark processed when the style id is resolvable; otherwise keep retryable
+// and remember the status so a later styleRules load can apply it.
+function rememberPositiveStatus(href, status) {
+	if (!href || !status || status === "none") return false;
+	linkStatusMap.set(href, status);
+	if (isResolvableStyleId(status)) {
+		softMissHrefs.delete(href);
+		processedHrefs.add(href);
+		return true;
+	}
+	processedHrefs.delete(href);
+	// Settings are loaded but this id is unknown (dangling reference) — avoid
+	// a lookup spin. A later styleRules change triggers a full refresh.
+	if (settingsLoaded) {
+		softMissHrefs.add(href);
+	}
+	return false;
+}
+
+function reapplyStoredLinkStatuses(includeHidden = false) {
+	if (!searchSite || linkStatusMap.size === 0) return;
+	buildLinkMap(includeHidden);
+	const statuses = {};
+	for (const [href, status] of linkStatusMap) {
+		if (status && status !== "none") statuses[href] = status;
+	}
+	if (Object.keys(statuses).length === 0) return;
+	applyBookmarkStyling({ statuses }, includeHidden);
+}
+
+function enqueueRuntimeMessage(message) {
+	pendingRuntimeMessages.push(message);
+}
+
+function flushPendingRuntimeMessages() {
+	if (!settingsLoaded || pendingRuntimeMessages.length === 0) return;
+	const queued = pendingRuntimeMessages.slice();
+	pendingRuntimeMessages = [];
+	for (const message of queued) {
+		handleRuntimeMessage(message);
+	}
+}
 
 const STYLING_INDICATOR_DELAY_MS = 300;
 const STYLING_INDICATOR_HOST_ID = "bookmarks-enhancer-loading";
@@ -461,9 +515,9 @@ function requestBookmarkStatuses(hrefs, options = {}) {
 				if (!partial || Object.prototype.hasOwnProperty.call(statuses, href)) {
 					const status = statuses[href];
 					if (status && status !== "none") {
-						processedHrefs.add(href);
-						softMissHrefs.delete(href);
-						sawPositive = true;
+						if (rememberPositiveStatus(href, status)) {
+							sawPositive = true;
+						}
 					} else {
 						// Soft miss — retry on requery / visibility / index-ready.
 						softMissHrefs.add(href);
@@ -526,22 +580,38 @@ browser.runtime.onMessage.addListener(message => {
 		return Promise.resolve({ revealHidden: setRevealHidden(message.setRevealHidden) });
 	}
 
-	if (message && message.bookmarkIndexReady) {
+	if (
+		message &&
+		(message.bookmarkIndexReady || message.statusUpdates || message.refresh)
+	) {
+		// Early tabs.onUpdated requery can beat storage.local.get; queue until
+		// custom styleRules are loaded so UUID statuses are resolvable.
+		if (!settingsLoaded) {
+			enqueueRuntimeMessage(message);
+			return;
+		}
+		handleRuntimeMessage(message);
+	}
+});
+
+function handleRuntimeMessage(message) {
+	if (!message) return;
+
+	if (message.bookmarkIndexReady) {
 		// Folder index settled after SW wake — retry soft misses cheaply.
 		clearSoftMissesAndRescan();
+		reapplyStoredLinkStatuses(true);
 		return;
 	}
 
-	if (message && message.statusUpdates) {
+	if (message.statusUpdates) {
 		if (!searchSite) return;
 		buildLinkMap(true);
 		const classNames = managedClassNames.filter(Boolean);
 		for (const [href, status] of Object.entries(message.statusUpdates)) {
 			pendingStatusHrefs.delete(href);
 			if (status && status !== "none") {
-				processedHrefs.add(href);
-				softMissHrefs.delete(href);
-				linkStatusMap.set(href, status);
+				rememberPositiveStatus(href, status);
 			} else {
 				softMissHrefs.add(href);
 				processedHrefs.delete(href);
@@ -558,7 +628,7 @@ browser.runtime.onMessage.addListener(message => {
 		return;
 	}
 
-	if (message && message.refresh) {
+	if (message.refresh) {
 		if (message.mode === "authoritative") {
 			performAuthoritativeRefresh({
 				showActionBusy: !!message.showActionBusy,
@@ -578,7 +648,7 @@ browser.runtime.onMessage.addListener(message => {
 			sendUniqueHrefs();
 		}
 	}
-});
+}
 
 // Build a map of normalizedHref -> [link elements], filtering invalid/hidden links
 function buildLinkMap(includeHidden = false) {
@@ -713,7 +783,7 @@ function performAuthoritativeRefresh(options = {}) {
 			}
 			const status = statuses[href];
 			if (status && status !== "none") {
-				processedHrefs.add(href);
+				rememberPositiveStatus(href, status);
 			} else {
 				softMissHrefs.add(href);
 			}
