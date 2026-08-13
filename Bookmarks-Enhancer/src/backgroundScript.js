@@ -278,6 +278,7 @@ const TEXT_RULE_MENU_PREFIX = "addTextRuleStyle:";
 const REFRESH_TAB_STYLING_MENU_ID = "refreshTabStyling";
 const REFRESH_ALL_TABS_STYLING_MENU_ID = "refreshAllTabsStyling";
 const TOGGLE_REVEAL_HIDDEN_MENU_ID = "toggleRevealHidden";
+const OPEN_OPTIONS_MENU_ID = "openOptions";
 const LEGACY_LINK_MENU_IDS = ["addLinkBlocked", "addLinkFavorited", "addTextFilter"];
 let ruleFolderMenuIds = [];
 let textRuleMenuIds = [];
@@ -305,6 +306,11 @@ function createStaticContextMenus() {
 			id: REFRESH_ALL_TABS_STYLING_MENU_ID,
 			title: 'Refresh styling on all tabs',
 			contexts: ['action']
+		},
+		{
+			id: OPEN_OPTIONS_MENU_ID,
+			title: 'Open settings',
+			contexts: ['page', 'action']
 		}
 	];
 
@@ -678,6 +684,11 @@ browser.tabs.onUpdated.addListener((tabId, changeInfo, tab) => {
 
 browser.contextMenus.onClicked.addListener((info, tab) => {
 	if (!info) return;
+
+	if (info.menuItemId === OPEN_OPTIONS_MENU_ID) {
+		browser.runtime.openOptionsPage().catch(onError);
+		return;
+	}
 
 	resolveContextMenuTab(tab).then(resolvedTab => {
 		if (!resolvedTab) return;
