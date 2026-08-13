@@ -476,10 +476,9 @@ function collectSearchPairs() {
 
 function collectUrlRules() {
     const rows = Array.from(document.querySelectorAll("#urlRuleBody tr")).map(row => {
-        const inputs = row.querySelectorAll("input");
         return {
-            site: inputs[0].value,
-            keepParams: inputs[1].value
+            site: row.querySelector(".urlRuleSite")?.value || "",
+            keepParams: row.querySelector(".urlRuleParams")?.value || ""
         };
     });
 
@@ -1079,24 +1078,7 @@ function persistOptionsFromForm({
         return Promise.resolve();
     }
 
-    if (!validateAllSearchPairRows()) {
-        activateOptionsTab("siteRules");
-        const firstInvalid = document.querySelector(
-            "#tableBody input.fieldInvalid"
-        );
-        firstInvalid?.focus();
-        showStatus("Fix Search Pair errors before saving", {
-            isError: true,
-            actions: [
-                {
-                    label: "Open Site Rules",
-                    onClick: () => {
-                        activateOptionsTab("siteRules");
-                        document.querySelector("#tableBody input.fieldInvalid")?.focus();
-                    }
-                }
-            ]
-        });
+    if (!validateConfigurableRuleRows()) {
         return Promise.resolve();
     }
 
@@ -1267,7 +1249,7 @@ function createRow(site = "", classes = "") {
     refreshAllTableEmptyStates();
 }
 
-function setSearchPairFieldError(input, errorEl, message) {
+function setFieldError(input, errorEl, message) {
     if (!input || !errorEl) return;
 
     const invalid = Boolean(message);
@@ -1280,6 +1262,63 @@ function setSearchPairFieldError(input, errorEl, message) {
         errorEl.textContent = "";
         errorEl.hidden = true;
     }
+}
+
+function createFieldError(errorId) {
+    const error = document.createElement("p");
+    error.className = "fieldError";
+    error.id = errorId;
+    error.hidden = true;
+    return error;
+}
+
+function showRowValidationError(tabId, selector, message, actionLabel) {
+    activateOptionsTab(tabId);
+    const firstInvalid = document.querySelector(selector);
+    firstInvalid?.focus();
+    showStatus(message, {
+        isError: true,
+        actions: [
+            {
+                label: actionLabel,
+                onClick: () => {
+                    activateOptionsTab(tabId);
+                    document.querySelector(selector)?.focus();
+                }
+            }
+        ]
+    });
+}
+
+function validateConfigurableRuleRows() {
+    const textValid = validateAllTextRuleRows();
+    const searchValid = validateAllSearchPairRows();
+    const urlValid = validateAllUrlRuleRows();
+    if (textValid && searchValid && urlValid) return true;
+
+    if (!textValid) {
+        showRowValidationError(
+            "textRules",
+            "#textRuleBody .fieldInvalid",
+            "Fix Text Rule errors before saving",
+            "Open Text Rules"
+        );
+    } else if (!searchValid) {
+        showRowValidationError(
+            "siteRules",
+            "#tableBody input.fieldInvalid",
+            "Fix Search Pair errors before saving",
+            "Open Site Rules"
+        );
+    } else {
+        showRowValidationError(
+            "siteRules",
+            "#urlRuleBody input.fieldInvalid",
+            "Fix URL Parameter Rule errors before saving",
+            "Open Site Rules"
+        );
+    }
+    return false;
 }
 
 function getSearchPairRowState(row) {
@@ -1322,8 +1361,8 @@ function validateAllSearchPairRows() {
         let classesMessage = "";
 
         if (state.isBlank) {
-            setSearchPairFieldError(state.siteInput, state.siteError, "");
-            setSearchPairFieldError(state.classesInput, state.classesError, "");
+            setFieldError(state.siteInput, state.siteError, "");
+            setFieldError(state.classesInput, state.classesError, "");
             continue;
         }
 
@@ -1354,8 +1393,8 @@ function validateAllSearchPairRows() {
             }
         }
 
-        setSearchPairFieldError(state.siteInput, state.siteError, siteMessage);
-        setSearchPairFieldError(state.classesInput, state.classesError, classesMessage);
+        setFieldError(state.siteInput, state.siteError, siteMessage);
+        setFieldError(state.classesInput, state.classesError, classesMessage);
 
         if (siteMessage || classesMessage) {
             allValid = false;
@@ -1365,57 +1404,173 @@ function validateAllSearchPairRows() {
     return allValid;
 }
 
+function isPlausibleQueryParamName(name) {
+    return /^[A-Za-z0-9._~-]+$/.test(name);
+}
+
+let urlRuleFieldIdSeq = 0;
+
 function createUrlRuleRow(site = "", keepParams = "") {
     const row = document.createElement("tr");
+    const idSuffix = `url-${++urlRuleFieldIdSeq}`;
 
     const siteCell = document.createElement("td");
     const siteInput = document.createElement("input");
     siteInput.type = "text";
+    siteInput.className = "urlRuleSite";
     siteInput.value = site;
-    siteCell.appendChild(siteInput);
+    siteInput.placeholder = "example.com";
+    siteInput.setAttribute("aria-label", "Site");
+    siteInput.setAttribute("aria-describedby", `${idSuffix}-site-error`);
+    siteInput.autocomplete = "off";
+    const siteError = createFieldError(`${idSuffix}-site-error`);
+    siteCell.append(siteInput, siteError);
 
     const paramsCell = document.createElement("td");
     const paramsInput = document.createElement("input");
     paramsInput.type = "text";
+    paramsInput.className = "urlRuleParams";
     paramsInput.value = keepParams;
-    paramsCell.appendChild(paramsInput);
+    paramsInput.placeholder = "id, jk";
+    paramsInput.setAttribute("aria-label", "Parameters to keep");
+    paramsInput.setAttribute("aria-describedby", `${idSuffix}-params-error`);
+    paramsInput.autocomplete = "off";
+    const paramsError = createFieldError(`${idSuffix}-params-error`);
+    paramsCell.append(paramsInput, paramsError);
 
     const actionCell = document.createElement("td");
     actionCell.appendChild(createRowActions(
         createDeleteButton(() => {
             row.remove();
+            validateAllUrlRuleRows();
             refreshAllTableEmptyStates();
         })
     ));
 
-    row.appendChild(siteCell);
-    row.appendChild(paramsCell);
-    row.appendChild(actionCell);
+    const scheduleValidate = () => {
+        validateAllUrlRuleRows();
+    };
+    siteInput.addEventListener("input", scheduleValidate);
+    siteInput.addEventListener("blur", scheduleValidate);
+    paramsInput.addEventListener("input", scheduleValidate);
+    paramsInput.addEventListener("blur", scheduleValidate);
 
+    row.append(siteCell, paramsCell, actionCell);
     document.querySelector("#urlRuleBody").appendChild(row);
+    validateAllUrlRuleRows();
     refreshAllTableEmptyStates();
 }
 
+function getUrlRuleRowState(row) {
+    const siteInput = row.querySelector(".urlRuleSite");
+    const paramsInput = row.querySelector(".urlRuleParams");
+    const siteRaw = siteInput?.value.trim() || "";
+    const paramsRaw = paramsInput?.value.trim() || "";
+    const keepParams = parseCommaSeparatedValues(paramsRaw);
+    const normalizedSite = siteRaw ? normalizeSite(siteRaw) : "";
+
+    return {
+        siteInput,
+        paramsInput,
+        siteError: siteInput?.parentElement?.querySelector(".fieldError"),
+        paramsError: paramsInput?.parentElement?.querySelector(".fieldError"),
+        siteRaw,
+        paramsRaw,
+        keepParams,
+        normalizedSite,
+        isBlank: !siteRaw && !paramsRaw
+    };
+}
+
+function validateAllUrlRuleRows() {
+    const rows = Array.from(document.querySelectorAll("#urlRuleBody tr"))
+        .map(getUrlRuleRowState)
+        .filter(state => state.siteInput && state.paramsInput);
+
+    const seenSites = new Map();
+    let allValid = true;
+
+    for (let index = 0; index < rows.length; index++) {
+        const state = rows[index];
+        let siteMessage = "";
+        let paramsMessage = "";
+
+        if (state.isBlank) {
+            setFieldError(state.siteInput, state.siteError, "");
+            setFieldError(state.paramsInput, state.paramsError, "");
+            continue;
+        }
+
+        if (!state.siteRaw) {
+            siteMessage = "Enter a site hostname.";
+        } else if (!isPlausibleHostname(state.siteRaw)) {
+            siteMessage = "Enter a valid hostname (example.com).";
+        }
+
+        if (!state.paramsRaw || state.keepParams.length === 0) {
+            paramsMessage = "Enter at least one parameter to keep (id, jk).";
+        } else {
+            const invalidNames = state.keepParams.filter(
+                name => !isPlausibleQueryParamName(name)
+            );
+            if (invalidNames.length > 0) {
+                paramsMessage = "Use parameter names only (id, jk), not values or full URLs.";
+            }
+        }
+
+        if (!siteMessage && !paramsMessage && state.normalizedSite) {
+            if (seenSites.has(state.normalizedSite)) {
+                siteMessage = "Duplicate site. Combine parameters into one row.";
+            } else {
+                seenSites.set(state.normalizedSite, index);
+            }
+        }
+
+        setFieldError(state.siteInput, state.siteError, siteMessage);
+        setFieldError(state.paramsInput, state.paramsError, paramsMessage);
+
+        if (siteMessage || paramsMessage) {
+            allValid = false;
+        }
+    }
+
+    return allValid;
+}
+
+let textRuleFieldIdSeq = 0;
+
 function createTextRuleRow(site = "", text = "", style = "blocked") {
     const row = document.createElement("tr");
+    const idSuffix = `tr-${++textRuleFieldIdSeq}`;
 
     const siteCell = document.createElement("td");
     const siteInput = document.createElement("input");
     siteInput.type = "text";
     siteInput.className = "textRuleSite";
     siteInput.value = site;
-    siteCell.appendChild(siteInput);
+    siteInput.placeholder = "example.com";
+    siteInput.setAttribute("aria-label", "Site");
+    siteInput.setAttribute("aria-describedby", `${idSuffix}-site-error`);
+    siteInput.autocomplete = "off";
+    const siteError = createFieldError(`${idSuffix}-site-error`);
+    siteCell.append(siteInput, siteError);
 
     const textCell = document.createElement("td");
     const textInput = document.createElement("input");
     textInput.type = "text";
     textInput.className = "textRuleText";
     textInput.value = text;
-    textCell.appendChild(textInput);
+    textInput.placeholder = "company or keyword";
+    textInput.setAttribute("aria-label", "Text");
+    textInput.setAttribute("aria-describedby", `${idSuffix}-text-error`);
+    textInput.autocomplete = "off";
+    const textError = createFieldError(`${idSuffix}-text-error`);
+    textCell.append(textInput, textError);
 
     const styleCell = document.createElement("td");
     const styleSelect = document.createElement("select");
     styleSelect.className = "textRuleStyle";
+    styleSelect.setAttribute("aria-label", "Style");
     populateStyleSelect(styleSelect, style || "blocked");
     styleCell.appendChild(styleSelect);
 
@@ -1423,13 +1578,91 @@ function createTextRuleRow(site = "", text = "", style = "blocked") {
     actionCell.appendChild(createRowActions(
         createDeleteButton(() => {
             row.remove();
+            validateAllTextRuleRows();
             refreshAllTableEmptyStates();
         })
     ));
 
+    const scheduleValidate = () => {
+        validateAllTextRuleRows();
+    };
+    siteInput.addEventListener("input", scheduleValidate);
+    siteInput.addEventListener("blur", scheduleValidate);
+    textInput.addEventListener("input", scheduleValidate);
+    textInput.addEventListener("blur", scheduleValidate);
+
     row.append(siteCell, textCell, styleCell, actionCell);
     document.querySelector("#textRuleBody").appendChild(row);
+    validateAllTextRuleRows();
     refreshAllTableEmptyStates();
+}
+
+function getTextRuleRowState(row) {
+    const siteInput = row.querySelector(".textRuleSite");
+    const textInput = row.querySelector(".textRuleText");
+    const siteRaw = siteInput?.value.trim() || "";
+    const textRaw = textInput?.value.trim() || "";
+    const normalizedSite = siteRaw ? normalizeSite(siteRaw) : "";
+
+    return {
+        siteInput,
+        textInput,
+        siteError: siteInput?.parentElement?.querySelector(".fieldError"),
+        textError: textInput?.parentElement?.querySelector(".fieldError"),
+        siteRaw,
+        textRaw,
+        normalizedSite,
+        isBlank: !siteRaw && !textRaw
+    };
+}
+
+function validateAllTextRuleRows() {
+    const rows = Array.from(document.querySelectorAll("#textRuleBody tr"))
+        .map(getTextRuleRowState)
+        .filter(state => state.siteInput && state.textInput);
+
+    const seenKeys = new Map();
+    let allValid = true;
+
+    for (let index = 0; index < rows.length; index++) {
+        const state = rows[index];
+        let siteMessage = "";
+        let textMessage = "";
+
+        if (state.isBlank) {
+            setFieldError(state.siteInput, state.siteError, "");
+            setFieldError(state.textInput, state.textError, "");
+            continue;
+        }
+
+        if (!state.siteRaw) {
+            siteMessage = "Enter a site hostname.";
+        } else if (!isPlausibleHostname(state.siteRaw)) {
+            siteMessage = "Enter a valid hostname (example.com).";
+        }
+
+        if (!state.textRaw) {
+            textMessage = "Enter text to match.";
+        }
+
+        if (!siteMessage && !textMessage && state.normalizedSite) {
+            const key = `${state.normalizedSite}\u0000${state.textRaw.toLowerCase()}`;
+            if (seenKeys.has(key)) {
+                textMessage = "Duplicate text for this site.";
+            } else {
+                seenKeys.set(key, index);
+            }
+        }
+
+        setFieldError(state.siteInput, state.siteError, siteMessage);
+        setFieldError(state.textInput, state.textError, textMessage);
+
+        if (siteMessage || textMessage) {
+            allValid = false;
+        }
+    }
+
+    return allValid;
 }
 
 function restoreOptions() {
