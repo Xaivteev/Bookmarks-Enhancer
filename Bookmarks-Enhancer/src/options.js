@@ -1246,14 +1246,8 @@ function initSaveLoadEvents() {
         applyFolderFilterToAllSelects();
     });
 }
-function exportToClipboard() {
-    if (actionBarBusy) return;
-    if (!bookmarkRulesReady) {
-        showStatus("Bookmark rules are still loading — try exporting again", true);
-        return;
-    }
-
-    const data = {
+function buildExportPayload() {
+    return {
         searchPairs: collectSearchPairs(),
         urlRules: collectUrlRules(),
         textRules: normalizeTextRules(collectTextRules()),
@@ -1263,19 +1257,40 @@ function exportToClipboard() {
         enableDeepSearch: document.querySelector("#enableDeepSearch").checked,
         bookmarkRules: normalizeBookmarkRules(collectBookmarkRules())
     };
+}
+
+function exportConfigurationFilename() {
+    const date = new Date().toISOString().slice(0, 10);
+    return `bookmarks-enhancer-config-${date}.json`;
+}
+
+function exportToFile() {
+    if (actionBarBusy) return;
+    if (!bookmarkRulesReady) {
+        showStatus("Bookmark rules are still loading — try exporting again", true);
+        return;
+    }
 
     beginActionBarBusy(document.querySelector("#exportBtn"), "Exporting…");
-    navigator.clipboard.writeText(
-        JSON.stringify(data, null, 2)
-    )
-    .then(() => showStatus("Exported configuration"))
-    .catch(err => {
+
+    try {
+        const json = JSON.stringify(buildExportPayload(), null, 2);
+        const blob = new Blob([json], { type: "application/json" });
+        const url = URL.createObjectURL(blob);
+        const anchor = document.createElement("a");
+        anchor.href = url;
+        anchor.download = exportConfigurationFilename();
+        document.body.appendChild(anchor);
+        anchor.click();
+        anchor.remove();
+        URL.revokeObjectURL(url);
+        showStatus("Exported configuration");
+    } catch (err) {
         console.error(err);
         showStatus("Could not export", true);
-    })
-    .finally(() => {
+    } finally {
         endActionBarBusy();
-    });
+    }
 }
 
 function importFromJson(jsonString) {
@@ -1464,18 +1479,34 @@ function isValidLegacyTextFilter(row) {
         typeof row.filterText === "string";
 }
 
-function importFromClipboard() {
+function importFromFile() {
+    if (actionBarBusy) return;
+
+    const input = document.querySelector("#importFileInput");
+    if (!input) {
+        showStatus("Could not open file picker", true);
+        return;
+    }
+
+    input.value = "";
+    input.click();
+}
+
+function handleImportFileChange(event) {
+    const file = event.target?.files?.[0];
+    if (!file) return;
     if (actionBarBusy) return;
 
     beginActionBarBusy(document.querySelector("#importBtn"), "Importing…");
-    navigator.clipboard.readText()
+    file.text()
         .then(text => importFromJson(text))
         .catch(err => {
-            console.error("Clipboard read failed:", err);
-            showStatus("Could not read from clipboard", true);
+            console.error("File read failed:", err);
+            showStatus("Could not read import file", true);
         })
         .finally(() => {
             endActionBarBusy();
+            event.target.value = "";
         });
 }
 function clearSearchTable() {
@@ -1587,8 +1618,12 @@ function setupEventListeners() {
         if (!addStyleRuleBtn) console.warn("addStyleRuleBtn not found");
 
         if (addRowBtn) addRowBtn.addEventListener("click", () => createRow());
-        if (exportBtn) exportBtn.addEventListener("click", exportToClipboard);
-        if (importBtn) importBtn.addEventListener("click", importFromClipboard);
+        if (exportBtn) exportBtn.addEventListener("click", exportToFile);
+        if (importBtn) importBtn.addEventListener("click", importFromFile);
+        const importFileInput = document.querySelector("#importFileInput");
+        if (importFileInput) {
+            importFileInput.addEventListener("change", handleImportFileChange);
+        }
         if (addUrlRuleBtn) addUrlRuleBtn.addEventListener("click", () => createUrlRuleRow());
         if (addTextRuleBtn) addTextRuleBtn.addEventListener("click", () => createTextRuleRow());
         if (addBookmarkRuleBtn) {

@@ -692,11 +692,18 @@
         </section>
 
         <div class="actionsBar">
-            <button type="button" id="exportBtn">Export to Clipboard</button>
-            <button type="button" id="importBtn">Import from Clipboard</button>
+            <button type="button" id="exportBtn">Export</button>
+            <button type="button" id="importBtn">Import</button>
             <button type="submit" id="saveBtn">Save</button>
         </div>
     </form>
+
+    <input
+        type="file"
+        id="importFileInput"
+        accept="application/json,.json,text/plain,.txt"
+        hidden
+    >
 
     <div id="statusToast" role="status" aria-live="polite"></div>
     <script src="browser-polyfill.js"></script>

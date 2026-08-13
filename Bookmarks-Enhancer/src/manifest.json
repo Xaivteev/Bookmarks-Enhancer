@@ -31,8 +31,6 @@
     "bookmarks",
     "storage",
     "activeTab",
-    "clipboardWrite",
-    "clipboardRead",
     "contextMenus",
     "scripting"
   ],
