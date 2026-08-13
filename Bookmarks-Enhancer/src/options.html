@@ -53,9 +53,48 @@
             border-radius: 0.375rem;
         }
 
-        .gettingStarted h2 {
-            margin: 0 0 0.5rem;
+        .gettingStarted[hidden] {
+            display: none;
+        }
+
+        .gettingStartedHeader {
+            display: flex;
+            align-items: flex-start;
+            justify-content: space-between;
+            gap: 0.75rem;
+            margin-bottom: 0.5rem;
+        }
+
+        .gettingStartedHeader h2 {
+            margin: 0;
             font-size: 1rem;
+        }
+
+        .gettingStartedDismiss {
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            flex: 0 0 auto;
+            width: 1.75rem;
+            height: 1.75rem;
+            margin: -0.2rem -0.35rem 0 0;
+            padding: 0;
+            border: 1px solid #d1d5db;
+            border-radius: 0.25rem;
+            background: #fff;
+            color: #4b5563;
+            font: 700 1.15rem/1 system-ui, sans-serif;
+            cursor: pointer;
+        }
+
+        .gettingStartedDismiss:hover {
+            background: #e5e7eb;
+            color: #111827;
+        }
+
+        .gettingStartedDismiss:focus-visible {
+            outline: 2px solid #1d4ed8;
+            outline-offset: 1px;
         }
 
         .gettingStarted ol {
@@ -455,7 +494,16 @@
             data-tab-panel="general"
         >
             <div class="gettingStarted" id="gettingStarted">
-                <h2>Getting started</h2>
+                <div class="gettingStartedHeader">
+                    <h2 id="gettingStartedHeading">Getting started</h2>
+                    <button
+                        type="button"
+                        id="gettingStartedDismiss"
+                        class="gettingStartedDismiss"
+                        aria-label="Dismiss getting started"
+                        title="Dismiss"
+                    >×</button>
+                </div>
                 <ol>
                     <li>
                         Open <strong>Bookmark Rules</strong> and map bookmark folders

@@ -7,7 +7,9 @@ const STORAGE_KEYS = {
 	enableTopBorder: "enableTopBorder",
 	enableDeepSearch: "enableDeepSearch",
 	onlyUseSites: "onlyUseSites",
-	enableToastNotifications: "enableToastNotifications"
+	enableToastNotifications: "enableToastNotifications",
+	// Options UI only — not part of config export/import or page refresh.
+	hideGettingStarted: "hideGettingStarted"
 };
 
 // One-shot migration only — removed after first successful migrate/purge.

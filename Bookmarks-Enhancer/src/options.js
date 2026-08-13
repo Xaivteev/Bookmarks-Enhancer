@@ -10,6 +10,22 @@ let optionsStorageReloadTimer = null;
 let bookmarkRulesReady = false;
 let previewStyleId = "";
 
+function applyGettingStartedVisibility(hidden) {
+    const panel = document.querySelector("#gettingStarted");
+    if (!panel) return;
+    panel.hidden = !!hidden;
+}
+
+function dismissGettingStarted() {
+    applyGettingStartedVisibility(true);
+    browser.storage.local.set({
+        [STORAGE_KEYS.hideGettingStarted]: true
+    }).catch(err => {
+        console.error("Could not save getting started preference:", err);
+        showStatus("Could not save preference", true);
+    });
+}
+
 function createDeleteButton(onClick) {
     const deleteBtn = document.createElement("button");
     deleteBtn.type = "button";
@@ -1159,6 +1175,8 @@ function restoreOptions() {
         document.querySelector("#enableToastNotifications").checked =
             result.enableToastNotifications !== false;
 
+        applyGettingStartedVisibility(!!result[STORAGE_KEYS.hideGettingStarted]);
+
         loadStyleRuleRows(migrateStyleRulesFromStorage(result));
 
         if (result.searchPairs) {
@@ -1203,6 +1221,7 @@ function restoreOptions() {
         STORAGE_KEYS.enableDeepSearch,
         STORAGE_KEYS.onlyUseSites,
         STORAGE_KEYS.enableToastNotifications,
+        STORAGE_KEYS.hideGettingStarted,
         LEGACY_STORAGE_KEYS.enableSeenStyling,
         STORAGE_KEYS.bookmarkRules,
         LEGACY_STORAGE_KEYS.blockedFolderId,
@@ -1238,9 +1257,15 @@ function initSaveLoadEvents() {
 
     browser.storage.onChanged.addListener((changes, areaName) => {
         if (areaName !== "local") return;
+
+        if (Object.prototype.hasOwnProperty.call(changes, STORAGE_KEYS.hideGettingStarted)) {
+            applyGettingStartedVisibility(!!changes[STORAGE_KEYS.hideGettingStarted].newValue);
+        }
+
         const relevant = Object.keys(changes).some(key =>
             CONFIG_REFRESH_STORAGE_KEYS.includes(key) ||
-            Object.values(LEGACY_STORAGE_KEYS).includes(key)
+            Object.values(LEGACY_STORAGE_KEYS).includes(key) ||
+            key === STORAGE_KEYS.enableToastNotifications
         );
         if (relevant) {
             scheduleOptionsStorageReload();
@@ -1250,6 +1275,11 @@ function initSaveLoadEvents() {
     document.querySelector("#bookmarkFolderFilter")?.addEventListener("input", () => {
         applyFolderFilterToAllSelects();
     });
+
+    document.querySelector("#gettingStartedDismiss")?.addEventListener(
+        "click",
+        dismissGettingStarted
+    );
 }
 function buildExportPayload() {
     return {
