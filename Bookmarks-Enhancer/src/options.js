@@ -629,7 +629,21 @@ function setBookmarkRulesReady(ready) {
     }
 }
 
+let lastBookmarkRulesForLoad = [];
+
+function retryLoadBookmarkFolders() {
+    const rules = lastBookmarkRulesForLoad.length > 0
+        ? lastBookmarkRulesForLoad
+        : normalizeBookmarkRules(collectBookmarkRules());
+    return loadBookmarkRuleRows(rules).then(() => {
+        if (bookmarkRulesReady && cachedBookmarkFolders.length > 0) {
+            showStatus("Bookmark folders loaded");
+        }
+    });
+}
+
 function loadBookmarkRuleRows(rules) {
+    lastBookmarkRulesForLoad = Array.isArray(rules) ? rules.slice() : [];
     // Rebuild immediately from cache so saves don't flash an empty table while
     // waiting on bookmarks.getTree().
     if (cachedBookmarkFolders.length > 0) {
@@ -640,6 +654,15 @@ function loadBookmarkRuleRows(rules) {
             refreshBookmarkFolderSelectOptions();
         }).catch(err => {
             console.error("Could not refresh bookmark folders:", err);
+            showStatus("Could not refresh bookmark folders", {
+                isError: true,
+                actions: [
+                    {
+                        label: "Retry",
+                        onClick: () => retryLoadBookmarkFolders()
+                    }
+                ]
+            });
         });
     }
 
@@ -654,7 +677,15 @@ function loadBookmarkRuleRows(rules) {
         // later Save cannot overwrite storage with an empty table.
         renderBookmarkRuleRows(rules);
         setBookmarkRulesReady(true);
-        showStatus("Could not load bookmark folders", true);
+        showStatus("Could not load bookmark folders", {
+            isError: true,
+            actions: [
+                {
+                    label: "Retry",
+                    onClick: () => retryLoadBookmarkFolders()
+                }
+            ]
+        });
     });
 }
 
@@ -818,7 +849,18 @@ function persistOptionsFromForm({
             "#tableBody input.fieldInvalid"
         );
         firstInvalid?.focus();
-        showStatus("Fix Search Pair errors before saving", true);
+        showStatus("Fix Search Pair errors before saving", {
+            isError: true,
+            actions: [
+                {
+                    label: "Open Site Rules",
+                    onClick: () => {
+                        activateOptionsTab("siteRules");
+                        document.querySelector("#tableBody input.fieldInvalid")?.focus();
+                    }
+                }
+            ]
+        });
         return Promise.resolve();
     }
 
@@ -1447,7 +1489,15 @@ function importFromJson(jsonString) {
     }
     catch (err) {
         console.error(err);
-        showStatus("Import failed", true);
+        showStatus("Import failed", {
+            isError: true,
+            actions: [
+                {
+                    label: "Try again",
+                    onClick: () => importFromFile()
+                }
+            ]
+        });
         return Promise.resolve();
     }
 
@@ -1502,7 +1552,21 @@ function importFromJson(jsonString) {
         });
     }).catch(err => {
         console.error("Import failed:", err);
-        showStatus("Import loaded into form but could not save", true);
+        showStatus("Import loaded into form but could not save", {
+            isError: true,
+            actions: [
+                {
+                    label: "Retry save",
+                    onClick: () => persistOptionsFromForm({
+                        successMessage: "Imported and saved configuration"
+                    })
+                },
+                {
+                    label: "Open Site Rules",
+                    onClick: () => activateOptionsTab("siteRules")
+                }
+            ]
+        });
     });
 }
 
@@ -1550,7 +1614,15 @@ function handleImportFileChange(event) {
         .then(text => importFromJson(text))
         .catch(err => {
             console.error("File read failed:", err);
-            showStatus("Could not read import file", true);
+            showStatus("Could not read import file", {
+                isError: true,
+                actions: [
+                    {
+                        label: "Try again",
+                        onClick: () => importFromFile()
+                    }
+                ]
+            });
         })
         .finally(() => {
             endActionBarBusy();
@@ -1573,18 +1645,91 @@ function clearTextRuleTable() {
 }
 
 let statusTimeout = null;
-function showStatus(message, isError = false) {
+
+function hideStatus() {
+    const toast = document.querySelector("#statusToast");
+    if (!toast) return;
+    toast.classList.remove("visible");
+    toast.hidden = true;
+    clearTimeout(statusTimeout);
+    statusTimeout = null;
+}
+
+/**
+ * @param {string} message
+ * @param {boolean|{
+ *   isError?: boolean,
+ *   duration?: number,
+ *   dismissible?: boolean,
+ *   actions?: Array<{ label: string, onClick?: () => void }>
+ * }} [options]
+ */
+function showStatus(message, options = false) {
     const toast = document.querySelector("#statusToast");
     if (!toast) return;
 
-    toast.textContent = message;
+    const opts = typeof options === "boolean"
+        ? { isError: options }
+        : (options || {});
+    const isError = !!opts.isError;
+    const actions = Array.isArray(opts.actions) ? opts.actions : [];
+    const dismissible = opts.dismissible !== false;
+    const duration = typeof opts.duration === "number"
+        ? opts.duration
+        : (actions.length > 0 ? 12000 : (isError ? 6000 : 3000));
+
     toast.classList.toggle("error", isError);
+    toast.replaceChildren();
+
+    const body = document.createElement("div");
+    body.className = "statusToastBody";
+
+    const messageEl = document.createElement("p");
+    messageEl.className = "statusToastMessage";
+    messageEl.textContent = message;
+    body.appendChild(messageEl);
+
+    if (actions.length > 0) {
+        const actionsEl = document.createElement("div");
+        actionsEl.className = "statusToastActions";
+        for (const action of actions) {
+            if (!action?.label) continue;
+            const button = document.createElement("button");
+            button.type = "button";
+            button.textContent = action.label;
+            button.addEventListener("click", () => {
+                hideStatus();
+                try {
+                    action.onClick?.();
+                } catch (err) {
+                    console.error("Toast action failed:", err);
+                }
+            });
+            actionsEl.appendChild(button);
+        }
+        body.appendChild(actionsEl);
+    }
+
+    toast.appendChild(body);
+
+    if (dismissible) {
+        const dismissBtn = document.createElement("button");
+        dismissBtn.type = "button";
+        dismissBtn.className = "statusToastDismiss";
+        dismissBtn.setAttribute("aria-label", "Dismiss notification");
+        dismissBtn.title = "Dismiss";
+        dismissBtn.textContent = "×";
+        dismissBtn.addEventListener("click", hideStatus);
+        toast.appendChild(dismissBtn);
+    }
+
+    toast.hidden = false;
     toast.classList.add("visible");
 
     clearTimeout(statusTimeout);
     statusTimeout = setTimeout(() => {
-        toast.classList.remove("visible");
-    }, isError ? 6000 : 3000);
+        hideStatus();
+    }, duration);
 }
 
 function activateOptionsTab(tabId) {
