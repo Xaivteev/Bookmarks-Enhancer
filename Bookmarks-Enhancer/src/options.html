@@ -236,6 +236,29 @@
         .styleRuleCss[hidden] {
             display: none;
         }
+
+        .searchPairSite,
+        .searchPairClasses {
+            display: block;
+            box-sizing: border-box;
+            width: 100%;
+            font: inherit;
+            padding: 0.35rem 0.5rem;
+        }
+
+        input.fieldInvalid {
+            border: 1px solid #9f1d1d;
+        }
+
+        .fieldError {
+            margin: 0.25rem 0 0;
+            color: #9f1d1d;
+            font-size: 0.85em;
+        }
+
+        .fieldError[hidden] {
+            display: none;
+        }
     </style>
 </head>
 <body>
@@ -417,6 +440,11 @@
             hidden
         >
             <h3>Search Pairs</h3>
+            <p class="hint">
+                Site is a hostname (example.com). Classes are CSS class names;
+                use spaces within a group and commas between groups.
+                Completely blank rows are ignored when saving.
+            </p>
             <table id="searchTable">
                 <thead>
                     <tr>

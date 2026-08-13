@@ -641,6 +641,16 @@ function persistOptionsFromForm({
         return Promise.resolve();
     }
 
+    if (!validateAllSearchPairRows()) {
+        activateOptionsTab("siteRules");
+        const firstInvalid = document.querySelector(
+            "#tableBody input.fieldInvalid"
+        );
+        firstInvalid?.focus();
+        showStatus("Fix Search Pair errors before saving", true);
+        return Promise.resolve();
+    }
+
     const {
         styleRules,
         searchPairs,
@@ -739,33 +749,167 @@ function saveOptions(e) {
     });
 }
 
+let searchPairFieldIdSeq = 0;
+
 function createRow(site = "", classes = "") {
     const row = document.createElement("tr");
+    row.className = "searchPairRow";
+
+    const idSuffix = `sp-${++searchPairFieldIdSeq}`;
 
     const siteCell = document.createElement("td");
     const siteInput = document.createElement("input");
     siteInput.type = "text";
+    siteInput.className = "searchPairSite";
     siteInput.value = site;
-    siteCell.appendChild(siteInput);
+    siteInput.placeholder = "example.com";
+    siteInput.setAttribute("aria-label", "Site");
+    siteInput.setAttribute("aria-describedby", `${idSuffix}-site-error`);
+    siteInput.autocomplete = "off";
+
+    const siteError = document.createElement("p");
+    siteError.className = "fieldError";
+    siteError.id = `${idSuffix}-site-error`;
+    siteError.hidden = true;
+
+    siteCell.append(siteInput, siteError);
 
     const classesCell = document.createElement("td");
     const classesInput = document.createElement("input");
     classesInput.type = "text";
+    classesInput.className = "searchPairClasses";
     classesInput.value = classes;
-    classesCell.appendChild(classesInput);
+    classesInput.placeholder = "card-class, other-class";
+    classesInput.setAttribute("aria-label", "Classes");
+    classesInput.setAttribute("aria-describedby", `${idSuffix}-classes-error`);
+    classesInput.autocomplete = "off";
+
+    const classesError = document.createElement("p");
+    classesError.className = "fieldError";
+    classesError.id = `${idSuffix}-classes-error`;
+    classesError.hidden = true;
+
+    classesCell.append(classesInput, classesError);
 
     const actionCell = document.createElement("td");
     const deleteBtn = document.createElement("button");
     deleteBtn.textContent = "Delete";
     deleteBtn.type = "button";
-    deleteBtn.addEventListener("click", () => row.remove());
+    deleteBtn.addEventListener("click", () => {
+        row.remove();
+        validateAllSearchPairRows();
+    });
     actionCell.appendChild(deleteBtn);
 
-    row.appendChild(siteCell);
-    row.appendChild(classesCell);
-    row.appendChild(actionCell);
+    const scheduleValidate = () => {
+        validateAllSearchPairRows();
+    };
+    siteInput.addEventListener("input", scheduleValidate);
+    siteInput.addEventListener("blur", scheduleValidate);
+    classesInput.addEventListener("input", scheduleValidate);
+    classesInput.addEventListener("blur", scheduleValidate);
 
+    row.append(siteCell, classesCell, actionCell);
     document.querySelector("#tableBody").appendChild(row);
+    validateAllSearchPairRows();
+}
+
+function setSearchPairFieldError(input, errorEl, message) {
+    if (!input || !errorEl) return;
+
+    const invalid = Boolean(message);
+    input.classList.toggle("fieldInvalid", invalid);
+    input.setAttribute("aria-invalid", invalid ? "true" : "false");
+    if (invalid) {
+        errorEl.textContent = message;
+        errorEl.hidden = false;
+    } else {
+        errorEl.textContent = "";
+        errorEl.hidden = true;
+    }
+}
+
+function getSearchPairRowState(row) {
+    const siteInput = row.querySelector(".searchPairSite");
+    const classesInput = row.querySelector(".searchPairClasses");
+    const siteRaw = siteInput?.value.trim() || "";
+    const classesRaw = classesInput?.value.trim() || "";
+    const classGroups = parseClassGroups(classesRaw);
+    const normalizedSite = siteRaw ? normalizeSite(siteRaw) : "";
+
+    return {
+        row,
+        siteInput,
+        classesInput,
+        siteError: siteInput?.parentElement?.querySelector(".fieldError"),
+        classesError: classesInput?.parentElement?.querySelector(".fieldError"),
+        siteRaw,
+        classesRaw,
+        classGroups,
+        normalizedSite,
+        isBlank: !siteRaw && !classesRaw
+    };
+}
+
+/**
+ * Inline validation for Search Pairs: invalid host, empty classes/site,
+ * and duplicate site+class-group pairs. Returns false when any row is invalid.
+ */
+function validateAllSearchPairRows() {
+    const rows = Array.from(document.querySelectorAll("#tableBody tr"))
+        .map(getSearchPairRowState)
+        .filter(state => state.siteInput && state.classesInput);
+
+    const seenKeys = new Map(); // key -> first row index
+    let allValid = true;
+
+    for (let index = 0; index < rows.length; index++) {
+        const state = rows[index];
+        let siteMessage = "";
+        let classesMessage = "";
+
+        if (state.isBlank) {
+            setSearchPairFieldError(state.siteInput, state.siteError, "");
+            setSearchPairFieldError(state.classesInput, state.classesError, "");
+            continue;
+        }
+
+        if (!state.siteRaw) {
+            siteMessage = "Enter a site hostname.";
+        } else if (!isPlausibleHostname(state.siteRaw)) {
+            siteMessage = "Enter a valid hostname (example.com).";
+        }
+
+        if (!state.classesRaw || state.classGroups.length === 0) {
+            classesMessage = "Enter at least one CSS class group.";
+        }
+
+        if (!siteMessage && !classesMessage && state.normalizedSite) {
+            const duplicateGroups = [];
+            for (const group of state.classGroups) {
+                const key = `${state.normalizedSite}\u0000${getClassGroupKey(group)}`;
+                if (seenKeys.has(key)) {
+                    duplicateGroups.push(group);
+                } else {
+                    seenKeys.set(key, index);
+                }
+            }
+            if (duplicateGroups.length > 0) {
+                classesMessage = duplicateGroups.length === 1
+                    ? `Duplicate of class group "${duplicateGroups[0]}" for this site.`
+                    : `Duplicate of class groups: ${duplicateGroups.map(g => `"${g}"`).join(", ")}.`;
+            }
+        }
+
+        setSearchPairFieldError(state.siteInput, state.siteError, siteMessage);
+        setSearchPairFieldError(state.classesInput, state.classesError, classesMessage);
+
+        if (siteMessage || classesMessage) {
+            allValid = false;
+        }
+    }
+
+    return allValid;
 }
 
 function createUrlRuleRow(site = "", keepParams = "") {

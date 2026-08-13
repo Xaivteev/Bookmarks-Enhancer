@@ -488,6 +488,28 @@ function normalizeSiteForMatching(site) {
 	return normalizeSite(site);
 }
 
+/**
+ * Returns true when normalizeSite(site) looks like a usable hostname or IPv4.
+ * Used by options UI validation; matching still goes through hostnameMatchesSite.
+ */
+function isPlausibleHostname(site) {
+	const normalized = normalizeSite(site);
+	if (!normalized || normalized.length > 253) return false;
+
+	if (/^\d{1,3}(\.\d{1,3}){3}$/.test(normalized)) {
+		return normalized.split(".").every(part => {
+			const n = Number(part);
+			return n >= 0 && n <= 255;
+		});
+	}
+
+	return normalized.split(".").every(label =>
+		label.length > 0 &&
+		label.length <= 63 &&
+		/^[a-z0-9](?:[a-z0-9-]*[a-z0-9])?$/i.test(label)
+	);
+}
+
 function hostnameMatchesSite(hostname, site) {
 	const normalizedHostname = normalizeSite(hostname);
 	const normalizedSite = normalizeSite(site);
