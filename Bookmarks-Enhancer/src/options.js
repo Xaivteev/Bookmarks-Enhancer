@@ -726,6 +726,7 @@ function buildOptionsPayload() {
             enableTopBorder: document.querySelector("#enableTopBorder").checked,
             enableDeepSearch: document.querySelector("#enableDeepSearch").checked,
             onlyUseSites: document.querySelector("#onlyUseSites").checked,
+            enableToastNotifications: document.querySelector("#enableToastNotifications").checked,
             [STYLE_RULE_STORAGE_KEY]: styleRules,
             searchPairs,
             urlRules,
@@ -1155,6 +1156,9 @@ function restoreOptions() {
         document.querySelector("#onlyUseSites").checked =
             !!result.onlyUseSites;
 
+        document.querySelector("#enableToastNotifications").checked =
+            result.enableToastNotifications !== false;
+
         loadStyleRuleRows(migrateStyleRulesFromStorage(result));
 
         if (result.searchPairs) {
@@ -1198,6 +1202,7 @@ function restoreOptions() {
         STORAGE_KEYS.enableTopBorder,
         STORAGE_KEYS.enableDeepSearch,
         STORAGE_KEYS.onlyUseSites,
+        STORAGE_KEYS.enableToastNotifications,
         LEGACY_STORAGE_KEYS.enableSeenStyling,
         STORAGE_KEYS.bookmarkRules,
         LEGACY_STORAGE_KEYS.blockedFolderId,
@@ -1255,6 +1260,7 @@ function buildExportPayload() {
         enableTopBorder: document.querySelector("#enableTopBorder").checked,
         onlyUseSites: document.querySelector("#onlyUseSites").checked,
         enableDeepSearch: document.querySelector("#enableDeepSearch").checked,
+        enableToastNotifications: document.querySelector("#enableToastNotifications").checked,
         bookmarkRules: normalizeBookmarkRules(collectBookmarkRules())
     };
 }
@@ -1370,6 +1376,13 @@ function importFromJson(jsonString) {
         }
 
         if (
+            data.enableToastNotifications !== undefined &&
+            typeof data.enableToastNotifications !== "boolean"
+        ) {
+            throw new Error("Invalid enableToastNotifications");
+        }
+
+        if (
             data.enableSeenStyling !== undefined &&
             typeof data.enableSeenStyling !== "boolean"
         ) {
@@ -1445,6 +1458,11 @@ function importFromJson(jsonString) {
     if (data.onlyUseSites !== undefined) {
         document.querySelector("#onlyUseSites").checked =
             data.onlyUseSites;
+    }
+
+    if (data.enableToastNotifications !== undefined) {
+        document.querySelector("#enableToastNotifications").checked =
+            data.enableToastNotifications;
     }
 
     return loadBookmarkRuleRows(migrateBookmarkRulesFromStorage(data)).then(() => {

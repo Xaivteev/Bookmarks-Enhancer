@@ -17,6 +17,7 @@ let searchSite = true;
 let enableTopBorder = false;
 let enableDeepSearch = false;
 let onlyUseSites = false;
+let enableToastNotifications = true;
 let managedClassNames = [];
 // Defaults only include built-in ids (blocked/favorited/seen). Custom UUID styles
 // arrive via storage — gate lookups until then so early requery cannot stick
@@ -32,7 +33,8 @@ let getting = browser.storage.local.get([
     STORAGE_KEYS.styleRules,
     STORAGE_KEYS.enableTopBorder,
     STORAGE_KEYS.enableDeepSearch,
-    STORAGE_KEYS.onlyUseSites
+    STORAGE_KEYS.onlyUseSites,
+    STORAGE_KEYS.enableToastNotifications
 ]);
 getting.then(onGot, onError);
 
@@ -94,6 +96,7 @@ function onGot(item) {
 	enableTopBorder = !!item[STORAGE_KEYS.enableTopBorder];
 	enableDeepSearch = !!item[STORAGE_KEYS.enableDeepSearch];
 	onlyUseSites = !!item[STORAGE_KEYS.onlyUseSites];
+	enableToastNotifications = item[STORAGE_KEYS.enableToastNotifications] !== false;
 	updateClassesForSearch();
 	settingsLoaded = true;
 	// Start processing links now that settings are loaded
@@ -163,6 +166,19 @@ browser.storage.onChanged.addListener((changes, areaName) => {
 		onlyUseSites = !!changes[STORAGE_KEYS.onlyUseSites].newValue;
 		updateClassesForSearch();
 		needsRefresh = true;
+	}
+
+	if (changes[STORAGE_KEYS.enableToastNotifications]) {
+		enableToastNotifications =
+			changes[STORAGE_KEYS.enableToastNotifications].newValue !== false;
+		if (!enableToastNotifications) {
+			stylingIndicatorDepth = 0;
+			if (stylingIndicatorShowTimer) {
+				clearTimeout(stylingIndicatorShowTimer);
+				stylingIndicatorShowTimer = null;
+			}
+			hideStylingIndicator();
+		}
 	}
 
 	if (needsRefresh && (changes[STORAGE_KEYS.searchPairs] || changes[STORAGE_KEYS.onlyUseSites])) {
@@ -259,24 +275,67 @@ function flushPendingRuntimeMessages() {
 }
 
 const STYLING_INDICATOR_DELAY_MS = 300;
+const STYLING_RESULT_DURATION_MS = 4000;
 const STYLING_INDICATOR_HOST_ID = "bookmarks-enhancer-loading";
 let stylingIndicatorDepth = 0;
 let stylingIndicatorShowTimer = null;
+let stylingResultHideTimer = null;
 let stylingIndicatorHost = null;
+
+function countStyledAndHiddenElements() {
+	const hideClassNames = new Set();
+	for (const rule of preparedStyleRules) {
+		if (styleRuleHidesElements(rule)) {
+			hideClassNames.add(styleRuleClassName(rule));
+		}
+	}
+
+	const seen = new Set();
+	let styled = 0;
+	let hidden = 0;
+
+	for (const className of managedClassNames) {
+		if (!className) continue;
+		for (const element of document.getElementsByClassName(className)) {
+			if (seen.has(element)) continue;
+			seen.add(element);
+
+			const isHidden = [...element.classList].some(name =>
+				hideClassNames.has(name)
+			);
+			if (isHidden) {
+				hidden += 1;
+			} else {
+				styled += 1;
+			}
+		}
+	}
+
+	return { styled, hidden };
+}
+
+function formatStylingSummary({ styled = 0, hidden = 0 } = {}) {
+	return `Styled ${styled} · Hidden ${hidden}`;
+}
 
 function beginStylingIndicator() {
 	stylingIndicatorDepth += 1;
+	if (!enableToastNotifications) return;
 	if (stylingIndicatorDepth !== 1) return;
+	if (stylingResultHideTimer) {
+		clearTimeout(stylingResultHideTimer);
+		stylingResultHideTimer = null;
+	}
 	if (stylingIndicatorShowTimer) return;
 	stylingIndicatorShowTimer = setTimeout(() => {
 		stylingIndicatorShowTimer = null;
-		if (stylingIndicatorDepth > 0) {
-			showStylingIndicator();
+		if (stylingIndicatorDepth > 0 && enableToastNotifications) {
+			showStylingIndicator("Applying bookmark styles…", { busy: true });
 		}
 	}, STYLING_INDICATOR_DELAY_MS);
 }
 
-function endStylingIndicator() {
+function endStylingIndicator(summary = null) {
 	if (stylingIndicatorDepth <= 0) return;
 	stylingIndicatorDepth -= 1;
 	if (stylingIndicatorDepth > 0) return;
@@ -284,11 +343,44 @@ function endStylingIndicator() {
 		clearTimeout(stylingIndicatorShowTimer);
 		stylingIndicatorShowTimer = null;
 	}
+
+	if (!enableToastNotifications) {
+		hideStylingIndicator();
+		return;
+	}
+
+	if (summary) {
+		showStylingResult(summary);
+		return;
+	}
+
 	hideStylingIndicator();
 }
 
-function showStylingIndicator() {
+function showStylingResult(summary) {
+	if (!enableToastNotifications) {
+		hideStylingIndicator();
+		return;
+	}
+
+	showStylingIndicator(formatStylingSummary(summary), { busy: false });
+
+	if (stylingResultHideTimer) {
+		clearTimeout(stylingResultHideTimer);
+	}
+	stylingResultHideTimer = setTimeout(() => {
+		stylingResultHideTimer = null;
+		if (stylingIndicatorDepth === 0) {
+			hideStylingIndicator();
+		}
+	}, STYLING_RESULT_DURATION_MS);
+}
+
+function showStylingIndicator(message, { busy = true } = {}) {
+	if (!enableToastNotifications) return;
+
 	if (stylingIndicatorHost?.isConnected) {
+		updateStylingIndicatorContent(message, busy);
 		stylingIndicatorHost.hidden = false;
 		return;
 	}
@@ -322,7 +414,7 @@ function showStylingIndicator() {
 			display: flex;
 			align-items: center;
 			gap: 8px;
-			max-width: min(280px, calc(100vw - 32px));
+			max-width: min(320px, calc(100vw - 32px));
 			padding: 10px 12px;
 			border: 1px solid #475569;
 			border-radius: 8px;
@@ -341,6 +433,9 @@ function showStylingIndicator() {
 			border-radius: 50%;
 			animation: be-spin 0.7s linear infinite;
 		}
+		.spinner[hidden] {
+			display: none;
+		}
 		@keyframes be-spin {
 			to { transform: rotate(360deg); }
 		}
@@ -354,7 +449,7 @@ function showStylingIndicator() {
 	spinner.setAttribute("aria-hidden", "true");
 
 	const label = document.createElement("span");
-	label.textContent = "Applying bookmark styles…";
+	label.className = "label";
 
 	toast.append(spinner, label);
 	shadow.append(style, toast);
@@ -363,9 +458,23 @@ function showStylingIndicator() {
 	if (!root) return;
 	root.appendChild(host);
 	stylingIndicatorHost = host;
+	updateStylingIndicatorContent(message, busy);
+}
+
+function updateStylingIndicatorContent(message, busy) {
+	const shadow = stylingIndicatorHost?.shadowRoot;
+	if (!shadow) return;
+	const label = shadow.querySelector(".label");
+	const spinner = shadow.querySelector(".spinner");
+	if (label) label.textContent = message;
+	if (spinner) spinner.hidden = !busy;
 }
 
 function hideStylingIndicator() {
+	if (stylingResultHideTimer) {
+		clearTimeout(stylingResultHideTimer);
+		stylingResultHideTimer = null;
+	}
 	if (!stylingIndicatorHost) {
 		const existing = document.getElementById(STYLING_INDICATOR_HOST_ID);
 		if (existing) existing.remove();
@@ -539,7 +648,7 @@ function requestBookmarkStatuses(hrefs, options = {}) {
 			scheduleLookupRetry(unique);
 		})
 		.finally(() => {
-			if (showLoading) endStylingIndicator();
+			if (showLoading) endStylingIndicator(countStyledAndHiddenElements());
 		});
 }
 
@@ -730,7 +839,7 @@ function performAuthoritativeRefresh(options = {}) {
 	const actionBusyGeneration = options.actionBusyGeneration;
 	const authoritativeLookup = options.authoritativeLookup !== false;
 	const finishBusy = () => {
-		endStylingIndicator();
+		endStylingIndicator(countStyledAndHiddenElements());
 		if (showActionBusy) {
 			notifyRefreshBusyComplete(actionBusyGeneration);
 		}
@@ -797,6 +906,7 @@ function performAuthoritativeRefresh(options = {}) {
 
 	// No links yet — keep existing styles instead of wiping to empty.
 	if (allHrefs.length === 0) {
+		showStylingResult(countStyledAndHiddenElements());
 		if (showActionBusy) notifyRefreshBusyComplete(actionBusyGeneration);
 		return;
 	}

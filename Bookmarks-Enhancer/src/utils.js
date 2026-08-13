@@ -6,7 +6,8 @@ const STORAGE_KEYS = {
 	bookmarkRules: "bookmarkRules",
 	enableTopBorder: "enableTopBorder",
 	enableDeepSearch: "enableDeepSearch",
-	onlyUseSites: "onlyUseSites"
+	onlyUseSites: "onlyUseSites",
+	enableToastNotifications: "enableToastNotifications"
 };
 
 // One-shot migration only — removed after first successful migrate/purge.
