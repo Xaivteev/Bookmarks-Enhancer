@@ -281,6 +281,7 @@ let stylingIndicatorDepth = 0;
 let stylingIndicatorShowTimer = null;
 let stylingResultHideTimer = null;
 let stylingIndicatorHost = null;
+let stylingIndicatorUserDismissed = false;
 
 function countStyledAndHiddenElements() {
 	const hideClassNames = new Set();
@@ -320,6 +321,7 @@ function formatStylingSummary({ styled = 0, hidden = 0 } = {}) {
 
 function beginStylingIndicator() {
 	stylingIndicatorDepth += 1;
+	stylingIndicatorUserDismissed = false;
 	if (!enableToastNotifications) return;
 	if (stylingIndicatorDepth !== 1) return;
 	if (stylingResultHideTimer) {
@@ -329,7 +331,11 @@ function beginStylingIndicator() {
 	if (stylingIndicatorShowTimer) return;
 	stylingIndicatorShowTimer = setTimeout(() => {
 		stylingIndicatorShowTimer = null;
-		if (stylingIndicatorDepth > 0 && enableToastNotifications) {
+		if (
+			stylingIndicatorDepth > 0 &&
+			enableToastNotifications &&
+			!stylingIndicatorUserDismissed
+		) {
 			showStylingIndicator("Applying bookmark styles…", { busy: true });
 		}
 	}, STYLING_INDICATOR_DELAY_MS);
@@ -344,7 +350,7 @@ function endStylingIndicator(summary = null) {
 		stylingIndicatorShowTimer = null;
 	}
 
-	if (!enableToastNotifications) {
+	if (!enableToastNotifications || stylingIndicatorUserDismissed) {
 		hideStylingIndicator();
 		return;
 	}
@@ -358,7 +364,7 @@ function endStylingIndicator(summary = null) {
 }
 
 function showStylingResult(summary) {
-	if (!enableToastNotifications) {
+	if (!enableToastNotifications || stylingIndicatorUserDismissed) {
 		hideStylingIndicator();
 		return;
 	}
@@ -376,8 +382,17 @@ function showStylingResult(summary) {
 	}, STYLING_RESULT_DURATION_MS);
 }
 
+function dismissStylingIndicator() {
+	stylingIndicatorUserDismissed = true;
+	if (stylingIndicatorShowTimer) {
+		clearTimeout(stylingIndicatorShowTimer);
+		stylingIndicatorShowTimer = null;
+	}
+	hideStylingIndicator();
+}
+
 function showStylingIndicator(message, { busy = true } = {}) {
-	if (!enableToastNotifications) return;
+	if (!enableToastNotifications || stylingIndicatorUserDismissed) return;
 
 	if (stylingIndicatorHost?.isConnected) {
 		updateStylingIndicatorContent(message, busy);
@@ -412,7 +427,7 @@ function showStylingIndicator(message, { busy = true } = {}) {
 		}
 		.toast {
 			display: flex;
-			align-items: center;
+			align-items: flex-start;
 			gap: 8px;
 			max-width: min(320px, calc(100vw - 32px));
 			padding: 10px 12px;
@@ -422,6 +437,14 @@ function showStylingIndicator(message, { busy = true } = {}) {
 			color: #f8fafc;
 			box-shadow: 0 10px 28px rgb(0 0 0 / 35%);
 			font: 13px/1.35 system-ui, -apple-system, sans-serif;
+			pointer-events: auto;
+		}
+		.toast-main {
+			display: flex;
+			align-items: center;
+			gap: 8px;
+			flex: 1;
+			min-width: 0;
 		}
 		.spinner {
 			box-sizing: border-box;
@@ -436,6 +459,35 @@ function showStylingIndicator(message, { busy = true } = {}) {
 		.spinner[hidden] {
 			display: none;
 		}
+		.label {
+			flex: 1;
+			min-width: 0;
+		}
+		.dismiss {
+			display: inline-flex;
+			align-items: center;
+			justify-content: center;
+			flex: 0 0 auto;
+			width: 1.35rem;
+			height: 1.35rem;
+			margin: -0.1rem -0.2rem 0 0;
+			padding: 0;
+			border: 0;
+			border-radius: 4px;
+			background: transparent;
+			color: inherit;
+			font: 700 1rem/1 system-ui, -apple-system, sans-serif;
+			cursor: pointer;
+			opacity: 0.85;
+		}
+		.dismiss:hover {
+			background: rgb(255 255 255 / 14%);
+			opacity: 1;
+		}
+		.dismiss:focus-visible {
+			outline: 2px solid #f8fafc;
+			outline-offset: 1px;
+		}
 		@keyframes be-spin {
 			to { transform: rotate(360deg); }
 		}
@@ -444,6 +496,9 @@ function showStylingIndicator(message, { busy = true } = {}) {
 	const toast = document.createElement("div");
 	toast.className = "toast";
 
+	const main = document.createElement("div");
+	main.className = "toast-main";
+
 	const spinner = document.createElement("div");
 	spinner.className = "spinner";
 	spinner.setAttribute("aria-hidden", "true");
@@ -451,7 +506,21 @@ function showStylingIndicator(message, { busy = true } = {}) {
 	const label = document.createElement("span");
 	label.className = "label";
 
-	toast.append(spinner, label);
+	main.append(spinner, label);
+
+	const dismissBtn = document.createElement("button");
+	dismissBtn.type = "button";
+	dismissBtn.className = "dismiss";
+	dismissBtn.setAttribute("aria-label", "Dismiss notification");
+	dismissBtn.title = "Dismiss";
+	dismissBtn.textContent = "×";
+	dismissBtn.addEventListener("click", event => {
+		event.preventDefault();
+		event.stopPropagation();
+		dismissStylingIndicator();
+	});
+
+	toast.append(main, dismissBtn);
 	shadow.append(style, toast);
 
 	const root = document.documentElement || document.body;
@@ -906,6 +975,7 @@ function performAuthoritativeRefresh(options = {}) {
 
 	// No links yet — keep existing styles instead of wiping to empty.
 	if (allHrefs.length === 0) {
+		stylingIndicatorUserDismissed = false;
 		showStylingResult(countStyledAndHiddenElements());
 		if (showActionBusy) notifyRefreshBusyComplete(actionBusyGeneration);
 		return;
