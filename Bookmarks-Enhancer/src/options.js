@@ -28,6 +28,31 @@ function createRowActions(...buttons) {
     return actions;
 }
 
+function syncTableEmptyState(tbodySelector, emptySelector, { rowSelector = "tr", hideTable = true } = {}) {
+    const tbody = document.querySelector(tbodySelector);
+    const empty = document.querySelector(emptySelector);
+    if (!tbody || !empty) return;
+
+    const hasRows = tbody.querySelectorAll(rowSelector).length > 0;
+    empty.hidden = hasRows;
+
+    const table = tbody.closest("table");
+    if (table && hideTable) {
+        table.classList.toggle("is-empty", !hasRows);
+    }
+}
+
+function refreshAllTableEmptyStates() {
+    syncTableEmptyState("#styleRuleBody", "#styleRulesEmpty");
+    syncTableEmptyState("#bookmarkRuleBody", "#bookmarkRulesEmpty", {
+        rowSelector: "tr:not(.unmatchedBookmarkRule)",
+        hideTable: false
+    });
+    syncTableEmptyState("#textRuleBody", "#textRulesEmpty");
+    syncTableEmptyState("#tableBody", "#searchPairsEmpty");
+    syncTableEmptyState("#urlRuleBody", "#urlRulesEmpty");
+}
+
 function createPreviewButton(onClick) {
     const previewBtn = document.createElement("button");
     previewBtn.type = "button";
@@ -212,6 +237,7 @@ function collectStyleRules() {
 
 function clearStyleRuleTable() {
     document.querySelector("#styleRuleBody")?.replaceChildren();
+    refreshAllTableEmptyStates();
 }
 
 function updateStyleRuleRowVisibility(row) {
@@ -296,12 +322,14 @@ function createStyleRuleRow(rule = null) {
             }
             row.remove();
             refreshAllStyleSelects();
+            refreshAllTableEmptyStates();
         })
     ));
 
     row.append(nameCell, kindCell, cssCell, actionCell);
     document.querySelector("#styleRuleBody").appendChild(row);
     updateStyleRuleRowVisibility(row);
+    refreshAllTableEmptyStates();
 }
 
 function loadStyleRuleRows(rules) {
@@ -315,6 +343,7 @@ function loadStyleRuleRows(rules) {
         cachedStyleRules.forEach(rule => createStyleRuleRow(rule));
     }
     refreshAllStyleSelects();
+    refreshAllTableEmptyStates();
 }
 
 function collectSearchPairs() {
@@ -362,11 +391,10 @@ function replaceConfigurationRows(searchPairs, urlRules, textRules, bookmarkRule
 
     searchPairs.forEach(({ site, classes }) => createRow(site, classes));
     urlRules.forEach(({ site, keepParams }) => createUrlRuleRow(site, keepParams));
-    if (!textRules || textRules.length === 0) {
-        createTextRuleRow();
-    } else {
+    if (textRules && textRules.length > 0) {
         textRules.forEach(rule => createTextRuleRow(rule.site, rule.text, rule.style));
     }
+    refreshAllTableEmptyStates();
     // Bookmark rows are rebuilt by loadBookmarkRuleRows (keeps existing rows until then).
 }
 
@@ -477,7 +505,10 @@ function createBookmarkRuleRow(folderId = "", style = "blocked") {
 
     const actionCell = document.createElement("td");
     actionCell.appendChild(createRowActions(
-        createDeleteButton(() => row.remove())
+        createDeleteButton(() => {
+            row.remove();
+            refreshAllTableEmptyStates();
+        })
     ));
 
     row.append(folderCell, styleCell, actionCell);
@@ -489,6 +520,7 @@ function createBookmarkRuleRow(folderId = "", style = "blocked") {
     } else {
         body.appendChild(row);
     }
+    refreshAllTableEmptyStates();
 }
 
 function createUnmatchedBookmarkRuleRow(style = "") {
@@ -521,6 +553,7 @@ function createUnmatchedBookmarkRuleRow(style = "") {
 
     row.append(folderCell, styleCell, actionCell);
     body.appendChild(row);
+    refreshAllTableEmptyStates();
 }
 
 function collectBookmarkRules() {
@@ -558,12 +591,9 @@ function renderBookmarkRuleRows(rules) {
         ? unmatchedRule.style
         : migrateUnmatchedBookmarkStyle({ bookmarkRules: rules });
 
-    if (folderRules.length === 0) {
-        createBookmarkRuleRow("", "blocked");
-    } else {
-        folderRules.forEach(rule => createBookmarkRuleRow(rule.folderId, rule.style));
-    }
+    folderRules.forEach(rule => createBookmarkRuleRow(rule.folderId, rule.style));
     createUnmatchedBookmarkRuleRow(unmatchedStyle || "");
+    refreshAllTableEmptyStates();
 }
 
 function refreshBookmarkFolderSelectOptions() {
@@ -614,6 +644,7 @@ function loadBookmarkRuleRows(rules) {
 
 function clearBookmarkRuleTable() {
     document.querySelector("#bookmarkRuleBody")?.replaceChildren();
+    refreshAllTableEmptyStates();
 }
 
 function findDomRulesReferencingStyle(styleId) {
@@ -919,6 +950,7 @@ function createRow(site = "", classes = "") {
         createDeleteButton(() => {
             row.remove();
             validateAllSearchPairRows();
+            refreshAllTableEmptyStates();
         })
     ));
 
@@ -933,6 +965,7 @@ function createRow(site = "", classes = "") {
     row.append(siteCell, classesCell, actionCell);
     document.querySelector("#tableBody").appendChild(row);
     validateAllSearchPairRows();
+    refreshAllTableEmptyStates();
 }
 
 function setSearchPairFieldError(input, errorEl, message) {
@@ -1050,7 +1083,10 @@ function createUrlRuleRow(site = "", keepParams = "") {
 
     const actionCell = document.createElement("td");
     actionCell.appendChild(createRowActions(
-        createDeleteButton(() => row.remove())
+        createDeleteButton(() => {
+            row.remove();
+            refreshAllTableEmptyStates();
+        })
     ));
 
     row.appendChild(siteCell);
@@ -1058,6 +1094,7 @@ function createUrlRuleRow(site = "", keepParams = "") {
     row.appendChild(actionCell);
 
     document.querySelector("#urlRuleBody").appendChild(row);
+    refreshAllTableEmptyStates();
 }
 
 function createTextRuleRow(site = "", text = "", style = "blocked") {
@@ -1085,11 +1122,15 @@ function createTextRuleRow(site = "", text = "", style = "blocked") {
 
     const actionCell = document.createElement("td");
     actionCell.appendChild(createRowActions(
-        createDeleteButton(() => row.remove())
+        createDeleteButton(() => {
+            row.remove();
+            refreshAllTableEmptyStates();
+        })
     ));
 
     row.append(siteCell, textCell, styleCell, actionCell);
     document.querySelector("#textRuleBody").appendChild(row);
+    refreshAllTableEmptyStates();
 }
 
 function restoreOptions() {
@@ -1135,21 +1176,16 @@ function restoreOptions() {
 
         if (result[LEGACY_STORAGE_KEYS.textFilters] || result.textRules) {
             const textRules = migrateTextRulesFromStorage(result);
-            if (textRules.length === 0) {
-                createTextRuleRow();
-            } else {
-                textRules.forEach(rule => createTextRuleRow(
-                    rule.site,
-                    rule.text,
-                    rule.style
-                ));
-            }
-        } else {
-            createTextRuleRow();
+            textRules.forEach(rule => createTextRuleRow(
+                rule.site,
+                rule.text,
+                rule.style
+            ));
         }
 
         return loadBookmarkRuleRows(migrateBookmarkRulesFromStorage(result))
-            .then(() => purgeLegacyStorage(result));
+            .then(() => purgeLegacyStorage(result))
+            .then(() => refreshAllTableEmptyStates());
     }
 
 
@@ -1375,15 +1411,11 @@ function importFromJson(jsonString) {
     );
 
     const importedTextRules = migrateTextRulesFromStorage(data);
-    if (importedTextRules.length === 0) {
-        createTextRuleRow();
-    } else {
-        importedTextRules.forEach(rule => createTextRuleRow(
-            rule.site,
-            rule.text,
-            rule.style
-        ));
-    }
+    importedTextRules.forEach(rule => createTextRuleRow(
+        rule.site,
+        rule.text,
+        rule.style
+    ));
 
     if (data.enableDeepSearch !== undefined) {
         document.querySelector("#enableDeepSearch").checked =
@@ -1448,14 +1480,17 @@ function importFromClipboard() {
 }
 function clearSearchTable() {
     document.querySelector("#tableBody").replaceChildren();
+    refreshAllTableEmptyStates();
 }
 
 function clearUrlRuleTable() {
     document.querySelector("#urlRuleBody").replaceChildren();
+    refreshAllTableEmptyStates();
 }
 
 function clearTextRuleTable() {
     document.querySelector("#textRuleBody")?.replaceChildren();
+    refreshAllTableEmptyStates();
 }
 
 let statusTimeout = null;

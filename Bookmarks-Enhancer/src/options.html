@@ -408,6 +408,23 @@
             width: 0.95rem;
             height: 0.95rem;
         }
+
+        .tableEmptyState {
+            margin: 0.25rem 0 0.75rem;
+            padding: 0.75rem 1rem;
+            color: #4b5563;
+            background: #f9fafb;
+            border: 1px dashed #d1d5db;
+            border-radius: 0.375rem;
+        }
+
+        .tableEmptyState[hidden] {
+            display: none;
+        }
+
+        table.is-empty {
+            display: none;
+        }
     </style>
 </head>
 <body>
@@ -544,6 +561,9 @@
                 <tbody id="styleRuleBody">
                 </tbody>
             </table>
+            <p class="tableEmptyState" id="styleRulesEmpty" hidden>
+                No style rules yet. Add a style to use with Bookmark Rules and Text Rules.
+            </p>
             <button type="button" id="addStyleRuleBtn">Add Style Rule</button>
         </section>
 
@@ -569,6 +589,9 @@
                     autocomplete="off"
                 >
             </div>
+            <p class="tableEmptyState" id="bookmarkRulesEmpty" hidden>
+                No folder rules yet. Add a rule to map a bookmark folder to a style.
+            </p>
             <table id="bookmarkRuleTable">
                 <thead>
                     <tr>
@@ -607,6 +630,9 @@
                 <tbody id="textRuleBody">
                 </tbody>
             </table>
+            <p class="tableEmptyState" id="textRulesEmpty" hidden>
+                No text rules yet. Add a rule to style matching text inside Search Pair classes.
+            </p>
             <button type="button" id="addTextRuleBtn">Add Text Rule</button>
         </section>
 
@@ -636,9 +662,17 @@
                     <!-- Rows will be added dynamically -->
                 </tbody>
             </table>
+            <p class="tableEmptyState" id="searchPairsEmpty" hidden>
+                No search pairs yet. Add a site and classes, or use
+                Select Target Classes from the page context menu.
+            </p>
             <button type="button" id="addRowBtn">Add Row</button>
 
             <h3>URL Parameter Rules</h3>
+            <p class="hint">
+                Keep only the listed query parameters when matching bookmark URLs
+                for a site. Leave empty if you do not need parameter filtering.
+            </p>
             <table id="urlRuleTable">
                 <thead>
                     <tr>
@@ -650,6 +684,10 @@
                 <tbody id="urlRuleBody">
                 </tbody>
             </table>
+            <p class="tableEmptyState" id="urlRulesEmpty" hidden>
+                No URL parameter rules yet. Add a rule when bookmark links include
+                extra query parameters you want to ignore.
+            </p>
             <button type="button" id="addUrlRuleBtn">Add URL Rule</button>
         </section>
 
