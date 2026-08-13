@@ -19,7 +19,8 @@ const DIRTY_CLICK_SELECTOR = [
     "#addTextRuleBtn",
     "#addBookmarkRuleBtn",
     "#addStyleRuleBtn",
-    ".rowDeleteBtn"
+    ".rowDeleteBtn",
+    ".rowMoveBtn"
 ].join(", ");
 
 function applyGettingStartedVisibility(hidden) {
@@ -54,6 +55,93 @@ function createRowActions(...buttons) {
     actions.className = "rowActions";
     actions.append(...buttons);
     return actions;
+}
+
+function createMoveButton(direction) {
+    const moveBtn = document.createElement("button");
+    const moveUp = direction < 0;
+    moveBtn.type = "button";
+    moveBtn.className = moveUp ? "rowMoveBtn rowMoveUpBtn" : "rowMoveBtn rowMoveDownBtn";
+    moveBtn.textContent = moveUp ? "↑" : "↓";
+    moveBtn.setAttribute("aria-label", moveUp ? "Move up" : "Move down");
+    moveBtn.title = moveUp ? "Move up (higher priority)" : "Move down (lower priority)";
+    return moveBtn;
+}
+
+function getBookmarkFolderRuleRows() {
+    return Array.from(
+        document.querySelectorAll("#bookmarkRuleBody tr:not(.unmatchedBookmarkRule)")
+    );
+}
+
+function refreshBookmarkRulePriorities() {
+    const rows = getBookmarkFolderRuleRows();
+    rows.forEach((row, index) => {
+        const num = row.querySelector(".bookmarkRulePriorityNum");
+        if (num) {
+            num.textContent = `#${index + 1}`;
+        }
+        const upBtn = row.querySelector(".rowMoveUpBtn");
+        const downBtn = row.querySelector(".rowMoveDownBtn");
+        if (upBtn) upBtn.disabled = index === 0;
+        if (downBtn) downBtn.disabled = index === rows.length - 1;
+    });
+
+    const unmatchedNum = document.querySelector(
+        "#bookmarkRuleBody tr.unmatchedBookmarkRule .bookmarkRulePriorityNum"
+    );
+    if (unmatchedNum) {
+        unmatchedNum.textContent = "Last";
+    }
+}
+
+function moveBookmarkRuleRow(row, direction) {
+    const body = row.parentElement;
+    if (!body) return;
+
+    const folderRows = getBookmarkFolderRuleRows();
+    const index = folderRows.indexOf(row);
+    const targetIndex = index + direction;
+    if (index < 0 || targetIndex < 0 || targetIndex >= folderRows.length) return;
+
+    const reference = direction < 0
+        ? folderRows[targetIndex]
+        : folderRows[targetIndex].nextElementSibling;
+    body.insertBefore(row, reference);
+    refreshBookmarkRulePriorities();
+
+    const preferred = row.querySelector(direction < 0 ? ".rowMoveUpBtn" : ".rowMoveDownBtn");
+    const fallback = row.querySelector(direction < 0 ? ".rowMoveDownBtn" : ".rowMoveUpBtn");
+    if (preferred && !preferred.disabled) {
+        preferred.focus();
+    } else {
+        fallback?.focus();
+    }
+}
+
+function createBookmarkPriorityCell({ unmatched = false } = {}) {
+    const cell = document.createElement("td");
+    const wrap = document.createElement("div");
+    wrap.className = "bookmarkRulePriority";
+
+    const num = document.createElement("span");
+    num.className = "bookmarkRulePriorityNum";
+    num.textContent = unmatched ? "Last" : "#1";
+    wrap.appendChild(num);
+
+    if (!unmatched) {
+        const move = document.createElement("div");
+        move.className = "bookmarkRuleMove";
+        const upBtn = createMoveButton(-1);
+        const downBtn = createMoveButton(1);
+        upBtn.addEventListener("click", () => moveBookmarkRuleRow(cell.parentElement, -1));
+        downBtn.addEventListener("click", () => moveBookmarkRuleRow(cell.parentElement, 1));
+        move.append(upBtn, downBtn);
+        wrap.appendChild(move);
+    }
+
+    cell.appendChild(wrap);
+    return cell;
 }
 
 function syncTableEmptyState(tbodySelector, emptySelector, { rowSelector = "tr", hideTable = true } = {}) {
@@ -519,6 +607,8 @@ function applyFolderFilterToAllSelects() {
 function createBookmarkRuleRow(folderId = "", style = "blocked") {
     const row = document.createElement("tr");
 
+    const priorityCell = createBookmarkPriorityCell();
+
     const folderCell = document.createElement("td");
     const folderSelect = document.createElement("select");
     folderSelect.className = "bookmarkRuleFolder";
@@ -535,11 +625,12 @@ function createBookmarkRuleRow(folderId = "", style = "blocked") {
     actionCell.appendChild(createRowActions(
         createDeleteButton(() => {
             row.remove();
+            refreshBookmarkRulePriorities();
             refreshAllTableEmptyStates();
         })
     ));
 
-    row.append(folderCell, styleCell, actionCell);
+    row.append(priorityCell, folderCell, styleCell, actionCell);
 
     const body = document.querySelector("#bookmarkRuleBody");
     const unmatchedRow = body?.querySelector("tr.unmatchedBookmarkRule");
@@ -548,6 +639,7 @@ function createBookmarkRuleRow(folderId = "", style = "blocked") {
     } else {
         body.appendChild(row);
     }
+    refreshBookmarkRulePriorities();
     refreshAllTableEmptyStates();
 }
 
@@ -559,6 +651,8 @@ function createUnmatchedBookmarkRuleRow(style = "") {
     const row = document.createElement("tr");
     row.className = "unmatchedBookmarkRule";
     row.dataset.folderId = UNMATCHED_BOOKMARK_RULE_ID;
+
+    const priorityCell = createBookmarkPriorityCell({ unmatched: true });
 
     const folderCell = document.createElement("td");
     const label = document.createElement("span");
@@ -579,8 +673,9 @@ function createUnmatchedBookmarkRuleRow(style = "") {
     note.className = "hint";
     actionCell.appendChild(note);
 
-    row.append(folderCell, styleCell, actionCell);
+    row.append(priorityCell, folderCell, styleCell, actionCell);
     body.appendChild(row);
+    refreshBookmarkRulePriorities();
     refreshAllTableEmptyStates();
 }
 

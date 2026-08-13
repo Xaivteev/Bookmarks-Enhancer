@@ -303,17 +303,24 @@
 
         #bookmarkRuleTable th:nth-child(1),
         #bookmarkRuleTable td:nth-child(1) {
-            width: auto;
+            width: 8.25rem;
+            white-space: nowrap;
         }
 
         #bookmarkRuleTable th:nth-child(2),
         #bookmarkRuleTable td:nth-child(2) {
-            width: 9rem;
+            width: auto;
         }
 
         #bookmarkRuleTable th:nth-child(3),
         #bookmarkRuleTable td:nth-child(3) {
+            width: 9rem;
+        }
+
+        #bookmarkRuleTable th:nth-child(4),
+        #bookmarkRuleTable td:nth-child(4) {
             width: 5.5rem;
+            white-space: nowrap;
         }
 
         #styleRuleTable th:last-child,
@@ -610,6 +617,60 @@
             height: 0.95rem;
         }
 
+        .bookmarkRulePriority {
+            display: flex;
+            align-items: center;
+            gap: 0.3rem;
+            min-height: 2rem;
+        }
+
+        .bookmarkRulePriorityNum {
+            flex: 0 0 2.1rem;
+            font-weight: 600;
+            font-variant-numeric: tabular-nums;
+            color: #374151;
+        }
+
+        .unmatchedBookmarkRule .bookmarkRulePriorityNum {
+            color: #6b7280;
+            font-weight: 500;
+        }
+
+        .bookmarkRuleMove {
+            display: inline-flex;
+            gap: 0.2rem;
+        }
+
+        .rowMoveBtn {
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            width: 2rem;
+            height: 2rem;
+            padding: 0;
+            border: 1px solid #d1d5db;
+            border-radius: 0.25rem;
+            background: #fff;
+            color: #374151;
+            font: 700 0.95rem/1 system-ui, sans-serif;
+            cursor: pointer;
+        }
+
+        .rowMoveBtn:hover:not(:disabled) {
+            background: #f3f4f6;
+            border-color: #6b7280;
+        }
+
+        .rowMoveBtn:focus-visible {
+            outline: 2px solid #1d4ed8;
+            outline-offset: 1px;
+        }
+
+        .rowMoveBtn:disabled {
+            opacity: 0.4;
+            cursor: not-allowed;
+        }
+
         .tableEmptyState {
             margin: 0.25rem 0 0.75rem;
             padding: 0.75rem 1rem;
@@ -797,9 +858,10 @@
             hidden
         >
             <p class="hint">
-                Each rule maps a bookmark folder (including nested folders) to a style rule.
-                When a bookmark matches more than one folder rule, the higher row wins.
-                The last row styles bookmarks that are not under any folder rule. Choose None to leave them unstyled.
+                Each rule maps a bookmark folder (including nested folders) to a style.
+                Lower numbers win when a bookmark matches more than one folder — use the
+                arrows to change order. The last row styles bookmarks that are not under
+                any folder rule. Choose None to leave them unstyled.
             </p>
             <div class="settingRow bookmarkFolderFilterRow">
                 <label for="bookmarkFolderFilter">Filter folders</label>
@@ -816,6 +878,7 @@
             <table id="bookmarkRuleTable">
                 <thead>
                     <tr>
+                        <th>Priority</th>
                         <th>Folder</th>
                         <th>Style</th>
                         <th>Actions</th>
