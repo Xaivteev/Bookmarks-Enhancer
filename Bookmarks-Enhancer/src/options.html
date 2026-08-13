@@ -19,12 +19,18 @@
             display: flex;
             align-items: center;
             gap: 0.5rem;
-            margin: 0.75rem 0;
+            margin: 0.75rem 0 0.25rem;
         }
 
         .settingRow label {
             display: inline;
             font-weight: bold;
+        }
+
+        .settingHelp {
+            margin: 0 0 1rem 1.65rem;
+            color: #4b5563;
+            font-size: 0.92em;
         }
 
         .bookmarkFolderFilterRow input {
@@ -37,6 +43,32 @@
         .hint {
             margin: 0.25rem 0 1rem;
             color: #4b5563;
+        }
+
+        .gettingStarted {
+            margin: 0 0 1.25rem;
+            padding: 0.85rem 1rem;
+            background: #f3f4f6;
+            border: 1px solid #d1d5db;
+            border-radius: 0.375rem;
+        }
+
+        .gettingStarted h2 {
+            margin: 0 0 0.5rem;
+            font-size: 1rem;
+        }
+
+        .gettingStarted ol {
+            margin: 0 0 0.5rem;
+            padding-left: 1.25rem;
+        }
+
+        .gettingStarted li {
+            margin: 0.25rem 0;
+        }
+
+        .gettingStarted .hint {
+            margin: 0;
         }
 
         .formControl {
@@ -233,18 +265,56 @@
             aria-labelledby="tabGeneral"
             data-tab-panel="general"
         >
+            <div class="gettingStarted" id="gettingStarted">
+                <h2>Getting started</h2>
+                <ol>
+                    <li>
+                        Open <strong>Bookmark Rules</strong> and map bookmark folders
+                        to styles (for example Blocked or Favorited).
+                    </li>
+                    <li>
+                        On a site, right-click and choose
+                        <strong>Select Target Classes</strong>, or add Search Pairs
+                        under <strong>Site Rules</strong>.
+                    </li>
+                    <li>
+                        Save, then reload the page (or click the toolbar icon) to
+                        apply styles to matching bookmarks.
+                    </li>
+                </ol>
+                <p class="hint">
+                    Optional: use Text Rules to style cards by keywords, and URL
+                    Parameter Rules when bookmark links include extra query params.
+                </p>
+            </div>
+
             <div class="settingRow">
-                <input type="checkbox" id="enableTopBorder">
+                <input type="checkbox" id="enableTopBorder" aria-describedby="enableTopBorderHelp">
                 <label for="enableTopBorder">Enable Top Border</label>
             </div>
+            <p class="settingHelp" id="enableTopBorderHelp">
+                Draws a colored border at the top of the page when the current URL
+                matches a bookmark rule.
+            </p>
+
             <div class="settingRow">
-                <input type="checkbox" id="enableDeepSearch">
+                <input type="checkbox" id="enableDeepSearch" aria-describedby="enableDeepSearchHelp">
                 <label for="enableDeepSearch">Enable Deep Search</label>
             </div>
+            <p class="settingHelp" id="enableDeepSearchHelp">
+                If a card has no matching link, also match using the element's
+                text, HTML, and attributes. Slower, but useful when links are
+                missing or rewritten.
+            </p>
+
             <div class="settingRow">
-                <input type="checkbox" id="onlyUseSites">
+                <input type="checkbox" id="onlyUseSites" aria-describedby="onlyUseSitesHelp">
                 <label for="onlyUseSites">Only Use Specified Sites</label>
             </div>
+            <p class="settingHelp" id="onlyUseSitesHelp">
+                Only run on hostnames listed in Site Rules Search Pairs. When off,
+                every page is processed using all configured class groups.
+            </p>
         </section>
 
         <section
