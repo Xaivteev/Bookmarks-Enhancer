@@ -21,6 +21,13 @@ function createDeleteButton(onClick) {
     return deleteBtn;
 }
 
+function createRowActions(...buttons) {
+    const actions = document.createElement("div");
+    actions.className = "rowActions";
+    actions.append(...buttons);
+    return actions;
+}
+
 function createPreviewButton(onClick) {
     const previewBtn = document.createElement("button");
     previewBtn.type = "button";
@@ -271,9 +278,7 @@ function createStyleRuleRow(rule = null) {
     cssCell.appendChild(cssInput);
 
     const actionCell = document.createElement("td");
-    const actions = document.createElement("div");
-    actions.className = "rowActions";
-    actions.append(
+    actionCell.appendChild(createRowActions(
         createPreviewButton(() => previewStyleFromRow(row)),
         createDeleteButton(() => {
             const styleId = row.dataset.styleId;
@@ -292,8 +297,7 @@ function createStyleRuleRow(rule = null) {
             row.remove();
             refreshAllStyleSelects();
         })
-    );
-    actionCell.appendChild(actions);
+    ));
 
     row.append(nameCell, kindCell, cssCell, actionCell);
     document.querySelector("#styleRuleBody").appendChild(row);
@@ -472,7 +476,9 @@ function createBookmarkRuleRow(folderId = "", style = "blocked") {
     styleCell.appendChild(styleSelect);
 
     const actionCell = document.createElement("td");
-    actionCell.appendChild(createDeleteButton(() => row.remove()));
+    actionCell.appendChild(createRowActions(
+        createDeleteButton(() => row.remove())
+    ));
 
     row.append(folderCell, styleCell, actionCell);
 
@@ -909,10 +915,12 @@ function createRow(site = "", classes = "") {
     classesCell.append(classesInput, classesError);
 
     const actionCell = document.createElement("td");
-    actionCell.appendChild(createDeleteButton(() => {
-        row.remove();
-        validateAllSearchPairRows();
-    }));
+    actionCell.appendChild(createRowActions(
+        createDeleteButton(() => {
+            row.remove();
+            validateAllSearchPairRows();
+        })
+    ));
 
     const scheduleValidate = () => {
         validateAllSearchPairRows();
@@ -1041,7 +1049,9 @@ function createUrlRuleRow(site = "", keepParams = "") {
     paramsCell.appendChild(paramsInput);
 
     const actionCell = document.createElement("td");
-    actionCell.appendChild(createDeleteButton(() => row.remove()));
+    actionCell.appendChild(createRowActions(
+        createDeleteButton(() => row.remove())
+    ));
 
     row.appendChild(siteCell);
     row.appendChild(paramsCell);
@@ -1074,7 +1084,9 @@ function createTextRuleRow(site = "", text = "", style = "blocked") {
     styleCell.appendChild(styleSelect);
 
     const actionCell = document.createElement("td");
-    actionCell.appendChild(createDeleteButton(() => row.remove()));
+    actionCell.appendChild(createRowActions(
+        createDeleteButton(() => row.remove())
+    ));
 
     row.append(siteCell, textCell, styleCell, actionCell);
     document.querySelector("#textRuleBody").appendChild(row);

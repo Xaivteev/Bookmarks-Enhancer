@@ -167,6 +167,12 @@
             vertical-align: top;
         }
 
+        table th:last-child,
+        table td:last-child {
+            text-align: center;
+            vertical-align: middle;
+        }
+
         #bookmarkRuleTable {
             table-layout: fixed;
         }
@@ -184,6 +190,12 @@
         #bookmarkRuleTable th:nth-child(3),
         #bookmarkRuleTable td:nth-child(3) {
             width: 5.5rem;
+        }
+
+        #styleRuleTable th:last-child,
+        #styleRuleTable td:last-child {
+            width: 5.5rem;
+            white-space: nowrap;
         }
 
         #bookmarkRuleTable .bookmarkRuleFolder,
@@ -363,6 +375,7 @@
         .rowActions {
             display: inline-flex;
             align-items: center;
+            justify-content: center;
             gap: 0.35rem;
         }
 
