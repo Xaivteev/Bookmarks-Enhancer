@@ -209,7 +209,15 @@
         table th:last-child,
         table td:last-child {
             text-align: center;
-            vertical-align: middle;
+        }
+
+        table input[type="text"],
+        table input[type="search"],
+        table select {
+            box-sizing: border-box;
+            height: 2rem;
+            font: inherit;
+            padding: 0.25rem 0.5rem;
         }
 
         #bookmarkRuleTable {
@@ -250,6 +258,7 @@
             overflow: hidden;
             text-overflow: ellipsis;
             white-space: nowrap;
+            line-height: 2rem;
         }
 
         #statusToast {
@@ -293,8 +302,9 @@
             display: block;
             box-sizing: border-box;
             width: 100%;
+            height: 2rem;
             font: inherit;
-            padding: 0.35rem 0.5rem;
+            padding: 0.25rem 0.5rem;
         }
 
         input.fieldInvalid {
@@ -390,8 +400,8 @@
             display: inline-flex;
             align-items: center;
             justify-content: center;
-            width: 1.75rem;
-            height: 1.75rem;
+            width: 2rem;
+            height: 2rem;
             padding: 0;
             border: 1px solid #f1a8a8;
             border-radius: 0.25rem;
@@ -416,14 +426,15 @@
             align-items: center;
             justify-content: center;
             gap: 0.35rem;
+            min-height: 2rem;
         }
 
         .rowPreviewBtn {
             display: inline-flex;
             align-items: center;
             justify-content: center;
-            width: 1.75rem;
-            height: 1.75rem;
+            width: 2rem;
+            height: 2rem;
             padding: 0;
             border: 1px solid #93c5fd;
             border-radius: 0.25rem;
