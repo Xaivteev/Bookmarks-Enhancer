@@ -3,11 +3,21 @@
 <html>
 <head>
     <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Bookmarks Enhancer Options</title>
     <style>
         body {
-            margin: 1rem;
+            max-width: 56rem;
+            margin: 0 auto;
+            padding: 1.25rem 1.25rem 0;
             font: 14px/1.4 system-ui, sans-serif;
             color: #1f2937;
+        }
+
+        h1 {
+            margin: 0 0 1rem;
+            font-size: 1.25rem;
+            font-weight: 600;
         }
 
         label {
@@ -157,12 +167,64 @@
         }
 
         .actionsBar {
+            position: sticky;
+            bottom: 0;
+            display: flex;
+            flex-wrap: wrap;
+            align-items: center;
+            justify-content: flex-end;
+            gap: 0.75rem 1rem;
+            margin: 1.5rem -1.25rem 0;
+            padding: 0.75rem 1.25rem calc(0.75rem + env(safe-area-inset-bottom, 0px));
+            border-top: 1px solid #d1d5db;
+            background: #fff;
+            box-shadow: 0 -0.35rem 0.85rem rgba(15, 23, 42, 0.08);
+            z-index: 20;
+        }
+
+        .unsavedChangesLabel {
+            margin: 0 auto 0 0;
+            color: #92400e;
+            font-weight: 600;
+        }
+
+        .unsavedChangesLabel[hidden] {
+            display: none;
+        }
+
+        .actionsBarButtons {
             display: flex;
             flex-wrap: wrap;
             gap: 0.5rem;
-            margin-top: 1.5rem;
-            padding-top: 1rem;
-            border-top: 1px solid #d1d5db;
+        }
+
+        .actionsBar button {
+            font: inherit;
+            padding: 0.45rem 0.85rem;
+            border: 1px solid #d1d5db;
+            border-radius: 0.375rem;
+            background: #fff;
+            color: #1f2937;
+            cursor: pointer;
+        }
+
+        .actionsBar button:hover:not(:disabled) {
+            background: #f3f4f6;
+        }
+
+        .actionsBar .primaryAction {
+            border-color: #1e40af;
+            background: #1d4ed8;
+            color: #fff;
+            font-weight: 600;
+        }
+
+        .actionsBar .primaryAction:hover:not(:disabled) {
+            background: #1e40af;
+        }
+
+        body.has-unsaved-changes .primaryAction {
+            box-shadow: 0 0 0 2px #fff, 0 0 0 4px #1d4ed8;
         }
 
         .actionsBar button:disabled {
@@ -264,7 +326,7 @@
         #statusToast {
             position: fixed;
             right: 1rem;
-            bottom: 1rem;
+            bottom: 4.75rem;
             display: flex;
             align-items: flex-start;
             gap: 0.5rem;
@@ -288,6 +350,10 @@
 
         #statusToast.error {
             background: #9f1d1d;
+        }
+
+        #statusToast.warning {
+            background: #92400e;
         }
 
         #statusToast .statusToastBody {
@@ -548,6 +614,7 @@
     </style>
 </head>
 <body>
+    <h1>Bookmarks Enhancer</h1>
     <form>
         <div class="tabList" role="tablist" aria-label="Options sections">
             <button type="button" role="tab" id="tabGeneral" aria-controls="panelGeneral" aria-selected="true" data-tab="general">
@@ -830,9 +897,19 @@
         </section>
 
         <div class="actionsBar">
-            <button type="button" id="exportBtn">Export</button>
-            <button type="button" id="importBtn">Import</button>
-            <button type="submit" id="saveBtn">Save</button>
+            <p
+                id="unsavedChangesLabel"
+                class="unsavedChangesLabel"
+                hidden
+                aria-live="polite"
+            >
+                Unsaved changes
+            </p>
+            <div class="actionsBarButtons">
+                <button type="button" id="exportBtn">Export</button>
+                <button type="button" id="importBtn">Import</button>
+                <button type="submit" id="saveBtn" class="primaryAction">Save</button>
+            </div>
         </div>
     </form>
 

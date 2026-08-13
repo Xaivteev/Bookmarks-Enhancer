@@ -9,6 +9,18 @@ let optionsStorageReloadTimer = null;
 // Prevents Save/Export from persisting an empty table as cleared rules.
 let bookmarkRulesReady = false;
 let previewStyleId = "";
+let suppressDirtyTracking = false;
+let savedFormSnapshot = null;
+let dirtyUiSyncTimer = null;
+const OPTIONS_DOC_TITLE = "Bookmarks Enhancer Options";
+const DIRTY_CLICK_SELECTOR = [
+    "#addRowBtn",
+    "#addUrlRuleBtn",
+    "#addTextRuleBtn",
+    "#addBookmarkRuleBtn",
+    "#addStyleRuleBtn",
+    ".rowDeleteBtn"
+].join(", ");
 
 function applyGettingStartedVisibility(hidden) {
     const panel = document.querySelector("#gettingStarted");
@@ -649,6 +661,9 @@ function loadBookmarkRuleRows(rules) {
     if (cachedBookmarkFolders.length > 0) {
         renderBookmarkRuleRows(rules);
         setBookmarkRulesReady(true);
+        if (suppressDirtyTracking) {
+            captureSavedFormSnapshot();
+        }
         return browser.bookmarks.getTree().then(tree => {
             cachedBookmarkFolders = flattenBookmarkFolders(tree);
             refreshBookmarkFolderSelectOptions();
@@ -671,12 +686,18 @@ function loadBookmarkRuleRows(rules) {
         cachedBookmarkFolders = flattenBookmarkFolders(tree);
         renderBookmarkRuleRows(rules);
         setBookmarkRulesReady(true);
+        if (suppressDirtyTracking) {
+            captureSavedFormSnapshot();
+        }
     }).catch(err => {
         console.error("Could not load bookmark folders:", err);
         // Still render stored rules (folder selects show "Missing folder") so a
         // later Save cannot overwrite storage with an empty table.
         renderBookmarkRuleRows(rules);
         setBookmarkRulesReady(true);
+        if (suppressDirtyTracking) {
+            captureSavedFormSnapshot();
+        }
         showStatus("Could not load bookmark folders", {
             isError: true,
             actions: [
@@ -781,6 +802,126 @@ function buildOptionsPayload() {
             [BOOKMARK_RULE_STORAGE_KEY]: bookmarkRules
         }
     };
+}
+
+function getFormSnapshot() {
+    if (!bookmarkRulesReady) return null;
+    try {
+        return JSON.stringify({
+            payload: buildExportPayload(),
+            rows: {
+                styles: document.querySelectorAll("#styleRuleBody tr").length,
+                bookmarks: document.querySelectorAll(
+                    "#bookmarkRuleBody tr:not(.unmatchedBookmarkRule)"
+                ).length,
+                text: document.querySelectorAll("#textRuleBody tr").length,
+                search: document.querySelectorAll("#tableBody tr").length,
+                url: document.querySelectorAll("#urlRuleBody tr").length
+            }
+        });
+    } catch (err) {
+        console.error("Could not snapshot options form:", err);
+        return null;
+    }
+}
+
+function isFormDirty() {
+    if (savedFormSnapshot == null) return false;
+    const current = getFormSnapshot();
+    return current != null && current !== savedFormSnapshot;
+}
+
+function updateDirtyUi() {
+    const dirty = isFormDirty();
+    document.body.classList.toggle("has-unsaved-changes", dirty);
+
+    const label = document.querySelector("#unsavedChangesLabel");
+    if (label) {
+        label.hidden = !dirty;
+    }
+
+    const saveBtn = document.querySelector("#saveBtn");
+    if (saveBtn) {
+        saveBtn.title = dirty ? "Save unsaved changes" : "Save";
+    }
+
+    document.title = dirty
+        ? `${OPTIONS_DOC_TITLE} — Unsaved`
+        : OPTIONS_DOC_TITLE;
+}
+
+function scheduleDirtyUiUpdate() {
+    if (suppressDirtyTracking) return;
+    if (dirtyUiSyncTimer) {
+        clearTimeout(dirtyUiSyncTimer);
+    }
+    dirtyUiSyncTimer = setTimeout(() => {
+        dirtyUiSyncTimer = null;
+        if (suppressDirtyTracking) return;
+        updateDirtyUi();
+    }, 50);
+}
+
+function captureSavedFormSnapshot() {
+    savedFormSnapshot = getFormSnapshot();
+    updateDirtyUi();
+}
+
+function showExternalOptionsChangeNotice() {
+    showStatus(
+        "Settings changed elsewhere. Save to keep this form, or reload to discard your edits.",
+        {
+            warning: true,
+            duration: 15000,
+            actions: [
+                {
+                    label: "Reload",
+                    onClick: () => {
+                        restoreOptions().then(() => {
+                            showStatus("Reloaded saved settings");
+                        });
+                    }
+                }
+            ]
+        }
+    );
+}
+
+function setupDirtyTracking() {
+    const form = document.querySelector("form");
+    if (!form) return;
+
+    form.addEventListener("input", scheduleDirtyUiUpdate);
+    form.addEventListener("change", scheduleDirtyUiUpdate);
+    form.addEventListener("click", event => {
+        const target = event.target instanceof Element ? event.target : null;
+        if (target?.closest(DIRTY_CLICK_SELECTOR)) {
+            scheduleDirtyUiUpdate();
+        }
+    });
+
+    window.addEventListener("beforeunload", event => {
+        if (!isFormDirty()) return;
+        event.preventDefault();
+        event.returnValue = "";
+    });
+
+    document.addEventListener("keydown", event => {
+        if (!(event.ctrlKey || event.metaKey) || event.altKey || event.shiftKey) {
+            return;
+        }
+        if (event.key !== "s" && event.key !== "S") return;
+        event.preventDefault();
+        if (actionBarBusy || !bookmarkRulesReady) return;
+        persistOptionsFromForm({
+            successMessage: "Options saved",
+            busyLabel: "Saving…",
+            busyButton: document.querySelector("#saveBtn")
+        }).catch(err => {
+            console.error("Save failed:", err);
+            showStatus("Could not save options", true);
+        });
+    });
 }
 
 let actionBarBusy = false;
@@ -911,6 +1052,7 @@ function persistOptionsFromForm({
     }
 
     suppressOptionsStorageReload = true;
+    suppressDirtyTracking = true;
     return browser.storage.local.set(payload)
         .then(() => browser.storage.local.remove(Object.values(LEGACY_STORAGE_KEYS)))
         .then(() => {
@@ -925,6 +1067,8 @@ function persistOptionsFromForm({
         })
         .then(() => {
             suppressOptionsStorageReload = false;
+            suppressDirtyTracking = false;
+            updateDirtyUi();
             const warnings = [];
             if (dangling.length > 0) {
                 warnings.push(`${dangling.length} missing style reference(s)`);
@@ -940,6 +1084,7 @@ function persistOptionsFromForm({
         })
         .catch(error => {
             suppressOptionsStorageReload = false;
+            suppressDirtyTracking = false;
             throw error;
         })
         .finally(() => {
@@ -1194,6 +1339,7 @@ function createTextRuleRow(site = "", text = "", style = "blocked") {
 
 function restoreOptions() {
     suppressOptionsStorageReload = true;
+    suppressDirtyTracking = true;
     // Do not clear bookmark rows here — keep the previous table until
     // loadBookmarkRuleRows/renderBookmarkRuleRows replaces it, so a mid-restore
     // Save cannot persist an empty bookmarkRules array.
@@ -1275,6 +1421,8 @@ function restoreOptions() {
     })
     .finally(() => {
         suppressOptionsStorageReload = false;
+        suppressDirtyTracking = false;
+        updateDirtyUi();
     });
 }
 
@@ -1286,6 +1434,10 @@ function scheduleOptionsStorageReload() {
     optionsStorageReloadTimer = setTimeout(() => {
         optionsStorageReloadTimer = null;
         if (suppressOptionsStorageReload) return;
+        if (isFormDirty()) {
+            showExternalOptionsChangeNotice();
+            return;
+        }
         restoreOptions().then(() => {
             showStatus("Options updated from another change");
         });
@@ -1659,6 +1811,7 @@ function hideStatus() {
  * @param {string} message
  * @param {boolean|{
  *   isError?: boolean,
+ *   warning?: boolean,
  *   duration?: number,
  *   dismissible?: boolean,
  *   actions?: Array<{ label: string, onClick?: () => void }>
@@ -1672,13 +1825,15 @@ function showStatus(message, options = false) {
         ? { isError: options }
         : (options || {});
     const isError = !!opts.isError;
+    const isWarning = !!opts.warning;
     const actions = Array.isArray(opts.actions) ? opts.actions : [];
     const dismissible = opts.dismissible !== false;
     const duration = typeof opts.duration === "number"
         ? opts.duration
-        : (actions.length > 0 ? 12000 : (isError ? 6000 : 3000));
+        : (actions.length > 0 ? 12000 : (isError || isWarning ? 6000 : 3000));
 
-    toast.classList.toggle("error", isError);
+    toast.classList.toggle("error", isError && !isWarning);
+    toast.classList.toggle("warning", isWarning);
     toast.replaceChildren();
 
     const body = document.createElement("div");
@@ -1793,6 +1948,7 @@ function setupOptionsTabs() {
 function setupEventListeners() {
     try {
         setupOptionsTabs();
+        setupDirtyTracking();
 
         const addRowBtn = document.querySelector("#addRowBtn");
         const exportBtn = document.querySelector("#exportBtn");
