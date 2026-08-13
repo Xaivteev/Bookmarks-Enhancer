@@ -8,6 +8,62 @@ let optionsStorageReloadTimer = null;
 // False while bookmark rule rows are cleared/awaiting bookmarks.getTree().
 // Prevents Save/Export from persisting an empty table as cleared rules.
 let bookmarkRulesReady = false;
+let previewStyleId = "";
+
+function createDeleteButton(onClick) {
+    const deleteBtn = document.createElement("button");
+    deleteBtn.type = "button";
+    deleteBtn.className = "rowDeleteBtn";
+    deleteBtn.textContent = "×";
+    deleteBtn.setAttribute("aria-label", "Delete");
+    deleteBtn.title = "Delete";
+    deleteBtn.addEventListener("click", onClick);
+    return deleteBtn;
+}
+
+function createPreviewButton(onClick) {
+    const previewBtn = document.createElement("button");
+    previewBtn.type = "button";
+    previewBtn.className = "rowPreviewBtn";
+    previewBtn.setAttribute("aria-label", "Preview style");
+    previewBtn.title = "Preview style";
+    previewBtn.innerHTML =
+        '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">' +
+        '<path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"></path>' +
+        '<circle cx="12" cy="12" r="3"></circle>' +
+        "</svg>";
+    previewBtn.addEventListener("click", onClick);
+    return previewBtn;
+}
+
+function previewStyleFromRow(row) {
+    const styleId = row?.dataset?.styleId;
+    const name = row?.querySelector(".styleRuleName")?.value.trim();
+    if (!styleId) return;
+
+    if (!name) {
+        showStatus("Enter a style name before previewing", true);
+        return;
+    }
+
+    previewStyleId = styleId;
+    updateStylePreview();
+    document.querySelector("#stylePreviewRoot")?.scrollIntoView({
+        behavior: "smooth",
+        block: "nearest"
+    });
+}
+
+function getDefaultPreviewStyleId(styleRules) {
+    const rules = styleRules || [];
+    return (
+        rules.find(rule => rule.id === previewStyleId)?.id ||
+        rules.find(rule => rule.id === "favorited")?.id ||
+        rules.find(rule => !styleRuleHidesElements(rule))?.id ||
+        rules[0]?.id ||
+        ""
+    );
+}
 
 function getAvailableStyleRules() {
     const fromDom = collectStyleRules();
@@ -58,13 +114,75 @@ function populateStyleSelect(select, selectedId = "blocked", { includeNone = fal
 }
 
 function refreshAllStyleSelects() {
-    for (const select of document.querySelectorAll(".bookmarkRuleStyle, .textRuleStyle")) {
+    for (const select of document.querySelectorAll(
+        ".bookmarkRuleStyle, .textRuleStyle"
+    )) {
         const includeNone = select.dataset.includeNone === "true";
         populateStyleSelect(
             select,
             select.value || (includeNone ? "" : "blocked"),
             { includeNone }
         );
+    }
+    updateStylePreview();
+}
+
+function buildScopedStylePreviewCss(styleRules) {
+    return (styleRules || []).map(rule => {
+        const declarations = getStyleRuleDeclarations(rule).trim();
+        if (!declarations) return "";
+        const className = styleRuleClassName(rule);
+        return `#stylePreviewRoot .${className} {\n\t${declarations}\n}`;
+    }).filter(Boolean).join("\n\n");
+}
+
+function getStyleRulesForPreview() {
+    const fromDom = normalizeStyleRules(collectStyleRules());
+    if (fromDom.length > 0) return fromDom;
+    if (cachedStyleRules.length > 0) return cachedStyleRules;
+    return DEFAULT_STYLE_RULES.map(rule => ({ ...rule }));
+}
+
+function clearPreviewStyleClasses(element) {
+    if (!element) return;
+    for (const className of [...element.classList]) {
+        if (className.startsWith("rule-be-")) {
+            element.classList.remove(className);
+        }
+    }
+}
+
+function updateStylePreview() {
+    const styleEl = document.querySelector("#stylePreviewCss");
+    const link = document.querySelector("#stylePreviewLink");
+    const card = document.querySelector("#stylePreviewCard");
+    const hideNote = document.querySelector("#stylePreviewHideNote");
+    const activeLabel = document.querySelector("#stylePreviewActiveLabel");
+    if (!styleEl || !link || !card) return;
+
+    const styleRules = getStyleRulesForPreview();
+    styleEl.textContent = buildScopedStylePreviewCss(styleRules);
+
+    clearPreviewStyleClasses(link);
+    clearPreviewStyleClasses(card);
+
+    previewStyleId = getDefaultPreviewStyleId(styleRules);
+    const selectedRule = styleRules.find(rule => rule.id === previewStyleId);
+
+    if (activeLabel) {
+        activeLabel.textContent = selectedRule?.name
+            ? `Showing: ${selectedRule.name}`
+            : "";
+    }
+
+    if (selectedRule) {
+        const className = styleRuleClassName(selectedRule);
+        link.classList.add(className);
+        card.classList.add(className);
+    }
+
+    if (hideNote) {
+        hideNote.hidden = !(selectedRule && styleRuleHidesElements(selectedRule));
     }
 }
 
@@ -149,30 +267,33 @@ function createStyleRuleRow(rule = null) {
     cssInput.value = styleRule.css || "";
     cssInput.placeholder = "color: red;\noutline: 2px solid blue;";
     cssInput.setAttribute("aria-label", "Custom CSS declarations");
+    cssInput.addEventListener("input", updateStylePreview);
     cssCell.appendChild(cssInput);
 
     const actionCell = document.createElement("td");
-    const deleteBtn = document.createElement("button");
-    deleteBtn.textContent = "Delete";
-    deleteBtn.type = "button";
-    deleteBtn.addEventListener("click", () => {
-        const styleId = row.dataset.styleId;
-        const styleName = nameInput.value.trim() || styleId || "this style";
-        const references = findDomRulesReferencingStyle(styleId);
-        if (references.length > 0) {
-            const preview = references.slice(0, 5).join("\n- ");
-            const more = references.length > 5
-                ? `\n- …and ${references.length - 5} more`
-                : "";
-            const confirmed = window.confirm(
-                `"${styleName}" is still referenced by ${references.length} rule(s):\n- ${preview}${more}\n\nDelete it anyway?`
-            );
-            if (!confirmed) return;
-        }
-        row.remove();
-        refreshAllStyleSelects();
-    });
-    actionCell.appendChild(deleteBtn);
+    const actions = document.createElement("div");
+    actions.className = "rowActions";
+    actions.append(
+        createPreviewButton(() => previewStyleFromRow(row)),
+        createDeleteButton(() => {
+            const styleId = row.dataset.styleId;
+            const styleName = nameInput.value.trim() || styleId || "this style";
+            const references = findDomRulesReferencingStyle(styleId);
+            if (references.length > 0) {
+                const preview = references.slice(0, 5).join("\n- ");
+                const more = references.length > 5
+                    ? `\n- …and ${references.length - 5} more`
+                    : "";
+                const confirmed = window.confirm(
+                    `"${styleName}" is still referenced by ${references.length} rule(s):\n- ${preview}${more}\n\nDelete it anyway?`
+                );
+                if (!confirmed) return;
+            }
+            row.remove();
+            refreshAllStyleSelects();
+        })
+    );
+    actionCell.appendChild(actions);
 
     row.append(nameCell, kindCell, cssCell, actionCell);
     document.querySelector("#styleRuleBody").appendChild(row);
@@ -351,11 +472,7 @@ function createBookmarkRuleRow(folderId = "", style = "blocked") {
     styleCell.appendChild(styleSelect);
 
     const actionCell = document.createElement("td");
-    const deleteBtn = document.createElement("button");
-    deleteBtn.textContent = "Delete";
-    deleteBtn.type = "button";
-    deleteBtn.addEventListener("click", () => row.remove());
-    actionCell.appendChild(deleteBtn);
+    actionCell.appendChild(createDeleteButton(() => row.remove()));
 
     row.append(folderCell, styleCell, actionCell);
 
@@ -792,14 +909,10 @@ function createRow(site = "", classes = "") {
     classesCell.append(classesInput, classesError);
 
     const actionCell = document.createElement("td");
-    const deleteBtn = document.createElement("button");
-    deleteBtn.textContent = "Delete";
-    deleteBtn.type = "button";
-    deleteBtn.addEventListener("click", () => {
+    actionCell.appendChild(createDeleteButton(() => {
         row.remove();
         validateAllSearchPairRows();
-    });
-    actionCell.appendChild(deleteBtn);
+    }));
 
     const scheduleValidate = () => {
         validateAllSearchPairRows();
@@ -928,11 +1041,7 @@ function createUrlRuleRow(site = "", keepParams = "") {
     paramsCell.appendChild(paramsInput);
 
     const actionCell = document.createElement("td");
-    const deleteBtn = document.createElement("button");
-    deleteBtn.textContent = "Delete";
-    deleteBtn.type = "button";
-    deleteBtn.addEventListener("click", () => row.remove());
-    actionCell.appendChild(deleteBtn);
+    actionCell.appendChild(createDeleteButton(() => row.remove()));
 
     row.appendChild(siteCell);
     row.appendChild(paramsCell);
@@ -965,11 +1074,7 @@ function createTextRuleRow(site = "", text = "", style = "blocked") {
     styleCell.appendChild(styleSelect);
 
     const actionCell = document.createElement("td");
-    const deleteBtn = document.createElement("button");
-    deleteBtn.textContent = "Delete";
-    deleteBtn.type = "button";
-    deleteBtn.addEventListener("click", () => row.remove());
-    actionCell.appendChild(deleteBtn);
+    actionCell.appendChild(createDeleteButton(() => row.remove()));
 
     row.append(siteCell, textCell, styleCell, actionCell);
     document.querySelector("#textRuleBody").appendChild(row);
@@ -1372,7 +1477,7 @@ function activateOptionsTab(tabId) {
         panel.hidden = !selected;
     }
 
-    if (tabId === "bookmarkRules" || tabId === "textRules") {
+    if (tabId === "bookmarkRules" || tabId === "textRules" || tabId === "styleRules") {
         refreshAllStyleSelects();
     }
 }
@@ -1446,6 +1551,13 @@ function setupEventListeners() {
             addStyleRuleBtn.addEventListener("click", () => {
                 createStyleRuleRow();
                 refreshAllStyleSelects();
+            });
+        }
+
+        const stylePreviewLink = document.querySelector("#stylePreviewLink");
+        if (stylePreviewLink) {
+            stylePreviewLink.addEventListener("click", event => {
+                event.preventDefault();
             });
         }
 
