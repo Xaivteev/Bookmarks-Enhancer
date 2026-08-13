@@ -513,7 +513,11 @@ function replaceConfigurationRows(searchPairs, urlRules, textRules, bookmarkRule
     // Bookmark rows are rebuilt by loadBookmarkRuleRows (keeps existing rows until then).
 }
 
-function flattenBookmarkFolders(nodes, path = "") {
+function isBookmarkRootNode(node) {
+    return !!node && (node.id === "root________" || node.id === "0");
+}
+
+function flattenBookmarkFolders(nodes, path = "", group = null) {
     const folders = [];
 
     for (const node of nodes || []) {
@@ -521,17 +525,31 @@ function flattenBookmarkFolders(nodes, path = "") {
         if (!isFolder) continue;
 
         const title = node.title || "Folder";
-        const nextPath = path ? `${path} / ${title}` : title;
-        const isRoot = node.id === "root________";
+        const isRoot = isBookmarkRootNode(node);
+        const nextGroup = isRoot ? null : (group || { id: node.id, title });
+        const nextPath = isRoot ? "" : (path ? `${path} / ${title}` : title);
 
-        if (!isRoot) {
-            folders.push({ id: node.id, label: nextPath });
+        if (!isRoot && nextGroup) {
+            const displayLabel = nextPath === nextGroup.title
+                ? nextGroup.title
+                : nextPath.startsWith(`${nextGroup.title} / `)
+                    ? nextPath.slice(nextGroup.title.length + 3)
+                    : nextPath;
+            folders.push({
+                id: node.id,
+                label: nextPath,
+                displayLabel,
+                groupId: nextGroup.id,
+                groupTitle: nextGroup.title,
+                searchText: nextPath.toLowerCase()
+            });
         }
 
         if (Array.isArray(node.children)) {
             folders.push(...flattenBookmarkFolders(
                 node.children,
-                isRoot ? "" : nextPath
+                nextPath,
+                nextGroup
             ));
         }
     }
@@ -539,68 +557,332 @@ function flattenBookmarkFolders(nodes, path = "") {
     return folders;
 }
 
-function populateFolderSelect(select, folders, selectedId) {
-    select.replaceChildren();
+function findCachedBookmarkFolder(folderId) {
+    return cachedBookmarkFolders.find(folder => folder.id === folderId) || null;
+}
 
-    const placeholder = document.createElement("option");
-    placeholder.value = "";
-    placeholder.textContent = "Select a folder";
-    select.appendChild(placeholder);
+function foldersForCombobox(selectedId) {
+    const folders = cachedBookmarkFolders.slice();
+    if (selectedId && !folders.some(folder => folder.id === selectedId)) {
+        const label = `Missing folder (${selectedId})`;
+        folders.unshift({
+            id: selectedId,
+            label,
+            displayLabel: label,
+            groupId: "__missing__",
+            groupTitle: "Missing",
+            searchText: label.toLowerCase()
+        });
+    }
+    return folders;
+}
 
-    let selectedExists = false;
+function groupBookmarkFolders(folders) {
+    const groups = [];
+    const byId = new Map();
     for (const folder of folders) {
-        const option = document.createElement("option");
-        option.value = folder.id;
-        option.textContent = folder.label;
-        option.dataset.folderLabel = folder.label.toLowerCase();
-        if (folder.id === selectedId) {
-            option.selected = true;
-            selectedExists = true;
+        const key = folder.groupId || "";
+        if (!byId.has(key)) {
+            const group = {
+                id: key,
+                title: folder.groupTitle || "Folders",
+                folders: []
+            };
+            byId.set(key, group);
+            groups.push(group);
         }
-        select.appendChild(option);
+        byId.get(key).folders.push(folder);
     }
-
-    if (selectedId && !selectedExists) {
-        const missingOption = document.createElement("option");
-        missingOption.value = selectedId;
-        missingOption.textContent = `Missing folder (${selectedId})`;
-        missingOption.dataset.folderLabel = missingOption.textContent.toLowerCase();
-        missingOption.selected = true;
-        select.appendChild(missingOption);
-    }
-
-    applyFolderFilterToSelect(select);
+    return groups;
 }
 
-function getFolderFilterQuery() {
-    return (document.querySelector("#bookmarkFolderFilter")?.value || "")
-        .trim()
-        .toLowerCase();
+function getFolderComboboxLabel(folderId) {
+    if (!folderId) return "";
+    return findCachedBookmarkFolder(folderId)?.label || `Missing folder (${folderId})`;
 }
 
-function applyFolderFilterToSelect(select) {
-    if (!select) return;
-    const query = getFolderFilterQuery();
-    const selectedValue = select.value;
+let folderComboboxSeq = 0;
+const folderComboboxState = new WeakMap();
 
-    for (const option of select.options) {
-        if (!option.value) {
-            option.hidden = false;
-            continue;
-        }
-        if (option.value === selectedValue) {
-            option.hidden = false;
-            continue;
-        }
-        const label = option.dataset.folderLabel || option.textContent.toLowerCase();
-        option.hidden = query !== "" && !label.includes(query);
+function getOpenFolderCombobox() {
+    return document.querySelector(".folderCombobox.is-open");
+}
+
+function closeFolderCombobox(box, { revert = true } = {}) {
+    const state = folderComboboxState.get(box);
+    if (!state) return;
+    if (revert) {
+        state.input.value = state.committedLabel;
+    }
+    state.activeId = "";
+    state.input.setAttribute("aria-expanded", "false");
+    state.input.removeAttribute("aria-activedescendant");
+    state.listbox.hidden = true;
+    box.classList.remove("is-open");
+}
+
+function closeAllFolderComboboxes(except = null) {
+    for (const box of document.querySelectorAll(".folderCombobox.is-open")) {
+        if (box !== except) closeFolderCombobox(box);
     }
 }
 
-function applyFolderFilterToAllSelects() {
-    for (const select of document.querySelectorAll(".bookmarkRuleFolder")) {
-        applyFolderFilterToSelect(select);
+function getVisibleFolderOptions(box) {
+    const state = folderComboboxState.get(box);
+    if (!state) return [];
+    return Array.from(state.listbox.querySelectorAll('[role="option"]'));
+}
+
+function setActiveFolderOption(box, option) {
+    const state = folderComboboxState.get(box);
+    if (!state) return;
+    for (const item of getVisibleFolderOptions(box)) {
+        item.classList.toggle("is-active", item === option);
     }
+    state.activeId = option?.id || "";
+    if (option) {
+        state.input.setAttribute("aria-activedescendant", option.id);
+        option.scrollIntoView({ block: "nearest" });
+    } else {
+        state.input.removeAttribute("aria-activedescendant");
+    }
+}
+
+function commitFolderCombobox(box, folderId) {
+    const state = folderComboboxState.get(box);
+    if (!state) return;
+    const label = getFolderComboboxLabel(folderId);
+    const changed = state.hidden.value !== (folderId || "");
+    state.hidden.value = folderId || "";
+    state.committedId = folderId || "";
+    state.committedLabel = label;
+    state.input.value = label;
+    closeFolderCombobox(box, { revert: false });
+    if (changed) {
+        state.hidden.dispatchEvent(new Event("input", { bubbles: true }));
+        state.hidden.dispatchEvent(new Event("change", { bubbles: true }));
+    }
+}
+
+function getFolderComboboxFilter(state) {
+    const typed = state.input.value.trim().toLowerCase();
+    const committed = (state.committedLabel || "").trim().toLowerCase();
+    if (!typed || typed === committed) return "";
+    return typed;
+}
+
+function renderFolderComboboxList(box) {
+    const state = folderComboboxState.get(box);
+    if (!state) return;
+
+    const query = getFolderComboboxFilter(state);
+    const folders = foldersForCombobox(state.committedId).filter(folder =>
+        !query || folder.searchText.includes(query) || folder.displayLabel.toLowerCase().includes(query)
+    );
+    const groups = groupBookmarkFolders(folders);
+
+    state.listbox.replaceChildren();
+    if (folders.length === 0) {
+        const empty = document.createElement("div");
+        empty.className = "folderComboboxEmpty";
+        empty.textContent = cachedBookmarkFolders.length === 0
+            ? "No bookmark folders found"
+            : "No matching folders";
+        state.listbox.appendChild(empty);
+        setActiveFolderOption(box, null);
+        return;
+    }
+
+    let optionIndex = 0;
+    let selectedOption = null;
+    for (const group of groups) {
+        const groupEl = document.createElement("div");
+        groupEl.className = "folderComboboxGroup";
+        groupEl.setAttribute("role", "group");
+        groupEl.setAttribute("aria-label", group.title);
+
+        const label = document.createElement("div");
+        label.className = "folderComboboxGroupLabel";
+        label.textContent = group.title;
+        groupEl.appendChild(label);
+
+        for (const folder of group.folders) {
+            const option = document.createElement("div");
+            option.className = "folderComboboxOption";
+            option.id = `${state.listbox.id}-opt-${optionIndex++}`;
+            option.setAttribute("role", "option");
+            option.setAttribute("aria-selected", folder.id === state.committedId ? "true" : "false");
+            option.dataset.folderId = folder.id;
+            option.textContent = folder.displayLabel;
+            option.title = folder.label;
+            option.addEventListener("pointerdown", event => {
+                event.preventDefault();
+                commitFolderCombobox(box, folder.id);
+            });
+            if (folder.id === state.committedId) {
+                selectedOption = option;
+            }
+            groupEl.appendChild(option);
+        }
+
+        state.listbox.appendChild(groupEl);
+    }
+
+    setActiveFolderOption(box, selectedOption || getVisibleFolderOptions(box)[0] || null);
+}
+
+function openFolderCombobox(box) {
+    const state = folderComboboxState.get(box);
+    if (!state) return;
+    closeAllFolderComboboxes(box);
+    renderFolderComboboxList(box);
+    state.listbox.hidden = false;
+    state.input.setAttribute("aria-expanded", "true");
+    box.classList.add("is-open");
+}
+
+function moveFolderComboboxActive(box, offset) {
+    const options = getVisibleFolderOptions(box);
+    if (options.length === 0) return;
+    const state = folderComboboxState.get(box);
+    const currentIndex = options.findIndex(option => option.id === state?.activeId);
+    let nextIndex = currentIndex + offset;
+    if (currentIndex < 0) {
+        nextIndex = offset > 0 ? 0 : options.length - 1;
+    } else {
+        nextIndex = (nextIndex + options.length) % options.length;
+    }
+    setActiveFolderOption(box, options[nextIndex]);
+}
+
+function createFolderCombobox(selectedId = "") {
+    const id = `folder-combobox-${++folderComboboxSeq}`;
+    const box = document.createElement("div");
+    box.className = "folderCombobox";
+
+    const hidden = document.createElement("input");
+    hidden.type = "hidden";
+    hidden.className = "bookmarkRuleFolder";
+    hidden.value = selectedId || "";
+
+    const input = document.createElement("input");
+    input.type = "text";
+    input.className = "folderComboboxInput";
+    input.setAttribute("role", "combobox");
+    input.setAttribute("aria-expanded", "false");
+    input.setAttribute("aria-controls", `${id}-list`);
+    input.setAttribute("aria-autocomplete", "list");
+    input.setAttribute("aria-label", "Bookmark folder");
+    input.placeholder = "Search folders";
+    input.autocomplete = "off";
+    input.spellcheck = false;
+
+    const listbox = document.createElement("div");
+    listbox.className = "folderComboboxList";
+    listbox.id = `${id}-list`;
+    listbox.setAttribute("role", "listbox");
+    listbox.hidden = true;
+
+    const committedLabel = getFolderComboboxLabel(selectedId);
+    input.value = committedLabel;
+    folderComboboxState.set(box, {
+        hidden,
+        input,
+        listbox,
+        activeId: "",
+        committedId: selectedId || "",
+        committedLabel
+    });
+
+    input.addEventListener("focus", () => {
+        input.select();
+    });
+    input.addEventListener("click", () => {
+        openFolderCombobox(box);
+    });
+    input.addEventListener("input", () => {
+        openFolderCombobox(box);
+    });
+    input.addEventListener("keydown", event => {
+        const isOpen = box.classList.contains("is-open");
+        if (event.key === "ArrowDown") {
+            event.preventDefault();
+            if (!isOpen) openFolderCombobox(box);
+            else moveFolderComboboxActive(box, 1);
+        } else if (event.key === "ArrowUp") {
+            event.preventDefault();
+            if (!isOpen) openFolderCombobox(box);
+            else moveFolderComboboxActive(box, -1);
+        } else if (event.key === "Home" && isOpen) {
+            event.preventDefault();
+            const options = getVisibleFolderOptions(box);
+            if (options[0]) setActiveFolderOption(box, options[0]);
+        } else if (event.key === "End" && isOpen) {
+            event.preventDefault();
+            const options = getVisibleFolderOptions(box);
+            if (options.length) setActiveFolderOption(box, options[options.length - 1]);
+        } else if (event.key === "Enter") {
+            event.preventDefault();
+            if (!isOpen) {
+                openFolderCombobox(box);
+                return;
+            }
+            const current = folderComboboxState.get(box);
+            const active = current?.activeId
+                ? document.getElementById(current.activeId)
+                : null;
+            if (active?.dataset.folderId) {
+                commitFolderCombobox(box, active.dataset.folderId);
+            }
+        } else if (event.key === "Escape") {
+            if (isOpen) {
+                event.preventDefault();
+                closeFolderCombobox(box);
+            }
+        } else if (event.key === "Tab") {
+            if (isOpen) closeFolderCombobox(box);
+        }
+    });
+    input.addEventListener("blur", () => {
+        window.setTimeout(() => {
+            if (box.classList.contains("is-open") && document.activeElement !== input) {
+                closeFolderCombobox(box);
+            }
+        }, 0);
+    });
+
+    box.append(hidden, input, listbox);
+    return box;
+}
+
+function refreshFolderCombobox(box) {
+    const state = folderComboboxState.get(box);
+    if (!state) return;
+    const folderId = state.hidden.value || "";
+    state.committedId = folderId;
+    state.committedLabel = getFolderComboboxLabel(folderId);
+    if (!box.classList.contains("is-open")) {
+        state.input.value = state.committedLabel;
+    } else {
+        renderFolderComboboxList(box);
+    }
+}
+
+function refreshBookmarkFolderSelectOptions() {
+    for (const hidden of document.querySelectorAll(".bookmarkRuleFolder")) {
+        const box = hidden.closest(".folderCombobox");
+        if (box) refreshFolderCombobox(box);
+    }
+}
+
+function setupFolderComboboxDismiss() {
+    document.addEventListener("pointerdown", event => {
+        const open = getOpenFolderCombobox();
+        if (!open) return;
+        const target = event.target instanceof Element ? event.target : null;
+        if (target && open.contains(target)) return;
+        closeFolderCombobox(open);
+    });
 }
 
 function createBookmarkRuleRow(folderId = "", style = "blocked") {
@@ -609,10 +891,7 @@ function createBookmarkRuleRow(folderId = "", style = "blocked") {
     const priorityCell = createBookmarkPriorityCell();
 
     const folderCell = document.createElement("td");
-    const folderSelect = document.createElement("select");
-    folderSelect.className = "bookmarkRuleFolder";
-    populateFolderSelect(folderSelect, cachedBookmarkFolders, folderId || "");
-    folderCell.appendChild(folderSelect);
+    folderCell.appendChild(createFolderCombobox(folderId || ""));
 
     const styleCell = document.createElement("td");
     const styleSelect = document.createElement("select");
@@ -716,12 +995,6 @@ function renderBookmarkRuleRows(rules) {
     folderRules.forEach(rule => createBookmarkRuleRow(rule.folderId, rule.style));
     createUnmatchedBookmarkRuleRow(unmatchedStyle || "");
     refreshAllTableEmptyStates();
-}
-
-function refreshBookmarkFolderSelectOptions() {
-    for (const select of document.querySelectorAll(".bookmarkRuleFolder")) {
-        populateFolderSelect(select, cachedBookmarkFolders, select.value || "");
-    }
 }
 
 function setBookmarkRulesReady(ready) {
@@ -828,9 +1101,10 @@ function findDomRulesReferencingStyle(styleId) {
             references.push("Bookmarks outside rule folders");
             continue;
         }
-        const folderSelect = row.querySelector(".bookmarkRuleFolder");
-        const label = folderSelect?.selectedOptions?.[0]?.textContent ||
-            folderSelect?.value ||
+        const folderInput = row.querySelector(".bookmarkRuleFolder");
+        const combobox = folderInput?.closest(".folderCombobox");
+        const label = combobox?.querySelector(".folderComboboxInput")?.value ||
+            folderInput?.value ||
             "Bookmark folder";
         references.push(`Bookmark rule: ${label}`);
     }
@@ -1794,10 +2068,6 @@ function initSaveLoadEvents() {
         }
     });
 
-    document.querySelector("#bookmarkFolderFilter")?.addEventListener("input", () => {
-        applyFolderFilterToAllSelects();
-    });
-
     document.querySelector("#gettingStartedDismiss")?.addEventListener(
         "click",
         dismissGettingStarted
@@ -2296,6 +2566,7 @@ function setupEventListeners() {
     try {
         setupOptionsTabs();
         setupStickyTabShadow();
+        setupFolderComboboxDismiss();
         setupDirtyTracking();
 
         const addRowBtn = document.querySelector("#addRowBtn");
