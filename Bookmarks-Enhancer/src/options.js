@@ -1890,6 +1890,9 @@ function showStatus(message, options = false) {
 function activateOptionsTab(tabId) {
     const tabs = Array.from(document.querySelectorAll('[role="tab"][data-tab]'));
     const panels = Array.from(document.querySelectorAll("[data-tab-panel]"));
+    const alreadySelected = tabs.some(
+        tab => tab.dataset.tab === tabId && tab.getAttribute("aria-selected") === "true"
+    );
 
     for (const tab of tabs) {
         const selected = tab.dataset.tab === tabId;
@@ -1906,6 +1909,22 @@ function activateOptionsTab(tabId) {
     if (tabId === "bookmarkRules" || tabId === "textRules" || tabId === "styleRules") {
         refreshAllStyleSelects();
     }
+
+    if (!alreadySelected) {
+        window.scrollTo(0, 0);
+    }
+}
+
+function setupStickyTabShadow() {
+    const tabList = document.querySelector(".tabList");
+    const sentinel = document.querySelector(".tabListSentinel");
+    if (!tabList || !sentinel || typeof IntersectionObserver !== "function") return;
+
+    const observer = new IntersectionObserver(entries => {
+        const entry = entries[0];
+        tabList.classList.toggle("is-stuck", !!(entry && !entry.isIntersecting));
+    });
+    observer.observe(sentinel);
 }
 
 function setupOptionsTabs() {
@@ -1948,6 +1967,7 @@ function setupOptionsTabs() {
 function setupEventListeners() {
     try {
         setupOptionsTabs();
+        setupStickyTabShadow();
         setupDirtyTracking();
 
         const addRowBtn = document.querySelector("#addRowBtn");
