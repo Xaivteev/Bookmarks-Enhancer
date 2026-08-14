@@ -325,8 +325,15 @@
             z-index: 20;
         }
 
+        .actionsBarSecondary {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 0.5rem;
+            margin-right: auto;
+        }
+
         .unsavedChangesLabel {
-            margin: 0 auto 0 0;
+            margin: 0;
             color: #92400e;
             font-weight: 600;
         }
@@ -1072,6 +1079,52 @@
             padding: 0.25rem 0.5rem;
         }
 
+        .siteDetailTabList {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 0.25rem;
+            margin: 0 0 1rem;
+            padding: 0;
+            border-bottom: 1px solid #d1d5db;
+            background: #fff;
+        }
+
+        .siteDetailTabList button {
+            border: 1px solid transparent;
+            border-bottom: none;
+            border-radius: 0.375rem 0.375rem 0 0;
+            background: transparent;
+            color: #374151;
+            padding: 0.45rem 0.7rem;
+            cursor: pointer;
+            font: inherit;
+        }
+
+        .siteDetailTabList button[aria-selected="true"] {
+            background: #f3f4f6;
+            border-color: #d1d5db;
+            color: #111827;
+            font-weight: 600;
+        }
+
+        .siteDetailTabList button:focus-visible {
+            outline: 2px solid #1d4ed8;
+            outline-offset: 2px;
+        }
+
+        .siteDetailPanel {
+            display: none;
+            padding-top: 0.25rem;
+        }
+
+        .siteDetailPanel.active {
+            display: block;
+        }
+
+        .siteDetailPanel h2 {
+            margin: 0 0 0.5rem;
+        }
+
         .classGroupInput,
         .savedLinkUrl,
         .savedLinkTitle,
@@ -1295,8 +1348,8 @@
                     </li>
                     <li>
                         Open that site to set class groups, saved links, and text rules.
-                        Right-click a link or page and choose <strong>Add to list</strong>
-                        to save it under a look.
+                        Right-click a link or page and choose <strong>Add link to list</strong>
+                        or <strong>Add page to list</strong> to save it under a look.
                     </li>
                     <li>
                         Save — open tabs update on their own.
@@ -1320,8 +1373,7 @@
                 </div>
                 <p class="hint">
                     Each site has class groups (the cards to restyle) and saved
-                    links grouped under looks. Looks act as folders. Saving
-                    updates open tabs.
+                    links grouped under looks. Saving updates open tabs.
                 </p>
             </div>
 
@@ -1331,7 +1383,7 @@
             </div>
             <p class="settingHelp" id="enableTopBorderHelp">
                 Draws a colored border at the top of the page when the current URL
-                matches a bookmark rule.
+                matches a saved look.
             </p>
 
             <div class="settingRow">
@@ -1349,8 +1401,8 @@
                 <label for="enableToastNotifications">Enable Toast Notifications</label>
             </div>
             <p class="settingHelp" id="enableToastNotificationsHelp">
-                Show a brief on-page summary after bookmark styles are applied,
-                including how many elements were styled and how many were hidden.
+                Show a brief on-page summary after looks are applied, including
+                how many elements were styled and how many were hidden.
             </p>
 
             <section class="legacyImport" aria-labelledby="legacyImportHeading">
@@ -1472,8 +1524,8 @@
                     <input
                         type="search"
                         id="searchSitesInput"
-                        placeholder="Search websites…"
-                        aria-label="Search websites"
+                        placeholder="Search websites, looks, or titles…"
+                        aria-label="Search websites, looks, or titles"
                         autocomplete="off"
                     >
                 </div>
@@ -1483,7 +1535,7 @@
                     from the page context menu.
                 </p>
                 <p class="tableEmptyState" id="sitesSearchEmpty" hidden>
-                    No websites match that search.
+                    No websites, looks, or titles match that search.
                 </p>
             </div>
 
@@ -1502,83 +1554,165 @@
                     <p class="fieldError" id="siteDetailHostError" hidden></p>
                 </div>
 
-                <h2>Class groups</h2>
-                <p class="hint">
-                    CSS class names for listing cards. Spaces within a group mean
-                    all of those classes must be present. Add more rows for
-                    alternate card layouts.
-                </p>
-                <table id="classGroupTable">
-                    <thead>
-                        <tr>
-                            <th>Classes</th>
-                            <th>Actions</th>
-                        </tr>
-                    </thead>
-                    <tbody id="classGroupBody"></tbody>
-                </table>
-                <p class="tableEmptyState" id="classGroupsEmpty" hidden>
-                    No class groups yet. Add one, or use Select Target Classes on the page.
-                </p>
-                <button type="button" id="addClassGroupBtn">Add class group</button>
-
-                <h2>Saved links</h2>
-                <p class="hint">
-                    Looks act as folders on this site. Click a folder to load its
-                    links (100 per page) and search them. Change a folder’s look
-                    to update every link in it. Add a look below, or right-click
-                    a link or page and choose <strong>Add to list</strong>.
-                    Completely blank rows are ignored when saving.
-                </p>
-                <div id="savedLinkGroups"></div>
-                <p class="tableEmptyState" id="savedLinksEmpty" hidden>
-                    No look folders on this site yet. Add a look, or save a link
-                    from the page context menu.
-                </p>
-                <div class="savedLinkAddFolder" id="savedLinkAddFolder">
-                    <select id="addLinkFolderSelect" aria-label="Look to add"></select>
-                    <button type="button" id="addLinkFolderBtn">Add look</button>
+                <div class="siteDetailTabList" role="tablist" aria-label="Site settings">
+                    <button
+                        type="button"
+                        role="tab"
+                        id="siteTabClasses"
+                        aria-controls="sitePanelClasses"
+                        aria-selected="false"
+                        data-site-tab="classes"
+                    >
+                        Class groups
+                    </button>
+                    <button
+                        type="button"
+                        role="tab"
+                        id="siteTabLinks"
+                        aria-controls="sitePanelLinks"
+                        aria-selected="true"
+                        data-site-tab="links"
+                    >
+                        Saved links
+                    </button>
+                    <button
+                        type="button"
+                        role="tab"
+                        id="siteTabText"
+                        aria-controls="sitePanelText"
+                        aria-selected="false"
+                        data-site-tab="text"
+                    >
+                        Text rules
+                    </button>
+                    <button
+                        type="button"
+                        role="tab"
+                        id="siteTabParams"
+                        aria-controls="sitePanelParams"
+                        aria-selected="false"
+                        data-site-tab="params"
+                    >
+                        URL parameters
+                    </button>
                 </div>
 
-                <h2>Text rules</h2>
-                <p class="hint">
-                    If this text appears inside a targeted class group, apply the look.
-                    Completely blank rows are ignored when saving.
-                </p>
-                <table id="textRuleTable">
-                    <thead>
-                        <tr>
-                            <th>Text</th>
-                            <th>Look</th>
-                            <th>Actions</th>
-                        </tr>
-                    </thead>
-                    <tbody id="textRuleBody"></tbody>
-                </table>
-                <p class="tableEmptyState" id="textRulesEmpty" hidden>
-                    No text rules yet. Add a keyword to style matching cards.
-                </p>
-                <button type="button" id="addTextRuleBtn">Add text rule</button>
-
-                <h2>URL parameters</h2>
-                <p class="hint">
-                    Keep only these query parameters when matching saved links.
-                    Example: <code>id, jk</code>. Leave blank to ignore all query
-                    parameters.
-                </p>
-                <input
-                    type="text"
-                    id="siteKeepParams"
-                    class="siteKeepParams"
-                    placeholder="id, jk"
-                    aria-label="Parameters to keep"
-                    autocomplete="off"
+                <section
+                    id="sitePanelClasses"
+                    class="siteDetailPanel"
+                    role="tabpanel"
+                    aria-labelledby="siteTabClasses"
+                    data-site-tab-panel="classes"
+                    hidden
                 >
-                <p class="fieldError" id="siteKeepParamsError" hidden></p>
+                    <h2>Class groups</h2>
+                    <p class="hint">
+                        CSS class names for listing cards. Spaces within a group mean
+                        all of those classes must be present. Add more rows for
+                        alternate card layouts.
+                    </p>
+                    <table id="classGroupTable">
+                        <thead>
+                            <tr>
+                                <th>Classes</th>
+                                <th>Actions</th>
+                            </tr>
+                        </thead>
+                        <tbody id="classGroupBody"></tbody>
+                    </table>
+                    <p class="tableEmptyState" id="classGroupsEmpty" hidden>
+                        No class groups yet. Add one, or use Select Target Classes on the page.
+                    </p>
+                    <button type="button" id="addClassGroupBtn">Add class group</button>
+                </section>
+
+                <section
+                    id="sitePanelLinks"
+                    class="siteDetailPanel active"
+                    role="tabpanel"
+                    aria-labelledby="siteTabLinks"
+                    data-site-tab-panel="links"
+                >
+                    <h2>Saved links</h2>
+                    <p class="hint">
+                        Looks group saved links on this site. Click a look to load its
+                        links (100 per page) and search them. Change a look to update
+                        every link in it. Add a look below, or right-click a link or
+                        page and choose <strong>Add link to list</strong>.
+                        Completely blank rows are ignored when saving.
+                    </p>
+                    <div id="savedLinkGroups"></div>
+                    <p class="tableEmptyState" id="savedLinksEmpty" hidden>
+                        No looks on this site yet. Add a look, or save a link
+                        from the page context menu.
+                    </p>
+                    <div class="savedLinkAddFolder" id="savedLinkAddFolder">
+                        <select id="addLinkFolderSelect" aria-label="Look to add"></select>
+                        <button type="button" id="addLinkFolderBtn">Add look</button>
+                    </div>
+                </section>
+
+                <section
+                    id="sitePanelText"
+                    class="siteDetailPanel"
+                    role="tabpanel"
+                    aria-labelledby="siteTabText"
+                    data-site-tab-panel="text"
+                    hidden
+                >
+                    <h2>Text rules</h2>
+                    <p class="hint">
+                        If this text appears inside a targeted class group, apply the look.
+                        Completely blank rows are ignored when saving.
+                    </p>
+                    <table id="textRuleTable">
+                        <thead>
+                            <tr>
+                                <th>Text</th>
+                                <th>Look</th>
+                                <th>Actions</th>
+                            </tr>
+                        </thead>
+                        <tbody id="textRuleBody"></tbody>
+                    </table>
+                    <p class="tableEmptyState" id="textRulesEmpty" hidden>
+                        No text rules yet. Add a keyword to style matching cards.
+                    </p>
+                    <button type="button" id="addTextRuleBtn">Add text rule</button>
+                </section>
+
+                <section
+                    id="sitePanelParams"
+                    class="siteDetailPanel"
+                    role="tabpanel"
+                    aria-labelledby="siteTabParams"
+                    data-site-tab-panel="params"
+                    hidden
+                >
+                    <h2>URL parameters</h2>
+                    <p class="hint">
+                        Keep only these query parameters when matching saved links.
+                        Example: <code>id, jk</code>. Leave blank to ignore all query
+                        parameters.
+                    </p>
+                    <input
+                        type="text"
+                        id="siteKeepParams"
+                        class="siteKeepParams"
+                        placeholder="id, jk"
+                        aria-label="Parameters to keep"
+                        autocomplete="off"
+                    >
+                    <p class="fieldError" id="siteKeepParamsError" hidden></p>
+                </section>
             </div>
         </section>
 
         <div class="actionsBar">
+            <div class="actionsBarSecondary">
+                <button type="button" id="exportBtn">Export</button>
+                <button type="button" id="importBtn">Import</button>
+            </div>
             <p
                 id="unsavedChangesLabel"
                 class="unsavedChangesLabel"
@@ -1588,8 +1722,6 @@
                 Unsaved changes
             </p>
             <div class="actionsBarButtons">
-                <button type="button" id="exportBtn">Export</button>
-                <button type="button" id="importBtn">Import</button>
                 <button type="submit" id="saveBtn" class="primaryAction">Save</button>
             </div>
         </div>

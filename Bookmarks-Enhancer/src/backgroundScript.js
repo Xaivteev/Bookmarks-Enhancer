@@ -1,6 +1,6 @@
 ﻿const CONTENT_SCRIPT_FILES = ["browser-polyfill.js", "utils.js", "contentScript.js", "lookShortcuts.js"];
 
-const DEFAULT_ACTION_TITLE = "Enhance Bookmarks";
+const DEFAULT_ACTION_TITLE = "Refresh looks";
 const ACTION_BUSY_TIMEOUT_MS = 60000;
 const ACTION_BUSY_BADGE_TEXT = "…";
 const ACTION_BUSY_BADGE_COLOR = "#475569";
@@ -22,7 +22,7 @@ function beginActionBusy(tabCount = 1) {
 
 	Promise.resolve(browser.action.setBadgeText({ text: ACTION_BUSY_BADGE_TEXT })).catch(() => {});
 	Promise.resolve(browser.action.setBadgeBackgroundColor({ color: ACTION_BUSY_BADGE_COLOR })).catch(() => {});
-	Promise.resolve(browser.action.setTitle({ title: "Refreshing bookmark styles…" })).catch(() => {});
+	Promise.resolve(browser.action.setTitle({ title: "Refreshing looks…" })).catch(() => {});
 	return generation;
 }
 
@@ -734,6 +734,29 @@ function resolveContextMenuTab(tab) {
 		.then(tabs => tabs[0] || null);
 }
 
+function optionsHashForPageUrl(pageUrl) {
+	try {
+		const parsed = new URL(pageUrl);
+		if (parsed.protocol !== "http:" && parsed.protocol !== "https:") {
+			return "#sites";
+		}
+		const host = normalizeSite(parsed.hostname);
+		return host ? `#sites/${encodeURIComponent(host)}` : "#sites";
+	} catch {
+		return "#sites";
+	}
+}
+
+function openOptionsForPage(pageUrl) {
+	const hash = optionsHashForPageUrl(pageUrl);
+	const writeRoute = browser.storage.session
+		? browser.storage.session.set({ [OPTIONS_HASH_SESSION_KEY]: hash })
+		: Promise.resolve();
+	return writeRoute
+		.then(() => browser.runtime.openOptionsPage())
+		.catch(onError);
+}
+
 browser.tabs.onActivated.addListener(({ tabId }) => {
 	syncRevealHiddenMenuForTab(tabId);
 });
@@ -748,7 +771,9 @@ browser.contextMenus.onClicked.addListener((info, tab) => {
 	if (!info) return;
 
 	if (info.menuItemId === OPEN_OPTIONS_MENU_ID) {
-		browser.runtime.openOptionsPage().catch(onError);
+		resolveContextMenuTab(tab)
+			.then(resolvedTab => openOptionsForPage(resolvedTab && resolvedTab.url))
+			.catch(onError);
 		return;
 	}
 

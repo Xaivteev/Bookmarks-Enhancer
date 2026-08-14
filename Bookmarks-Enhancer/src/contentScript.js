@@ -366,7 +366,7 @@ function beginStylingIndicator() {
 			enableToastNotifications &&
 			!stylingIndicatorUserDismissed
 		) {
-			showStylingIndicator("Applying bookmark styles…", { busy: true });
+			showStylingIndicator("Applying looks…", { busy: true });
 		}
 	}, STYLING_INDICATOR_DELAY_MS);
 }

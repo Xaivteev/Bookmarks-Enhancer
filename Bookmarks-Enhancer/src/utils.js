@@ -11,6 +11,9 @@ const STORAGE_KEYS = {
 	hideGettingStarted: "hideGettingStarted"
 };
 
+// Session-only: focus the options page on a hash route such as #sites/example.com.
+const OPTIONS_HASH_SESSION_KEY = "beOptionsHash";
+
 // One-shot migration only — removed after first successful migrate/purge.
 const LEGACY_STORAGE_KEYS = {
 	searchPairs: "searchPairs",

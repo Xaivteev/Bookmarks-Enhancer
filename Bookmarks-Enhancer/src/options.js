@@ -3,6 +3,9 @@ const STYLE_RULE_STORAGE_KEY = STORAGE_KEYS.styleRules;
 let cachedStyleRules = DEFAULT_STYLE_RULES.map(rule => ({ ...rule }));
 let sitesDraft = [];
 let selectedSiteIndex = -1;
+let selectedSiteDetailTab = "";
+let suppressOptionsHashWrite = false;
+let applyingOptionsHash = false;
 let detailLinksByLook = null;
 let sitesReady = false;
 let suppressOptionsStorageReload = false;
@@ -136,7 +139,28 @@ function siteMatchesSearch(siteConfig, query) {
     const host = (siteConfig?.site || "").toLowerCase();
     if (host.includes(query)) return true;
     const normalizedQuery = normalizeSite(query);
-    return !!normalizedQuery && host.includes(normalizedQuery);
+    if (normalizedQuery && host.includes(normalizedQuery)) return true;
+
+    const lookIds = new Set();
+    for (const folderId of siteConfig?.linkFolders || []) {
+        if (folderId) lookIds.add(folderId);
+    }
+    for (const link of siteConfig?.links || []) {
+        if (link?.style) lookIds.add(link.style);
+        const title = (link?.title || "").toLowerCase();
+        if (title && title.includes(query)) return true;
+        const url = (link?.url || "").toLowerCase();
+        if (url && url.includes(query)) return true;
+    }
+    for (const rule of siteConfig?.textRules || []) {
+        if (rule?.style) lookIds.add(rule.style);
+        const text = (rule?.text || "").toLowerCase();
+        if (text && text.includes(query)) return true;
+    }
+    for (const styleId of lookIds) {
+        if (getLookLabel(styleId).toLowerCase().includes(query)) return true;
+    }
+    return false;
 }
 
 function createPreviewButton(onClick) {
@@ -514,7 +538,9 @@ function showRowValidationError(tabId, selector, message, actionLabel, extra = {
                 onClick: () => {
                     if (typeof extra.openSiteIndex === "number") {
                         activateOptionsTab("sites");
-                        openSiteDetail(extra.openSiteIndex);
+                        openSiteDetail(extra.openSiteIndex, {
+                            siteTab: extra.siteTab || siteTabForSelector(selector)
+                        });
                     } else {
                         activateOptionsTab(tabId);
                     }
@@ -655,16 +681,23 @@ function renderSiteList() {
     refreshSitesEmptyState();
 }
 
-function showSiteListView() {
+function showSiteListView(options = {}) {
     const listView = document.querySelector("#siteListView");
     const detailView = document.querySelector("#siteDetailView");
     if (listView) listView.hidden = false;
     if (detailView) detailView.hidden = true;
     selectedSiteIndex = -1;
     renderSiteList();
+    if (!options.skipHash) writeOptionsHash();
 }
 
-function openSiteDetail(index) {
+function defaultSiteDetailTabForSite(siteConfig) {
+    const hasLinks = (siteConfig?.links || []).length > 0 ||
+        (siteConfig?.linkFolders || []).length > 0;
+    return hasLinks ? "links" : "classes";
+}
+
+function openSiteDetail(index, options = {}) {
     if (index < 0 || index >= sitesDraft.length) return;
     if (isSiteDetailOpen() && index !== selectedSiteIndex) {
         flushSiteDetailToDraft();
@@ -693,14 +726,22 @@ function openSiteDetail(index) {
     renderSavedLinkGroups(siteConfig.links || [], siteConfig.linkFolders || []);
     refreshAllStyleSelects();
     refreshAllTableEmptyStates();
-    window.scrollTo(0, 0);
+    activateSiteDetailTab(
+        options.siteTab || selectedSiteDetailTab || defaultSiteDetailTabForSite(siteConfig),
+        { skipHash: true }
+    );
+    if (!options.skipHash) writeOptionsHash();
+    if (options.scroll !== false) {
+        window.scrollTo(0, 0);
+    }
 }
 
-function closeSiteDetail() {
+function closeSiteDetail(options = {}) {
     flushSiteDetailToDraft();
     detailLinksByLook = null;
-    showSiteListView();
+    showSiteListView({ skipHash: true });
     scheduleDirtyUiUpdate();
+    if (!options.skipHash) writeOptionsHash();
 }
 
 function deleteSite(index) {
@@ -747,7 +788,7 @@ function addSiteFromInput() {
     sitesDraft.push(createEmptySiteConfig(hostname));
     sitesDraft.sort((a, b) => a.site.localeCompare(b.site));
     const index = sitesDraft.findIndex(siteConfig => siteConfig.site === hostname);
-    openSiteDetail(index);
+    openSiteDetail(index, { siteTab: "classes" });
     scheduleDirtyUiUpdate();
 }
 
@@ -1802,7 +1843,10 @@ function validateConfigurableRuleRows() {
             ".fieldInvalid",
             "Fix the highlighted fields before saving",
             "Review site",
-            { openSiteIndex: selectedSiteIndex }
+            {
+                openSiteIndex: selectedSiteIndex,
+                siteTab: siteTabForSelector(".fieldInvalid")
+            }
         );
         return false;
     }
@@ -2133,7 +2177,6 @@ function persistOptionsFromForm({
 
     beginOptionsStorageWrite();
     suppressDirtyTracking = true;
-    const openHost = isSiteDetailOpen() ? sitesDraft[selectedSiteIndex]?.site : "";
     return browser.storage.local.set(payload)
         .then(() => browser.storage.local.remove(Object.values(LEGACY_STORAGE_KEYS)))
         .then(() => {
@@ -2142,10 +2185,7 @@ function persistOptionsFromForm({
                 enableDeepSearch: payload.enableDeepSearch,
                 enableToastNotifications: payload.enableToastNotifications
             });
-            if (openHost) {
-                const index = sitesDraft.findIndex(siteConfig => siteConfig.site === openHost);
-                if (index >= 0) openSiteDetail(index);
-            }
+            applyOptionsLocationHash();
         })
         .then(() => {
             suppressDirtyTracking = false;
@@ -2205,7 +2245,7 @@ function applyLoadedConfiguration(sites, styleRules, general = {}) {
     sitesDraft = normalizeSites(sites, { preserveLinks: true });
     selectedSiteIndex = -1;
     detailLinksByLook = null;
-    showSiteListView();
+    showSiteListView({ skipHash: true });
     setSitesReady(true);
             refreshAllTableEmptyStates();
     loadLegacyImportFolders();
@@ -2233,8 +2273,11 @@ function restoreOptions() {
     })
     .finally(() => {
         suppressDirtyTracking = false;
-        captureSavedFormSnapshot();
         endOptionsStorageWrite();
+        consumeSessionOptionsHash().finally(() => {
+            applyOptionsLocationHash();
+            captureSavedFormSnapshot();
+        });
     });
 }
 
@@ -2262,6 +2305,17 @@ function initSaveLoadEvents() {
     document.querySelector("form").addEventListener("submit", saveOptions);
 
     browser.storage.onChanged.addListener((changes, areaName) => {
+        if (areaName === "session") {
+            const nextHash = changes[OPTIONS_HASH_SESSION_KEY]?.newValue;
+            if (typeof nextHash === "string" && nextHash) {
+                if (browser.storage.session) {
+                    browser.storage.session.remove(OPTIONS_HASH_SESSION_KEY).catch(() => {});
+                }
+                replaceOptionsHash(nextHash);
+                if (sitesReady) applyOptionsLocationHash();
+            }
+            return;
+        }
         if (areaName !== "local") return;
 
         if (Object.prototype.hasOwnProperty.call(changes, STORAGE_KEYS.hideGettingStarted)) {
@@ -2621,7 +2675,200 @@ function showStatus(message, options = false) {
     }, duration);
 }
 
-function activateOptionsTab(tabId) {
+const OPTIONS_TABS = new Set(["general", "sites", "looks"]);
+const SITE_DETAIL_TABS = new Set(["classes", "links", "text", "params"]);
+const DEFAULT_SITE_DETAIL_TAB = "links";
+
+function getActiveOptionsTab() {
+    return document.querySelector('[role="tab"][data-tab][aria-selected="true"]')?.dataset.tab ||
+        "general";
+}
+
+function getActiveSiteDetailTab() {
+    return document.querySelector("[data-site-tab][aria-selected='true']")?.dataset.siteTab ||
+        selectedSiteDetailTab ||
+        DEFAULT_SITE_DETAIL_TAB;
+}
+
+function siteTabForSelector(selector) {
+    const field = selector ? document.querySelector(selector) : null;
+    if (!field) return selectedSiteDetailTab || DEFAULT_SITE_DETAIL_TAB;
+    if (field.closest("#sitePanelClasses") || field.closest("#classGroupTable")) {
+        return "classes";
+    }
+    if (field.closest("#sitePanelLinks") || field.closest("#savedLinkGroups")) {
+        return "links";
+    }
+    if (field.closest("#sitePanelText") || field.closest("#textRuleTable")) {
+        return "text";
+    }
+    if (
+        field.closest("#sitePanelParams") ||
+        field.id === "siteKeepParams" ||
+        field.classList.contains("siteKeepParams")
+    ) {
+        return "params";
+    }
+    if (field.id === "siteDetailHost") return selectedSiteDetailTab || DEFAULT_SITE_DETAIL_TAB;
+    return selectedSiteDetailTab || DEFAULT_SITE_DETAIL_TAB;
+}
+
+function parseOptionsHash(hash) {
+    const raw = String(hash || "").replace(/^#/, "").trim();
+    if (!raw) return { tab: "general", site: "", siteTab: "" };
+    const parts = raw.split("/").filter(Boolean);
+    const tab = OPTIONS_TABS.has(parts[0]) ? parts[0] : "general";
+    if (tab !== "sites") return { tab, site: "", siteTab: "" };
+    let site = "";
+    try {
+        site = parts[1] ? decodeURIComponent(parts[1]) : "";
+    } catch {
+        site = parts[1] || "";
+    }
+    const siteTab = SITE_DETAIL_TABS.has(parts[2]) ? parts[2] : "";
+    return { tab, site, siteTab };
+}
+
+function currentOptionsHash() {
+    const tab = getActiveOptionsTab();
+    if (tab !== "sites") return `#${tab}`;
+    if (!isSiteDetailOpen()) return "#sites";
+    const host = normalizeSite(
+        document.querySelector("#siteDetailHost")?.value ||
+            sitesDraft[selectedSiteIndex]?.site ||
+            ""
+    );
+    if (!host) return "#sites";
+    const siteTab = getActiveSiteDetailTab();
+    const suffix = siteTab && siteTab !== DEFAULT_SITE_DETAIL_TAB ? `/${siteTab}` : "";
+    return `#sites/${encodeURIComponent(host)}${suffix}`;
+}
+
+function replaceOptionsHash(hash) {
+    const next = hash && hash.startsWith("#") ? hash : `#${hash || ""}`;
+    if (`#${location.hash.replace(/^#/, "")}` === next) return;
+    const previous = suppressOptionsHashWrite;
+    suppressOptionsHashWrite = true;
+    history.replaceState(null, "", next || "#");
+    suppressOptionsHashWrite = previous;
+}
+
+function writeOptionsHash() {
+    if (suppressOptionsHashWrite || applyingOptionsHash) return;
+    replaceOptionsHash(currentOptionsHash());
+}
+
+function applyOptionsRoute(route, options = {}) {
+    const tabId = OPTIONS_TABS.has(route?.tab) ? route.tab : "general";
+    activateOptionsTab(tabId, { skipHash: true, scroll: options.scroll });
+
+    if (tabId !== "sites") return;
+
+    if (!route.site) {
+        if (isSiteDetailOpen()) closeSiteDetail({ skipHash: true });
+        return;
+    }
+
+    const host = normalizeSite(route.site) || route.site.toLowerCase();
+    const index = sitesDraft.findIndex(siteConfig =>
+        siteConfig.site === host || siteConfig.site === route.site
+    );
+    if (index >= 0) {
+        const addInput = document.querySelector("#addSiteInput");
+        if (addInput && normalizeSite(addInput.value) === host) {
+            addInput.value = "";
+        }
+        openSiteDetail(index, {
+            skipHash: true,
+            siteTab: route.siteTab || undefined,
+            scroll: options.scroll
+        });
+        return;
+    }
+
+    if (isSiteDetailOpen()) closeSiteDetail({ skipHash: true });
+    const addInput = document.querySelector("#addSiteInput");
+    if (addInput && !addInput.value.trim()) {
+        addInput.value = host;
+    }
+}
+
+function applyOptionsLocationHash(options = {}) {
+    if (applyingOptionsHash) return;
+    applyingOptionsHash = true;
+    try {
+        applyOptionsRoute(parseOptionsHash(location.hash), options);
+    } finally {
+        applyingOptionsHash = false;
+    }
+}
+
+function consumeSessionOptionsHash() {
+    if (!browser.storage.session) return Promise.resolve();
+    return browser.storage.session.get(OPTIONS_HASH_SESSION_KEY).then(result => {
+        const hash = result && result[OPTIONS_HASH_SESSION_KEY];
+        if (typeof hash !== "string" || !hash) return;
+        return browser.storage.session.remove(OPTIONS_HASH_SESSION_KEY).then(() => {
+            replaceOptionsHash(hash);
+        });
+    }).catch(() => {});
+}
+
+function activateSiteDetailTab(tabId, options = {}) {
+    const nextTab = SITE_DETAIL_TABS.has(tabId) ? tabId : DEFAULT_SITE_DETAIL_TAB;
+    selectedSiteDetailTab = nextTab;
+    const tabs = Array.from(document.querySelectorAll("[data-site-tab]"));
+    const panels = Array.from(document.querySelectorAll("[data-site-tab-panel]"));
+
+    for (const tab of tabs) {
+        const selected = tab.dataset.siteTab === nextTab;
+        tab.setAttribute("aria-selected", selected ? "true" : "false");
+        tab.tabIndex = selected ? 0 : -1;
+    }
+
+    for (const panel of panels) {
+        const selected = panel.dataset.siteTabPanel === nextTab;
+        panel.classList.toggle("active", selected);
+        panel.hidden = !selected;
+    }
+
+    if (!options.skipHash) writeOptionsHash();
+}
+
+function setupSiteDetailTabs() {
+    const tabs = Array.from(document.querySelectorAll("[data-site-tab]"));
+    if (tabs.length === 0) return;
+
+    for (const tab of tabs) {
+        tab.addEventListener("click", () => {
+            activateSiteDetailTab(tab.dataset.siteTab);
+        });
+
+        tab.addEventListener("keydown", event => {
+            const currentIndex = tabs.indexOf(tab);
+            let nextIndex = currentIndex;
+
+            if (event.key === "ArrowRight" || event.key === "ArrowDown") {
+                nextIndex = (currentIndex + 1) % tabs.length;
+            } else if (event.key === "ArrowLeft" || event.key === "ArrowUp") {
+                nextIndex = (currentIndex - 1 + tabs.length) % tabs.length;
+            } else if (event.key === "Home") {
+                nextIndex = 0;
+            } else if (event.key === "End") {
+                nextIndex = tabs.length - 1;
+            } else {
+                return;
+            }
+
+            event.preventDefault();
+            const nextTab = tabs[nextIndex];
+            activateSiteDetailTab(nextTab.dataset.siteTab);
+            nextTab.focus();
+        });
+    }
+}
+
+function activateOptionsTab(tabId, options = {}) {
     const tabs = Array.from(document.querySelectorAll('[role="tab"][data-tab]'));
     const panels = Array.from(document.querySelectorAll("[data-tab-panel]"));
     const alreadySelected = tabs.some(
@@ -2647,7 +2894,8 @@ function activateOptionsTab(tabId) {
         loadLegacyImportFolders();
     }
 
-    if (!alreadySelected) {
+    if (!options.skipHash) writeOptionsHash();
+    if (!alreadySelected && options.scroll !== false) {
         window.scrollTo(0, 0);
     }
 }
@@ -2696,9 +2944,9 @@ function setupOptionsTabs() {
         });
     }
 
-    const initiallySelected =
-        tabs.find(tab => tab.getAttribute("aria-selected") === "true") || tabs[0];
-    activateOptionsTab(initiallySelected.dataset.tab);
+    const route = parseOptionsHash(location.hash);
+    const initialTab = OPTIONS_TABS.has(route.tab) ? route.tab : "general";
+    activateOptionsTab(initialTab, { skipHash: true });
 }
 
 function setupTabJumps() {
@@ -2717,9 +2965,14 @@ function setupTabJumps() {
 function setupEventListeners() {
     try {
         setupOptionsTabs();
+        setupSiteDetailTabs();
         setupStickyTabShadow();
         setupTabJumps();
         setupDirtyTracking();
+        window.addEventListener("hashchange", () => {
+            if (suppressOptionsHashWrite || applyingOptionsHash || !sitesReady) return;
+            applyOptionsLocationHash({ scroll: true });
+        });
 
         document.querySelector("#addSiteBtn")?.addEventListener("click", addSiteFromInput);
         document.querySelector("#addSiteInput")?.addEventListener("keydown", event => {
@@ -2732,7 +2985,10 @@ function setupEventListeners() {
         document.querySelector("#searchSitesInput")?.addEventListener("search", renderSiteList);
         document.querySelector("#siteDetailBack")?.addEventListener("click", closeSiteDetail);
         document.querySelector("#siteDetailHost")?.addEventListener("input", () => validateSiteDetail());
-        document.querySelector("#siteDetailHost")?.addEventListener("blur", () => validateSiteDetail());
+        document.querySelector("#siteDetailHost")?.addEventListener("blur", () => {
+            validateSiteDetail();
+            writeOptionsHash();
+        });
         document.querySelector("#siteKeepParams")?.addEventListener("input", () => validateSiteDetail());
         document.querySelector("#siteKeepParams")?.addEventListener("blur", () => validateSiteDetail());
         document.querySelector("#addClassGroupBtn")?.addEventListener("click", () => createClassGroupRow());
