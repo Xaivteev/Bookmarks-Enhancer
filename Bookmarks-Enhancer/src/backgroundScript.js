@@ -56,6 +56,21 @@ browser.runtime.onMessage.addListener((message, sender, sendResponse) => {
 		return false;
 	}
 
+	if (message && message.getPageRunState) {
+		const url = message.url || (sender && sender.tab && sender.tab.url) || "";
+		ensureSettingsReady()
+			.then(() => sendResponse(getPageRunState(url)))
+			.catch(error => {
+				onError(error);
+				sendResponse({
+					siteMatch: false,
+					runStyling: false,
+					runShortcuts: false
+				});
+			});
+		return true;
+	}
+
 	if (message && message.getLookShortcutState) {
 		const url = message.url || (sender && sender.tab && sender.tab.url) || "";
 		ensureSettingsReady()
@@ -520,6 +535,10 @@ function addUrlToSiteList(url, title, styleId) {
 	return persistSites(sites, { rebuild: false });
 }
 
+function getPageRunState(url) {
+	return getPageRunStateForUrl(url, sites);
+}
+
 function getLookShortcutState(url) {
 	if (!isValidHttpUrl(url)) {
 		return { ok: false, url, styleId: "", site: "" };
@@ -915,8 +934,13 @@ function searchhrefs(hrefs) {
 	return Promise.resolve({ statuses });
 }
 
-browser.tabs.onUpdated.addListener((tabId, changeInfo) => {
-	if (changeInfo.status === "complete" || changeInfo.url) {
-		sendTabMessage(tabId, { refresh: true, mode: "requery" }).catch(() => {});
-	}
+browser.tabs.onUpdated.addListener((tabId, changeInfo, tab) => {
+	if (changeInfo.status !== "complete" && !changeInfo.url) return;
+	const url = (tab && tab.url) || changeInfo.url || "";
+	ensureSettingsReady()
+		.then(() => {
+			if (!getPageRunState(url).runStyling) return;
+			return sendTabMessage(tabId, { refresh: true, mode: "requery" });
+		})
+		.catch(() => {});
 });

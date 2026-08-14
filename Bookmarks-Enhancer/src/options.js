@@ -1695,7 +1695,6 @@ function buildOptionsPayload() {
         payload: {
             enableTopBorder: document.querySelector("#enableTopBorder").checked,
             enableDeepSearch: document.querySelector("#enableDeepSearch").checked,
-            onlyUseSites: document.querySelector("#onlyUseSites").checked,
             enableToastNotifications: document.querySelector("#enableToastNotifications").checked,
             [STYLE_RULE_STORAGE_KEY]: styleRules,
             ...buildSitesStorageWrites(sites)
@@ -1725,7 +1724,6 @@ function getFormSnapshot() {
             general: {
                 enableTopBorder: document.querySelector("#enableTopBorder").checked,
                 enableDeepSearch: document.querySelector("#enableDeepSearch").checked,
-                onlyUseSites: document.querySelector("#onlyUseSites").checked,
                 enableToastNotifications: document.querySelector("#enableToastNotifications").checked
             },
             styleRules: collectStyleRules(),
@@ -1968,7 +1966,6 @@ function persistOptionsFromForm({
             applyLoadedConfiguration(sites, styleRules, {
                 enableTopBorder: payload.enableTopBorder,
                 enableDeepSearch: payload.enableDeepSearch,
-                onlyUseSites: payload.onlyUseSites,
                 enableToastNotifications: payload.enableToastNotifications
             });
             if (openHost) {
@@ -2025,9 +2022,6 @@ function applyLoadedConfiguration(sites, styleRules, general = {}) {
     if (general.enableDeepSearch !== undefined) {
         document.querySelector("#enableDeepSearch").checked = !!general.enableDeepSearch;
     }
-    if (general.onlyUseSites !== undefined) {
-        document.querySelector("#onlyUseSites").checked = !!general.onlyUseSites;
-    }
     if (general.enableToastNotifications !== undefined) {
         document.querySelector("#enableToastNotifications").checked =
             general.enableToastNotifications !== false;
@@ -2056,7 +2050,6 @@ function restoreOptions() {
                 applyLoadedConfiguration(sites, styleRules, {
                     enableTopBorder: !!result.enableTopBorder,
                     enableDeepSearch: !!result.enableDeepSearch,
-                    onlyUseSites: !!result.onlyUseSites,
                     enableToastNotifications: result.enableToastNotifications !== false
                 });
             });
@@ -2122,7 +2115,6 @@ function buildExportPayload() {
         sites: collectSitesFromUi(),
         styleRules: normalizeStyleRules(collectStyleRules()),
         enableTopBorder: document.querySelector("#enableTopBorder").checked,
-        onlyUseSites: document.querySelector("#onlyUseSites").checked,
         enableDeepSearch: document.querySelector("#enableDeepSearch").checked,
         enableToastNotifications: document.querySelector("#enableToastNotifications").checked
     };
@@ -2239,13 +2231,6 @@ function importFromJson(jsonString) {
         }
 
         if (
-            data.onlyUseSites !== undefined &&
-            typeof data.onlyUseSites !== "boolean"
-        ) {
-            throw new Error("Invalid onlyUseSites");
-        }
-
-        if (
             data.enableToastNotifications !== undefined &&
             typeof data.enableToastNotifications !== "boolean"
         ) {
@@ -2284,7 +2269,6 @@ function importFromJson(jsonString) {
         applyLoadedConfiguration(sites, styleRules, {
             enableDeepSearch: data.enableDeepSearch,
             enableTopBorder: data.enableTopBorder,
-            onlyUseSites: data.onlyUseSites,
             enableToastNotifications: data.enableToastNotifications
         });
         setSitesReady(true);

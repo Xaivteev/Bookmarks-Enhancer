@@ -251,9 +251,20 @@ function swallowLookShortcutEvent(event) {
 }
 
 function attachLookShortcutEventGuards() {
+	if (globalThis.__beLookShortcutGuardsAttached) return;
+	globalThis.__beLookShortcutGuardsAttached = true;
 	const capture = { capture: true, passive: false };
 	for (const type of LOOK_SHORTCUT_BLOCKED_EVENTS) {
 		window.addEventListener(type, swallowLookShortcutEvent, capture);
+	}
+}
+
+function detachLookShortcutEventGuards() {
+	if (!globalThis.__beLookShortcutGuardsAttached) return;
+	globalThis.__beLookShortcutGuardsAttached = false;
+	const capture = { capture: true, passive: false };
+	for (const type of LOOK_SHORTCUT_BLOCKED_EVENTS) {
+		window.removeEventListener(type, swallowLookShortcutEvent, capture);
 	}
 }
 
@@ -397,41 +408,81 @@ function loadLookShortcutSettings() {
 	}).catch(() => {});
 }
 
-browser.runtime.onMessage.addListener(message => {
-	if (!message) return;
-	if (message.lookShortcutState) {
-		applyLookShortcutState(message.lookShortcutState);
-		return;
+let lookShortcutsArmed = false;
+let lookShortcutNavHooksInstalled = false;
+
+function installLookShortcutNavHooks() {
+	if (lookShortcutNavHooksInstalled) return;
+	lookShortcutNavHooksInstalled = true;
+	window.addEventListener("popstate", refreshLookShortcutState);
+	window.addEventListener("hashchange", refreshLookShortcutState);
+
+	try {
+		const originalPushState = history.pushState;
+		history.pushState = function patchedPushState(...args) {
+			const result = originalPushState.apply(this, args);
+			if (lookShortcutsArmed) refreshLookShortcutState();
+			return result;
+		};
+		const originalReplaceState = history.replaceState;
+		history.replaceState = function patchedReplaceState(...args) {
+			const result = originalReplaceState.apply(this, args);
+			if (lookShortcutsArmed) refreshLookShortcutState();
+			return result;
+		};
+	} catch {
+		// Some pages lock history; tabs.onUpdated still refreshes the overlay.
 	}
-	if (message.refresh && message.reloadConfig) {
+}
+
+function armLookShortcuts() {
+	if (lookShortcutsArmed) {
 		loadLookShortcutSettings();
 		return;
 	}
+	lookShortcutsArmed = true;
+	attachLookShortcutEventGuards();
+	installLookShortcutNavHooks();
+	loadLookShortcutSettings();
+}
+
+function disarmLookShortcuts() {
+	lookShortcutsArmed = false;
+	detachLookShortcutEventGuards();
+	removeOverlay();
+	shortcutSites = [];
+	shortcutStyleRules = [];
+	cachedPageStyleId = "";
+	cachedPageUrl = "";
+}
+
+function syncLookShortcutsRunState(state) {
+	if (state && state.runShortcuts) armLookShortcuts();
+	else disarmLookShortcuts();
+}
+
+function requestLookShortcutRunState() {
+	return browser.runtime.sendMessage({
+		getPageRunState: true,
+		url: location.href
+	}).catch(() => ({ runShortcuts: false }));
+}
+
+browser.runtime.onMessage.addListener(message => {
+	if (!message) return;
+	if (message.lookShortcutState) {
+		if (lookShortcutsArmed) applyLookShortcutState(message.lookShortcutState);
+		return;
+	}
+	if (message.refresh && message.reloadConfig) {
+		requestLookShortcutRunState().then(syncLookShortcutsRunState);
+		return;
+	}
+	if (!lookShortcutsArmed) return;
 	if (message.refresh || message.statusUpdates) {
 		refreshLookShortcutState();
 	}
 });
 
-window.addEventListener("popstate", refreshLookShortcutState);
-window.addEventListener("hashchange", refreshLookShortcutState);
-
-try {
-	const originalPushState = history.pushState;
-	history.pushState = function patchedPushState(...args) {
-		const result = originalPushState.apply(this, args);
-		refreshLookShortcutState();
-		return result;
-	};
-	const originalReplaceState = history.replaceState;
-	history.replaceState = function patchedReplaceState(...args) {
-		const result = originalReplaceState.apply(this, args);
-		refreshLookShortcutState();
-		return result;
-	};
-} catch {
-	// Some pages lock history; tabs.onUpdated still refreshes the overlay.
-}
-
-attachLookShortcutEventGuards();
-loadLookShortcutSettings();
+requestLookShortcutRunState().then(syncLookShortcutsRunState);
 }

@@ -9,7 +9,6 @@ globalThis.__beContentScriptInstalled = true;
 // Storage keys: STORAGE_KEYS from utils.js
 
 // Load settings from config
-let searchPairs = [];
 let loadedSites = [];
 let classesForSearch = [];
 let preparedStyleRules = DEFAULT_STYLE_RULES.map(rule => ({ ...rule }));
@@ -17,7 +16,6 @@ let preparedTextRules = [];
 let searchSite = true;
 let enableTopBorder = false;
 let enableDeepSearch = false;
-let onlyUseSites = false;
 let enableToastNotifications = true;
 let managedClassNames = [];
 // Defaults only include built-in ids (blocked/favorited/seen). Custom UUID styles
@@ -26,19 +24,46 @@ let managedClassNames = [];
 let settingsLoaded = false;
 let pendingRuntimeMessages = [];
 
-let getting = browser.storage.local.get([
-    STORAGE_KEYS.sites,
-    LEGACY_STORAGE_KEYS.searchPairs,
-    LEGACY_STORAGE_KEYS.urlRules,
-    LEGACY_STORAGE_KEYS.textRules,
-    LEGACY_STORAGE_KEYS.textFilters,
-    STORAGE_KEYS.styleRules,
-    STORAGE_KEYS.enableTopBorder,
-    STORAGE_KEYS.enableDeepSearch,
-    STORAGE_KEYS.onlyUseSites,
-    STORAGE_KEYS.enableToastNotifications
-]);
-getting.then(onGot, onError);
+const CONTENT_SETTINGS_KEYS = [
+	STORAGE_KEYS.sites,
+	LEGACY_STORAGE_KEYS.searchPairs,
+	LEGACY_STORAGE_KEYS.urlRules,
+	LEGACY_STORAGE_KEYS.textRules,
+	LEGACY_STORAGE_KEYS.textFilters,
+	STORAGE_KEYS.styleRules,
+	STORAGE_KEYS.enableTopBorder,
+	STORAGE_KEYS.enableDeepSearch,
+	STORAGE_KEYS.enableToastNotifications
+];
+
+function loadContentSettings() {
+	return browser.storage.local.get(CONTENT_SETTINGS_KEYS);
+}
+
+function requestPageRunState() {
+	return browser.runtime.sendMessage({
+		getPageRunState: true,
+		url: location.href
+	}).catch(() => ({
+		siteMatch: true,
+		runStyling: true,
+		runShortcuts: false
+	}));
+}
+
+function startContentScript() {
+	requestPageRunState().then(state => {
+		if (!state || !state.runStyling) {
+			searchSite = false;
+			settingsLoaded = true;
+			flushPendingRuntimeMessages();
+			return;
+		}
+		return loadContentSettings().then(onGot, onError);
+	}).catch(onError);
+}
+
+startContentScript();
 
 function onError(error) {
     console.log(`Error: ${error}`);
@@ -77,16 +102,11 @@ function getConfiguredClassGroups(pairs) {
 }
 
 function updateClassesForSearch() {
-	if (onlyUseSites) {
-		const matchingSites = loadedSites.filter(siteConfig =>
-			hostnameMatchesSite(window.location.hostname, siteConfig.site)
-		);
-		searchSite = matchingSites.length > 0;
-		classesForSearch = getConfiguredClassGroups(sitesToSearchPairs(matchingSites));
-	} else {
-		classesForSearch = getConfiguredClassGroups(searchPairs);
-		searchSite = true;
-	}
+	const matchingSites = loadedSites.filter(siteConfig =>
+		hostnameMatchesSite(window.location.hostname, siteConfig.site)
+	);
+	searchSite = matchingSites.length > 0;
+	classesForSearch = getConfiguredClassGroups(sitesToSearchPairs(matchingSites));
 }
 
 function applySitesConfig(item) {
@@ -100,7 +120,6 @@ function applySitesConfig(item) {
 		textRules: Array.isArray(siteConfig?.textRules) ? siteConfig.textRules : [],
 		linkFolders: Array.isArray(siteConfig?.linkFolders) ? siteConfig.linkFolders : []
 	})).filter(siteConfig => siteConfig.site);
-	searchPairs = sitesToSearchPairs(loadedSites);
 	urlRules = sitesToUrlRules(loadedSites);
 	preparedTextRules = preprocessTextRules(sitesToTextRules(loadedSites));
 	updateClassesForSearch();
@@ -111,7 +130,6 @@ function applyLoadedSettings(item) {
 	refreshManagedClassNames();
 	enableTopBorder = !!item[STORAGE_KEYS.enableTopBorder];
 	enableDeepSearch = !!item[STORAGE_KEYS.enableDeepSearch];
-	onlyUseSites = !!item[STORAGE_KEYS.onlyUseSites];
 	enableToastNotifications = item[STORAGE_KEYS.enableToastNotifications] !== false;
 	applySitesConfig(item);
 	settingsLoaded = true;
@@ -123,32 +141,63 @@ function onGot(item) {
 	flushPendingRuntimeMessages();
 }
 
+function stopPageProcessing() {
+	searchSite = false;
+	if (observer) {
+		observer.disconnect();
+		observer = null;
+	}
+	if (mutationDebounceTimer) {
+		clearTimeout(mutationDebounceTimer);
+		mutationDebounceTimer = null;
+	}
+	for (const timer of warmupRescanTimers) {
+		clearTimeout(timer);
+	}
+	warmupRescanTimers = [];
+	if (lookupRetryTimer) {
+		clearTimeout(lookupRetryTimer);
+		lookupRetryTimer = null;
+	}
+	if (typeof managedClassNames !== "undefined" && managedClassNames.length) {
+		removeStatusClasses(managedClassNames);
+	}
+	if (typeof clearExtensionTopBorder === "function") {
+		clearExtensionTopBorder();
+	}
+}
+
 function reloadContentSettings() {
-	return browser.storage.local.get([
-		STORAGE_KEYS.sites,
-		STORAGE_KEYS.styleRules,
-		STORAGE_KEYS.enableTopBorder,
-		STORAGE_KEYS.enableDeepSearch,
-		STORAGE_KEYS.onlyUseSites,
-		STORAGE_KEYS.enableToastNotifications
-	]).then(item => {
-		const previousClassNames = managedClassNames.slice();
-		applyLoadedSettings(item);
-		if (!enableTopBorder) {
-			clearExtensionTopBorder();
+	return requestPageRunState().then(state => {
+		if (!state || !state.runStyling) {
+			stopPageProcessing();
+			settingsLoaded = true;
+			return;
 		}
-		if (!enableToastNotifications) {
-			stylingIndicatorDepth = 0;
-			if (stylingIndicatorShowTimer) {
-				clearTimeout(stylingIndicatorShowTimer);
-				stylingIndicatorShowTimer = null;
+
+		return loadContentSettings().then(item => {
+			const previousClassNames = managedClassNames.slice();
+			applyLoadedSettings(item);
+			if (!searchSite) {
+				stopPageProcessing();
+				return;
 			}
-			hideStylingIndicator();
-		}
-		removeStatusClasses(previousClassNames);
-		injectBookmarkStyles();
-		invalidateUrlDependentCaches();
-		invalidateTextFilterCache();
+			if (!enableTopBorder) {
+				clearExtensionTopBorder();
+			}
+			if (!enableToastNotifications) {
+				stylingIndicatorDepth = 0;
+				if (stylingIndicatorShowTimer) {
+					clearTimeout(stylingIndicatorShowTimer);
+					stylingIndicatorShowTimer = null;
+				}
+				hideStylingIndicator();
+			}
+			removeStatusClasses(previousClassNames);
+			injectBookmarkStyles();
+			invalidateUrlDependentCaches();
+			invalidateTextFilterCache();
+		});
 	}).catch(onError);
 }
 
@@ -776,12 +825,17 @@ function handleRuntimeMessage(message) {
 	}
 
 	if (message.refresh) {
-		const runRefresh = () => handleConfigRefresh(message);
 		if (message.reloadConfig) {
-			reloadContentSettings().then(runRefresh);
+			const wasIdle = !observer;
+			reloadContentSettings().then(() => {
+				if (!searchSite) return;
+				if (wasIdle) initProcessing();
+				else handleConfigRefresh(message);
+			});
 			return;
 		}
-		runRefresh();
+		if (!searchSite) return;
+		handleConfigRefresh(message);
 	}
 }
 

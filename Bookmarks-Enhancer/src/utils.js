@@ -6,7 +6,6 @@ const STORAGE_KEYS = {
 	styleRules: "styleRules",
 	enableTopBorder: "enableTopBorder",
 	enableDeepSearch: "enableDeepSearch",
-	onlyUseSites: "onlyUseSites",
 	enableToastNotifications: "enableToastNotifications",
 	// Options UI only — not part of config export/import or page refresh.
 	hideGettingStarted: "hideGettingStarted"
@@ -21,7 +20,8 @@ const LEGACY_STORAGE_KEYS = {
 	textFilters: "textFilters",
 	enableSeenStyling: "enableSeenStyling",
 	blockedFolderId: "blockedFolderId",
-	favoritedFolderId: "favoritedFolderId"
+	favoritedFolderId: "favoritedFolderId",
+	onlyUseSites: "onlyUseSites"
 };
 
 const CONFIG_REFRESH_STORAGE_KEYS = [
@@ -29,7 +29,6 @@ const CONFIG_REFRESH_STORAGE_KEYS = [
 	STORAGE_KEYS.styleRules,
 	STORAGE_KEYS.enableTopBorder,
 	STORAGE_KEYS.enableDeepSearch,
-	STORAGE_KEYS.onlyUseSites,
 	STORAGE_KEYS.enableToastNotifications
 ];
 
@@ -1314,6 +1313,25 @@ function hostnameMatchesSite(hostname, site) {
 
 	return normalizedHostname === normalizedSite ||
 		normalizedHostname.endsWith(`.${normalizedSite}`);
+}
+
+function getPageRunStateForUrl(url, sites) {
+	const idle = { siteMatch: false, runStyling: false, runShortcuts: false };
+	if (typeof url !== "string" || !/^https?:/i.test(url)) return idle;
+
+	let hostname = "";
+	try {
+		hostname = new URL(url).hostname;
+	} catch {
+		return idle;
+	}
+
+	const siteMatch = !!findMatchingSiteConfig(sites, hostname);
+	return {
+		siteMatch,
+		runShortcuts: siteMatch,
+		runStyling: siteMatch
+	};
 }
 
 /**
