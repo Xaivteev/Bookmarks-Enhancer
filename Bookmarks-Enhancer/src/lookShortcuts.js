@@ -322,7 +322,7 @@ function toggleLookShortcut(styleId) {
 		toggleLookShortcut: true,
 		styleId,
 		url: location.href,
-		title: document.title || location.href
+		title: document.title || ""
 	}).catch(() => {}).finally(() => {
 		pendingShortcutToggles.delete(styleId);
 		renderLookShortcuts();

@@ -526,14 +526,12 @@ function collectLinkFoldersFromDetail() {
 }
 
 function collectSavedLinksFromDetail() {
-    return Array.from(document.querySelectorAll(".savedLinkGroup")).flatMap(group => {
-        const style = group.dataset.styleId || "blocked";
-        return Array.from(group.querySelectorAll("tbody tr")).map(row => ({
-            url: row.querySelector(".savedLinkUrl")?.value.trim() || "",
-            title: row.querySelector(".savedLinkTitle")?.value.trim() || "",
-            style
-        }));
-    }).filter(link => link.url || link.title);
+    for (const group of document.querySelectorAll(".savedLinkGroup")) {
+        flushSavedLinkGroupPage(group);
+    }
+    const folderIds = new Set(collectLinkFoldersFromDetail());
+    const links = sitesDraft[selectedSiteIndex]?.links || [];
+    return links.filter(link => folderIds.has(link.style || "blocked"));
 }
 
 function collectTextRulesFromDetail() {
@@ -908,12 +906,76 @@ function createClassGroupRow(classes = "") {
 }
 
 let savedLinkFieldIdSeq = 0;
+const SAVED_LINK_PAGE_SIZE = 100;
 
 function getLookLabel(styleId) {
     const rules = getAvailableStyleRules();
     const rule = rules.find(entry => entry.id === styleId);
     if (rule?.name) return rule.name;
     return styleId ? `Missing look (${styleId})` : "Look";
+}
+
+function linksForLook(styleId) {
+    const site = sitesDraft[selectedSiteIndex];
+    if (!site || !styleId) return [];
+    return (site.links || []).filter(link => (link.style || "blocked") === styleId);
+}
+
+function replaceLinksForLook(styleId, lookLinks) {
+    const site = sitesDraft[selectedSiteIndex];
+    if (!site || !styleId) return;
+    const others = (site.links || []).filter(link => (link.style || "blocked") !== styleId);
+    site.links = others.concat((lookLinks || []).map(link => ({
+        url: typeof link.url === "string" ? link.url : "",
+        title: typeof link.title === "string" ? link.title : "",
+        style: styleId
+    })));
+}
+
+function collectVisibleSavedLinkRows(group) {
+    return Array.from(group.querySelectorAll("tbody tr")).map(row => ({
+        url: row.querySelector(".savedLinkUrl")?.value.trim() || "",
+        title: row.querySelector(".savedLinkTitle")?.value.trim() || "",
+        style: group.dataset.styleId || "blocked",
+        lookIndex: Number(row.dataset.lookIndex)
+    }));
+}
+
+function getGroupLinkSearchQuery(group) {
+    return (group.querySelector(".savedLinkSearchInput")?.value || "").trim().toLowerCase();
+}
+
+function savedLinkMatchesSearch(link, query) {
+    if (!query) return true;
+    const url = (link?.url || "").toLowerCase();
+    const title = (link?.title || "").toLowerCase();
+    return url.includes(query) || title.includes(query);
+}
+
+function filteredLookEntries(group) {
+    const query = getGroupLinkSearchQuery(group);
+    return linksForLook(group.dataset.styleId).map((link, lookIndex) => ({ link, lookIndex }))
+        .filter(({ link }) => savedLinkMatchesSearch(link, query));
+}
+
+function flushSavedLinkGroupPage(group) {
+    if (!group || group.dataset.expanded !== "true" || !group.querySelector("tbody")) {
+        return;
+    }
+    const styleId = group.dataset.styleId;
+    if (!styleId) return;
+    const all = linksForLook(styleId);
+    for (const row of collectVisibleSavedLinkRows(group)) {
+        if (!Number.isInteger(row.lookIndex) || row.lookIndex < 0 || row.lookIndex >= all.length) {
+            continue;
+        }
+        all[row.lookIndex] = {
+            url: row.url,
+            title: row.title,
+            style: styleId
+        };
+    }
+    replaceLinksForLook(styleId, all);
 }
 
 function refreshSavedLinkGroupEmptyStates() {
@@ -924,16 +986,7 @@ function refreshSavedLinkGroupEmptyStates() {
     }
 
     for (const group of groups) {
-        const tbody = group.querySelector("tbody");
-        const empty = group.querySelector(".savedLinkGroupEmpty");
-        const table = group.querySelector("table");
-        const count = group.querySelector(".savedLinkGroupCount");
-        const rowCount = tbody ? tbody.querySelectorAll("tr").length : 0;
-        if (empty) empty.hidden = rowCount > 0;
-        if (table) table.classList.toggle("is-empty", rowCount === 0);
-        if (count) {
-            count.textContent = formatCount(rowCount, "link");
-        }
+        updateSavedLinkGroupMeta(group);
         const moveSelects = group.querySelectorAll(".savedLinkMove");
         for (const select of moveSelects) {
             if (select.value !== group.dataset.styleId) {
@@ -942,6 +995,58 @@ function refreshSavedLinkGroupEmptyStates() {
         }
     }
     refreshAddLinkFolderSelect();
+}
+
+function updateSavedLinkGroupMeta(group) {
+    const styleId = group.dataset.styleId;
+    const total = linksForLook(styleId).length;
+    const expanded = group.dataset.expanded === "true";
+    const query = getGroupLinkSearchQuery(group);
+    const filteredTotal = expanded ? filteredLookEntries(group).length : total;
+    const page = Number(group.dataset.page || "1") || 1;
+    const totalPages = Math.max(1, Math.ceil(Math.max(filteredTotal, 1) / SAVED_LINK_PAGE_SIZE));
+    const start = filteredTotal === 0 ? 0 : (page - 1) * SAVED_LINK_PAGE_SIZE + 1;
+    const end = Math.min(page * SAVED_LINK_PAGE_SIZE, filteredTotal);
+
+    const count = group.querySelector(".savedLinkGroupCount");
+    if (count) count.textContent = formatCount(total, "link");
+
+    const toggle = group.querySelector(".savedLinkGroupToggle");
+    if (toggle) toggle.setAttribute("aria-expanded", expanded ? "true" : "false");
+    group.classList.toggle("is-expanded", expanded);
+
+    const empty = group.querySelector(".savedLinkGroupEmpty");
+    const table = group.querySelector("table");
+    const pager = group.querySelector(".savedLinkPager");
+    const visibleRows = group.querySelectorAll("tbody tr").length;
+    if (empty) {
+        if (query && filteredTotal === 0) {
+            empty.textContent = "No links match that search.";
+            empty.hidden = !expanded;
+        } else {
+            empty.textContent = "No links in this look yet.";
+            empty.hidden = !expanded || visibleRows > 0 || total > 0;
+        }
+    }
+    if (table) {
+        table.hidden = !expanded || visibleRows === 0;
+        table.classList.toggle("is-empty", visibleRows === 0);
+    }
+    if (pager) {
+        pager.hidden = !expanded || filteredTotal <= SAVED_LINK_PAGE_SIZE;
+        const status = pager.querySelector(".savedLinkPagerStatus");
+        if (status) {
+            status.textContent = filteredTotal === 0
+                ? ""
+                : (query
+                    ? `${start}–${end} of ${filteredTotal} matches`
+                    : `${start}–${end} of ${formatCount(total, "link")}`);
+        }
+        const prev = pager.querySelector(".savedLinkPagerPrev");
+        const next = pager.querySelector(".savedLinkPagerNext");
+        if (prev) prev.disabled = page <= 1;
+        if (next) next.disabled = page >= totalPages;
+    }
 }
 
 function refreshAddLinkFolderSelect() {
@@ -990,36 +1095,53 @@ function addLinkFolderFromSelect() {
     if (document.querySelector(`.savedLinkGroup[data-style-id="${CSS.escape(styleId)}"]`)) {
         return;
     }
-    createSavedLinkGroup(styleId, []);
+    createSavedLinkGroup(styleId);
     scheduleDirtyUiUpdate();
 }
 
-function createSavedLinkGroup(styleId, links = []) {
+function createSavedLinkGroup(styleId) {
     const groupsRoot = document.querySelector("#savedLinkGroups");
     if (!groupsRoot || !styleId) return null;
 
     const group = document.createElement("section");
     group.className = "savedLinkGroup";
     group.dataset.styleId = styleId;
+    group.dataset.expanded = "false";
+    group.dataset.page = "1";
 
     const header = document.createElement("div");
     header.className = "savedLinkGroupHeader";
 
-    const heading = document.createElement("h3");
+    const toggle = document.createElement("button");
+    toggle.type = "button";
+    toggle.className = "savedLinkGroupToggle";
+    toggle.setAttribute("aria-expanded", "false");
+    toggle.setAttribute("aria-label", `Show links for ${getLookLabel(styleId)}`);
+
+    const chevron = document.createElement("span");
+    chevron.className = "savedLinkGroupChevron";
+    chevron.setAttribute("aria-hidden", "true");
+    chevron.textContent = "▸";
+
+    const heading = document.createElement("span");
     heading.className = "savedLinkGroupTitle";
     heading.textContent = getLookLabel(styleId);
 
     const count = document.createElement("span");
     count.className = "savedLinkGroupCount";
 
+    toggle.append(chevron, heading, count);
+    toggle.addEventListener("click", () => toggleSavedLinkGroup(group));
+
     const deleteFolderBtn = createDeleteButton(() => {
-        const rowCount = group.querySelectorAll("tbody tr").length;
+        const rowCount = linksForLook(styleId).length;
         if (rowCount > 0) {
             const confirmed = window.confirm(
                 `Remove the "${getLookLabel(styleId)}" folder and its ${formatCount(rowCount, "link")} from this site?`
             );
             if (!confirmed) return;
         }
+        replaceLinksForLook(styleId, []);
         group.remove();
         validateSiteDetail();
         refreshSavedLinkGroupEmptyStates();
@@ -1028,11 +1150,55 @@ function createSavedLinkGroup(styleId, links = []) {
     deleteFolderBtn.classList.add("savedLinkGroupDelete");
     deleteFolderBtn.setAttribute("aria-label", `Remove ${getLookLabel(styleId)} folder`);
     deleteFolderBtn.title = "Remove folder";
-    header.append(heading, count, deleteFolderBtn);
+    header.append(toggle, deleteFolderBtn);
+
+    group.append(header);
+    groupsRoot.appendChild(group);
+    refreshSavedLinkGroupEmptyStates();
+    return group;
+}
+
+function toggleSavedLinkGroup(group) {
+    if (group.dataset.expanded === "true") {
+        collapseSavedLinkGroup(group);
+    } else {
+        expandSavedLinkGroup(group, Number(group.dataset.page || "1") || 1);
+    }
+}
+
+function collapseSavedLinkGroup(group) {
+    flushSavedLinkGroupPage(group);
+    group.dataset.expanded = "false";
+    group.querySelector(".savedLinkGroupBody")?.remove();
+    const toggle = group.querySelector(".savedLinkGroupToggle");
+    if (toggle) {
+        toggle.setAttribute("aria-label", `Show links for ${getLookLabel(group.dataset.styleId)}`);
+    }
+    refreshSavedLinkGroupEmptyStates();
+}
+
+function ensureSavedLinkGroupBody(group) {
+    let body = group.querySelector(".savedLinkGroupBody");
+    if (body) return body;
+
+    body = document.createElement("div");
+    body.className = "savedLinkGroupBody";
+
+    const search = document.createElement("input");
+    search.type = "search";
+    search.className = "savedLinkSearchInput";
+    search.placeholder = "Search links…";
+    search.setAttribute("aria-label", `Search ${getLookLabel(group.dataset.styleId)} links`);
+    search.autocomplete = "off";
+    search.addEventListener("keydown", event => {
+        if (event.key === "Enter") event.preventDefault();
+    });
+    search.addEventListener("input", () => expandSavedLinkGroup(group, 1));
+    search.addEventListener("search", () => expandSavedLinkGroup(group, 1));
 
     const table = document.createElement("table");
     const thead = document.createElement("thead");
-    thead.innerHTML = "<tr><th>URL</th><th>Title</th><th>Actions</th></tr>";
+    thead.innerHTML = "<tr><th>Title</th><th>URL</th><th>Actions</th></tr>";
     const tbody = document.createElement("tbody");
     table.append(thead, tbody);
 
@@ -1040,20 +1206,77 @@ function createSavedLinkGroup(styleId, links = []) {
     empty.className = "tableEmptyState savedLinkGroupEmpty";
     empty.textContent = "No links in this look yet.";
 
+    const pager = document.createElement("div");
+    pager.className = "savedLinkPager";
+    const status = document.createElement("span");
+    status.className = "savedLinkPagerStatus";
+    const prev = document.createElement("button");
+    prev.type = "button";
+    prev.className = "savedLinkPagerPrev";
+    prev.textContent = "Previous";
+    prev.addEventListener("click", () => {
+        const page = Number(group.dataset.page || "1") || 1;
+        expandSavedLinkGroup(group, page - 1);
+    });
+    const next = document.createElement("button");
+    next.type = "button";
+    next.className = "savedLinkPagerNext";
+    next.textContent = "Next";
+    next.addEventListener("click", () => {
+        const page = Number(group.dataset.page || "1") || 1;
+        expandSavedLinkGroup(group, page + 1);
+    });
+    pager.append(status, prev, next);
+
     const addBtn = document.createElement("button");
     addBtn.type = "button";
     addBtn.className = "addSavedLinkBtn";
     addBtn.textContent = "Add link";
-    addBtn.addEventListener("click", () => createSavedLinkRow("", "", group));
+    addBtn.addEventListener("click", () => addSavedLinkToGroup(group));
 
-    group.append(header, table, empty, addBtn);
-    groupsRoot.appendChild(group);
+    body.append(search, table, empty, pager, addBtn);
+    group.appendChild(body);
+    return body;
+}
 
-    for (const link of links) {
-        createSavedLinkRow(link.url, link.title, group);
+function expandSavedLinkGroup(group, page = 1, { skipFlush = false } = {}) {
+    if (!skipFlush) flushSavedLinkGroupPage(group);
+    ensureSavedLinkGroupBody(group);
+    const styleId = group.dataset.styleId;
+    const entries = filteredLookEntries(group);
+    const totalPages = Math.max(1, Math.ceil(Math.max(entries.length, 1) / SAVED_LINK_PAGE_SIZE));
+    const nextPage = Math.min(Math.max(1, page), totalPages);
+    const start = (nextPage - 1) * SAVED_LINK_PAGE_SIZE;
+    const slice = entries.slice(start, start + SAVED_LINK_PAGE_SIZE);
+
+    group.dataset.expanded = "true";
+    group.dataset.page = String(nextPage);
+    const tbody = group.querySelector("tbody");
+    tbody.replaceChildren();
+    for (const { link, lookIndex } of slice) {
+        createSavedLinkRow(link.url, link.title, group, true, lookIndex);
+    }
+    group.dataset.loadedCount = String(slice.length);
+
+    const toggle = group.querySelector(".savedLinkGroupToggle");
+    if (toggle) {
+        toggle.setAttribute("aria-label", `Hide links for ${getLookLabel(styleId)}`);
     }
     refreshSavedLinkGroupEmptyStates();
-    return group;
+}
+
+function addSavedLinkToGroup(group) {
+    const styleId = group.dataset.styleId;
+    flushSavedLinkGroupPage(group);
+    const search = group.querySelector(".savedLinkSearchInput");
+    if (search) search.value = "";
+    const all = linksForLook(styleId);
+    all.push({ url: "", title: "", style: styleId });
+    replaceLinksForLook(styleId, all);
+    const lastPage = Math.max(1, Math.ceil(all.length / SAVED_LINK_PAGE_SIZE));
+    expandSavedLinkGroup(group, lastPage);
+    group.querySelector("tbody tr:last-child .savedLinkUrl")?.focus();
+    scheduleDirtyUiUpdate();
 }
 
 function renderSavedLinkGroups(links = [], folderIds = []) {
@@ -1061,15 +1284,8 @@ function renderSavedLinkGroups(links = [], folderIds = []) {
     if (!groupsRoot) return;
     groupsRoot.replaceChildren();
 
-    const byStyle = new Map();
-    for (const link of links || []) {
-        const styleId = link.style || "blocked";
-        if (!byStyle.has(styleId)) byStyle.set(styleId, []);
-        byStyle.get(styleId).push(link);
-    }
-
     for (const styleId of normalizeLinkFolderIds(folderIds, links)) {
-        createSavedLinkGroup(styleId, byStyle.get(styleId) || []);
+        createSavedLinkGroup(styleId);
     }
 
     refreshSavedLinkGroupEmptyStates();
@@ -1084,7 +1300,7 @@ function syncSavedLinkGroupsToLooks() {
     for (const group of Array.from(groupsRoot.querySelectorAll(".savedLinkGroup"))) {
         const styleId = group.dataset.styleId;
         const title = group.querySelector(".savedLinkGroupTitle");
-        const hasRows = group.querySelectorAll("tbody tr").length > 0;
+        const hasRows = linksForLook(styleId).length > 0;
         if (lookIds.has(styleId)) {
             if (title) title.textContent = getLookLabel(styleId);
             continue;
@@ -1101,28 +1317,49 @@ function syncSavedLinkGroupsToLooks() {
 
 function moveSavedLinkRow(row, styleId) {
     if (!row || !styleId) return;
-    let group = document.querySelector(`.savedLinkGroup[data-style-id="${CSS.escape(styleId)}"]`);
-    if (!group) {
-        group = createSavedLinkGroup(styleId, []);
+    const sourceGroup = row.closest(".savedLinkGroup");
+    if (!sourceGroup) return;
+    const oldStyleId = sourceGroup.dataset.styleId;
+    if (!oldStyleId || oldStyleId === styleId) return;
+
+    const lookIndex = Number(row.dataset.lookIndex);
+    const page = Number(sourceGroup.dataset.page || "1") || 1;
+    flushSavedLinkGroupPage(sourceGroup);
+    const from = linksForLook(oldStyleId);
+    if (!Number.isInteger(lookIndex) || lookIndex < 0 || lookIndex >= from.length) return;
+    const [moved] = from.splice(lookIndex, 1);
+    if (!moved) return;
+    moved.style = styleId;
+    replaceLinksForLook(oldStyleId, from);
+
+    let destGroup = document.querySelector(`.savedLinkGroup[data-style-id="${CSS.escape(styleId)}"]`);
+    if (destGroup?.dataset.expanded === "true") {
+        flushSavedLinkGroupPage(destGroup);
     }
-    const tbody = group?.querySelector("tbody");
-    if (!tbody) return;
-    tbody.appendChild(row);
-    const moveSelect = row.querySelector(".savedLinkMove");
-    if (moveSelect && moveSelect.value !== styleId) {
-        populateStyleSelect(moveSelect, styleId);
+    replaceLinksForLook(styleId, [...linksForLook(styleId), moved]);
+    if (!destGroup) {
+        destGroup = createSavedLinkGroup(styleId);
+    }
+    expandSavedLinkGroup(sourceGroup, page, { skipFlush: true });
+    if (destGroup?.dataset.expanded === "true") {
+        expandSavedLinkGroup(destGroup, Number(destGroup.dataset.page || "1") || 1, { skipFlush: true });
+    } else {
+        updateSavedLinkGroupMeta(destGroup);
     }
     validateSiteDetail();
     refreshSavedLinkGroupEmptyStates();
     scheduleDirtyUiUpdate();
 }
 
-function createSavedLinkRow(url = "", title = "", group = null) {
+function createSavedLinkRow(url = "", title = "", group = null, silent = false, lookIndex = null) {
     if (!group) return;
     const tbody = group.querySelector("tbody");
     if (!tbody) return;
 
     const row = document.createElement("tr");
+    if (lookIndex != null && lookIndex !== "") {
+        row.dataset.lookIndex = String(lookIndex);
+    }
     const idSuffix = `sl-${++savedLinkFieldIdSeq}`;
 
     const urlCell = document.createElement("td");
@@ -1142,7 +1379,7 @@ function createSavedLinkRow(url = "", title = "", group = null) {
     titleInput.type = "text";
     titleInput.className = "savedLinkTitle";
     titleInput.value = title || "";
-    titleInput.placeholder = "Optional title";
+    titleInput.placeholder = "Title";
     titleInput.setAttribute("aria-label", "Title");
     titleInput.autocomplete = "off";
     titleCell.appendChild(titleInput);
@@ -1159,18 +1396,28 @@ function createSavedLinkRow(url = "", title = "", group = null) {
     actionCell.appendChild(createRowActions(
         moveSelect,
         createDeleteButton(() => {
-            row.remove();
+            const page = Number(group.dataset.page || "1") || 1;
+            const lookIndex = Number(row.dataset.lookIndex);
+            flushSavedLinkGroupPage(group);
+            const all = linksForLook(group.dataset.styleId);
+            if (Number.isInteger(lookIndex) && lookIndex >= 0 && lookIndex < all.length) {
+                all.splice(lookIndex, 1);
+                replaceLinksForLook(group.dataset.styleId, all);
+            }
+            const filteredTotal = filteredLookEntries(group).length;
+            const totalPages = Math.max(1, Math.ceil(Math.max(filteredTotal, 1) / SAVED_LINK_PAGE_SIZE));
+            expandSavedLinkGroup(group, Math.min(page, totalPages), { skipFlush: true });
             validateSiteDetail();
-            refreshSavedLinkGroupEmptyStates();
+            scheduleDirtyUiUpdate();
         })
     ));
 
     urlInput.addEventListener("input", () => validateSiteDetail());
     urlInput.addEventListener("blur", () => validateSiteDetail());
 
-    row.append(urlCell, titleCell, actionCell);
+    row.append(titleCell, urlCell, actionCell);
     tbody.appendChild(row);
-    refreshSavedLinkGroupEmptyStates();
+    if (!silent) refreshSavedLinkGroupEmptyStates();
 }
 
 let textRuleFieldIdSeq = 0;

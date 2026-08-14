@@ -614,12 +614,12 @@ function handleContextMenuClick(info, tab) {
 		url = info.linkUrl;
 		if (!url) return;
 		styleId = info.menuItemId.slice(RULE_LINK_MENU_PREFIX.length);
-		title = info.linkText || url;
+		title = titleFromPageContext(info.linkText, tab && tab.title);
 	} else if (info.menuItemId.startsWith(RULE_PAGE_MENU_PREFIX)) {
 		url = tab.url;
 		if (!url || !/^https?:/i.test(url)) return;
 		styleId = info.menuItemId.slice(RULE_PAGE_MENU_PREFIX.length);
-		title = tab.title || url;
+		title = titleFromPageContext("", tab && tab.title);
 	} else {
 		return;
 	}

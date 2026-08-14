@@ -332,13 +332,24 @@ function normalizeSiteTextRule(rule, fallbackStyle = "blocked") {
 	};
 }
 
+function normalizeSavedLinkTitle(value) {
+	if (typeof value !== "string") return "";
+	const title = value.replace(/\s+/g, " ").trim();
+	if (!title || isValidHttpUrl(title)) return "";
+	return title.length > 200 ? `${title.slice(0, 197).trimEnd()}…` : title;
+}
+
+function titleFromPageContext(linkText, pageTitle) {
+	return normalizeSavedLinkTitle(linkText) || normalizeSavedLinkTitle(pageTitle);
+}
+
 function normalizeSavedLink(link, fallbackStyle = "blocked") {
 	if (!link || typeof link.url !== "string") return null;
 	const url = link.url.trim();
 	if (!url || !isValidHttpUrl(url)) return null;
 	return {
 		url,
-		title: typeof link.title === "string" ? link.title : "",
+		title: normalizeSavedLinkTitle(link.title),
 		style: typeof link.style === "string" && link.style.trim()
 			? link.style.trim()
 			: fallbackStyle
@@ -542,7 +553,7 @@ function upsertSiteLink(sites, url, title, styleId) {
 	);
 	const saved = {
 		url: normalizeHrefForSearch(url, rules),
-		title: typeof title === "string" ? title : "",
+		title: normalizeSavedLinkTitle(title),
 		style: typeof styleId === "string" && styleId.trim()
 			? styleId.trim()
 			: "blocked"
@@ -587,7 +598,7 @@ function toggleSiteLookShortcut(sites, url, title, styleId) {
 
 	const saved = {
 		url: normalizeHrefForSearch(url, rules),
-		title: typeof title === "string" ? title : "",
+		title: normalizeSavedLinkTitle(title),
 		style: lookId
 	};
 	if (existingIndex >= 0) {
@@ -836,7 +847,7 @@ function collectBookmarkUrlsFromTree(nodes, style, linksBySite) {
 				}
 				linksBySite.get(hostname).push({
 					url: node.url,
-					title: typeof node.title === "string" ? node.title : "",
+					title: normalizeSavedLinkTitle(node.title),
 					style
 				});
 			}
