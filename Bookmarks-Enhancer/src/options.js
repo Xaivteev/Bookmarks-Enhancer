@@ -572,15 +572,27 @@ function clearDetailTables() {
     document.querySelector("#textRuleBody")?.replaceChildren();
 }
 
+function siteLinkCount(siteConfig) {
+    return siteConfig?.links?.length || 0;
+}
+
+function compareSitesForList(a, b) {
+    const linksDelta = siteLinkCount(b) - siteLinkCount(a);
+    if (linksDelta !== 0) return linksDelta;
+    return (a.site || "").localeCompare(b.site || "");
+}
+
 function renderSiteList() {
     const list = document.querySelector("#siteList");
     if (!list) return;
     list.replaceChildren();
 
     const query = getSiteSearchQuery();
-    sitesDraft.forEach((siteConfig, index) => {
-        if (!siteMatchesSearch(siteConfig, query)) return;
-
+    sitesDraft
+        .map((siteConfig, index) => ({ siteConfig, index }))
+        .filter(({ siteConfig }) => siteMatchesSearch(siteConfig, query))
+        .sort((a, b) => compareSitesForList(a.siteConfig, b.siteConfig))
+        .forEach(({ siteConfig, index }) => {
         const item = document.createElement("li");
         item.className = "siteListItem";
 
