@@ -806,17 +806,21 @@ function importLegacyBookmarkFolder() {
     importBookmarkFolderIntoSites(sitesDraft, folderId, styleId)
         .then(result => {
             sitesDraft = result.sites;
-            if (openHost) {
-                const index = sitesDraft.findIndex(siteConfig => siteConfig.site === openHost);
-                if (index >= 0) {
-                    openSiteDetail(index);
+            try {
+                if (openHost) {
+                    const index = sitesDraft.findIndex(siteConfig => siteConfig.site === openHost);
+                    if (index >= 0) {
+                        openSiteDetail(index);
+                    } else {
+                        showSiteListView();
+                    }
                 } else {
-                    showSiteListView();
+                    renderSiteList();
                 }
-            } else {
-                renderSiteList();
+                scheduleDirtyUiUpdate();
+            } catch (uiError) {
+                console.error("Bookmark folder import UI update failed:", uiError);
             }
-            scheduleDirtyUiUpdate();
 
             if (result.sitesTouched === 0) {
                 showStatus("No http(s) bookmarks found in that folder", true);
@@ -836,7 +840,8 @@ function importLegacyBookmarkFolder() {
         })
         .catch(error => {
             console.error("Bookmark folder import failed:", error);
-            showStatus("Could not import that bookmark folder", true);
+            const detail = error && error.message ? error.message : String(error);
+            showStatus(`Could not import that bookmark folder: ${detail}`, true);
         })
         .finally(() => {
             if (button) {

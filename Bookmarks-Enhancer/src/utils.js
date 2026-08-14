@@ -706,19 +706,117 @@ function importBookmarkFolderIntoSites(sites, folderId, styleId) {
 			linksSkipped: 0
 		});
 	}
-	if (!browser.bookmarks || typeof browser.bookmarks.getSubTree !== "function") {
+	if (!browser.bookmarks) {
 		return Promise.reject(new Error("Bookmark folders are not available"));
 	}
 
-	return browser.bookmarks.getSubTree(folderId).then(tree => {
+	return loadBookmarkSubtree(folderId).then(tree => {
 		const linksBySite = new Map();
 		collectBookmarkUrlsFromTree(tree, style, linksBySite);
 		return mergeBookmarkLinksBySiteIntoSites(sites, linksBySite);
 	});
 }
 
+function asBookmarkNodeArray(tree) {
+	if (Array.isArray(tree)) return tree.filter(Boolean);
+	if (tree && typeof tree === "object") return [tree];
+	return [];
+}
+
+function findBookmarkNodeById(nodes, id) {
+	const wanted = String(id || "");
+	if (!wanted) return null;
+	for (const node of asBookmarkNodeArray(nodes)) {
+		if (node && String(node.id) === wanted) return node;
+		if (node && node.children) {
+			const found = findBookmarkNodeById(node.children, wanted);
+			if (found) return found;
+		}
+	}
+	return null;
+}
+
+function hydrateBookmarkNode(node) {
+	if (!node || node.url || node.type === "bookmark" || node.type === "separator") {
+		return Promise.resolve(node);
+	}
+	if (Array.isArray(node.children)) {
+		return Promise.all(node.children.map(hydrateBookmarkNode)).then(children => {
+			node.children = children;
+			return node;
+		});
+	}
+	if (!browser.bookmarks || typeof browser.bookmarks.getChildren !== "function") {
+		return Promise.resolve(node);
+	}
+	return browser.bookmarks.getChildren(node.id)
+		.then(children => Promise.all((children || []).map(hydrateBookmarkNode)))
+		.then(children => {
+			node.children = children;
+			return node;
+		})
+		.catch(() => node);
+}
+
+function loadBookmarkSubtree(folderId) {
+	const id = typeof folderId === "string" || typeof folderId === "number"
+		? String(folderId)
+		: "";
+	if (!id || !browser.bookmarks) {
+		return Promise.reject(new Error("Bookmark folders are not available"));
+	}
+
+	const fromSubTree = () => {
+		if (typeof browser.bookmarks.getSubTree !== "function") {
+			return Promise.reject(new Error("getSubTree unavailable"));
+		}
+		try {
+			return Promise.resolve(browser.bookmarks.getSubTree(id)).then(tree => {
+				const nodes = asBookmarkNodeArray(tree);
+				if (nodes.length === 0) {
+					throw new Error("Empty bookmark subtree");
+				}
+				return nodes;
+			});
+		} catch (error) {
+			return Promise.reject(error);
+		}
+	};
+
+	const fromTreeScan = () => {
+		if (typeof browser.bookmarks.getTree !== "function") {
+			return Promise.reject(new Error("Bookmark folders are not available"));
+		}
+		return browser.bookmarks.getTree().then(tree => {
+			const folder = findBookmarkNodeById(tree, id);
+			if (!folder) {
+				throw new Error("That bookmark folder is no longer available");
+			}
+			return [folder];
+		});
+	};
+
+	const fromGet = () => {
+		if (typeof browser.bookmarks.get !== "function") {
+			return Promise.reject(new Error("Bookmark folders are not available"));
+		}
+		return browser.bookmarks.get(id).then(nodes => {
+			const folder = asBookmarkNodeArray(nodes)[0];
+			if (!folder) {
+				throw new Error("That bookmark folder is no longer available");
+			}
+			return [folder];
+		});
+	};
+
+	return fromSubTree()
+		.catch(() => fromTreeScan())
+		.catch(() => fromGet())
+		.then(nodes => Promise.all(nodes.map(hydrateBookmarkNode)));
+}
+
 function collectBookmarkUrlsFromTree(nodes, style, linksBySite) {
-	for (const node of nodes || []) {
+	for (const node of asBookmarkNodeArray(nodes)) {
 		if (node && node.url && isValidHttpUrl(node.url)) {
 			let hostname = "";
 			try {
@@ -747,12 +845,12 @@ function importBookmarkFolderLinksIntoSites(result, sites) {
 	const folderRules = migrateBookmarkRulesFromStorage(result)
 		.filter(rule => !isUnmatchedBookmarkRule(rule));
 	if (folderRules.length === 0) return Promise.resolve(normalizeSites(sites));
-	if (!browser.bookmarks || typeof browser.bookmarks.getSubTree !== "function") {
+	if (!browser.bookmarks) {
 		return Promise.resolve(normalizeSites(sites));
 	}
 
 	return Promise.all(folderRules.map(rule =>
-		browser.bookmarks.getSubTree(rule.folderId)
+		loadBookmarkSubtree(rule.folderId)
 			.then(tree => ({ tree, style: rule.style }))
 			.catch(() => null)
 	)).then(results => {
