@@ -416,6 +416,138 @@ function siteLinksByHostFromSites(sites) {
 	return byHost;
 }
 
+function savedLinkKey(link) {
+	return typeof link?.url === "string" ? link.url.trim() : "";
+}
+
+function cloneSavedLink(link) {
+	return {
+		url: typeof link?.url === "string" ? link.url : "",
+		title: typeof link?.title === "string" ? link.title : "",
+		style: typeof link?.style === "string" ? link.style : ""
+	};
+}
+
+function savedLinksEqual(a, b) {
+	if (a === b) return true;
+	if (!a || !b) return false;
+	return savedLinkKey(a) === savedLinkKey(b) &&
+		(a.title || "") === (b.title || "") &&
+		(a.style || "") === (b.style || "");
+}
+
+function linksByKey(links) {
+	const map = new Map();
+	for (const link of links || []) {
+		const key = savedLinkKey(link);
+		if (!key || map.has(key)) continue;
+		map.set(key, link);
+	}
+	return map;
+}
+
+function mergeSavedLinkConflict(baseLink, ourLink, theirLink) {
+	const baseTitle = baseLink?.title || "";
+	const baseStyle = baseLink?.style || "";
+	return {
+		url: theirLink.url || ourLink.url,
+		title: (ourLink.title || "") !== baseTitle
+			? (ourLink.title || "")
+			: (theirLink.title || ""),
+		style: (theirLink.style || "") !== baseStyle
+			? (theirLink.style || "")
+			: (ourLink.style || "")
+	};
+}
+
+/**
+ * Three-way merge of saved links so options-page edits and live page
+ * adds/toggles (look shortcuts, context menus) can both survive a save.
+ */
+function mergeSavedLinksThreeWay(baseLinks = [], ourLinks = [], theirLinks = []) {
+	const base = linksByKey(baseLinks);
+	const theirs = linksByKey(theirLinks);
+	const seen = new Set();
+	const merged = [];
+
+	for (const link of ourLinks || []) {
+		const key = savedLinkKey(link);
+		if (!key || seen.has(key)) continue;
+		seen.add(key);
+		const baseLink = base.get(key);
+		const theirLink = theirs.get(key);
+
+		if (!theirLink) {
+			if (!baseLink || !savedLinksEqual(link, baseLink)) {
+				merged.push(cloneSavedLink(link));
+			}
+			continue;
+		}
+
+		if (!baseLink || savedLinksEqual(link, baseLink)) {
+			merged.push(cloneSavedLink(theirLink));
+		} else if (savedLinksEqual(theirLink, baseLink)) {
+			merged.push(cloneSavedLink(link));
+		} else {
+			merged.push(mergeSavedLinkConflict(baseLink, link, theirLink));
+		}
+	}
+
+	for (const link of theirLinks || []) {
+		const key = savedLinkKey(link);
+		if (!key || seen.has(key)) continue;
+		seen.add(key);
+		if (!base.has(key)) {
+			merged.push(cloneSavedLink(link));
+		}
+	}
+
+	return merged;
+}
+
+function mergeSitesLinksFromStorage(draftSites, baseLinksByHost, storageSites) {
+	const theirByHost = new Map();
+	for (const siteConfig of storageSites || []) {
+		if (!siteConfig?.site) continue;
+		theirByHost.set(siteConfig.site, siteConfig);
+	}
+
+	const merged = [];
+	for (const ourSite of draftSites || []) {
+		const host = ourSite?.site;
+		if (!host) continue;
+		const theirSite = theirByHost.get(host);
+		theirByHost.delete(host);
+		const mergedLinks = mergeSavedLinksThreeWay(
+			baseLinksByHost?.[host] || [],
+			ourSite.links || [],
+			theirSite?.links || []
+		);
+		merged.push({
+			...ourSite,
+			links: mergedLinks,
+			linkFolders: normalizeLinkFolderIds(ourSite.linkFolders, mergedLinks)
+		});
+	}
+
+	for (const theirSite of theirByHost.values()) {
+		const host = theirSite.site;
+		if (baseLinksByHost && Object.prototype.hasOwnProperty.call(baseLinksByHost, host)) {
+			continue;
+		}
+		const links = Array.isArray(theirSite.links)
+			? theirSite.links.map(cloneSavedLink)
+			: [];
+		merged.push({
+			...theirSite,
+			links,
+			linkFolders: normalizeLinkFolderIds(theirSite.linkFolders, links)
+		});
+	}
+
+	return merged;
+}
+
 function mergeSiteLinksIntoSites(sites, siteLinksByHost) {
 	const hasSplit = siteLinksByHost &&
 		typeof siteLinksByHost === "object" &&

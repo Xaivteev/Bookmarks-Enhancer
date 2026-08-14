@@ -2,6 +2,7 @@ const STYLE_RULE_STORAGE_KEY = STORAGE_KEYS.styleRules;
 
 let cachedStyleRules = DEFAULT_STYLE_RULES.map(rule => ({ ...rule }));
 let sitesDraft = [];
+let loadedLinksByHost = {};
 let selectedSiteIndex = -1;
 let selectedSiteDetailTab = "";
 let suppressOptionsHashWrite = false;
@@ -601,6 +602,15 @@ function flushSiteDetailToDraft() {
 function collectSitesFromUi() {
     flushSiteDetailToDraft();
     return sitesDraft;
+}
+
+function captureLoadedLinks(sites) {
+    const byHost = {};
+    for (const siteConfig of sites || []) {
+        if (!siteConfig?.site) continue;
+        byHost[siteConfig.site] = (siteConfig.links || []).map(cloneSavedLink);
+    }
+    loadedLinksByHost = byHost;
 }
 
 function clearDetailTables() {
@@ -2010,6 +2020,47 @@ function showExternalOptionsChangeNotice() {
     );
 }
 
+function isLinksOnlyStorageChange(changes) {
+    if (!changes) return false;
+    const keys = Object.keys(changes);
+    if (keys.length === 0) return false;
+    return keys.every(key =>
+        key === STORAGE_KEYS.siteLinks || key === STORAGE_KEYS.sites
+    ) && Object.prototype.hasOwnProperty.call(changes, STORAGE_KEYS.siteLinks);
+}
+
+function applyRemoteSavedLinkMerge(storageResult) {
+    const openHost = isSiteDetailOpen()
+        ? normalizeSite(
+            document.querySelector("#siteDetailHost")?.value ||
+                sitesDraft[selectedSiteIndex]?.site ||
+                ""
+        )
+        : "";
+    const openTab = selectedSiteDetailTab;
+    const latest = loadSitesFromStorageResult(storageResult, { preserveLinks: true });
+    sitesDraft = mergeSitesLinksFromStorage(
+        collectSitesFromUi(),
+        loadedLinksByHost,
+        latest
+    );
+    captureLoadedLinks(latest);
+
+    if (openHost) {
+        const index = sitesDraft.findIndex(siteConfig => siteConfig.site === openHost);
+        if (index >= 0) {
+            openSiteDetail(index, { siteTab: openTab, skipHash: true, scroll: false });
+        } else {
+            selectedSiteIndex = -1;
+            detailLinksByLook = null;
+            showSiteListView({ skipHash: true });
+        }
+    } else {
+        renderSiteList();
+    }
+    scheduleDirtyUiUpdate();
+}
+
 function setupDirtyTracking() {
     const form = document.querySelector("form");
     if (!form) return;
@@ -2120,62 +2171,75 @@ function persistOptionsFromForm({
         return Promise.resolve();
     }
 
-    const { styleRules, sites, payload } = buildOptionsPayload();
-    const dangling = findDanglingStyleReferences(styleRules, sites);
-    const collisions = findStyleRuleClassNameCollisions(styleRules);
+    const { styleRules, sites: formSites, payload: formPayload } = buildOptionsPayload();
 
-    if (dangling.length > 0) {
-        const confirmed = window.confirm(
-            `${dangling.length} rule(s) reference missing styles:\n${formatIssueList(dangling)}\n\nSave anyway?`
-        );
-        if (!confirmed) {
-            showStatus("Save cancelled: missing style references", true);
-            return Promise.resolve();
-        }
-    }
+    return browser.storage.local.get([STORAGE_KEYS.sites, STORAGE_KEYS.siteLinks])
+        .then(result => {
+            const sites = mergeSitesLinksFromStorage(
+                formSites,
+                loadedLinksByHost,
+                loadSitesFromStorageResult(result, { preserveLinks: true })
+            );
+            const payload = {
+                ...formPayload,
+                ...buildSitesStorageWrites(sites)
+            };
+            const dangling = findDanglingStyleReferences(styleRules, sites);
+            const collisions = findStyleRuleClassNameCollisions(styleRules);
 
-    if (collisions.length > 0) {
-        const collisionMessages = collisions.map(collision =>
-            `${collision.className} ← ${collision.names.join(", ")}`
-        );
-        const confirmed = window.confirm(
-            `${collisions.length} style class name collision(s):\n${formatIssueList(collisionMessages)}\n\nThese styles would override each other. Save anyway?`
-        );
-        if (!confirmed) {
-            showStatus("Save cancelled: style class name collisions", true);
-            return Promise.resolve();
-        }
-    }
+            if (dangling.length > 0) {
+                const confirmed = window.confirm(
+                    `${dangling.length} rule(s) reference missing styles:\n${formatIssueList(dangling)}\n\nSave anyway?`
+                );
+                if (!confirmed) {
+                    showStatus("Save cancelled: missing style references", true);
+                    return null;
+                }
+            }
 
-    if (setBusy) {
-        beginActionBarBusy(
-            busyButton || document.querySelector("#saveBtn"),
-            busyLabel
-        );
-    }
+            if (collisions.length > 0) {
+                const collisionMessages = collisions.map(collision =>
+                    `${collision.className} ← ${collision.names.join(", ")}`
+                );
+                const confirmed = window.confirm(
+                    `${collisions.length} style class name collision(s):\n${formatIssueList(collisionMessages)}\n\nThese styles would override each other. Save anyway?`
+                );
+                if (!confirmed) {
+                    showStatus("Save cancelled: style class name collisions", true);
+                    return null;
+                }
+            }
 
-    beginOptionsStorageWrite();
-    suppressDirtyTracking = true;
-    return browser.storage.local.set(payload)
-        .then(() => browser.storage.local.remove(Object.values(LEGACY_STORAGE_KEYS)))
-        .then(() => {
-            applyLoadedConfiguration(sites, styleRules, {
-                enableTopBorder: payload.enableTopBorder,
-                enableDeepSearch: payload.enableDeepSearch,
-                enableToastNotifications: payload.enableToastNotifications
+            if (setBusy) {
+                beginActionBarBusy(
+                    busyButton || document.querySelector("#saveBtn"),
+                    busyLabel
+                );
+            }
+
+            beginOptionsStorageWrite();
+            suppressDirtyTracking = true;
+            return browser.storage.local.set(payload)
+                .then(() => browser.storage.local.remove(Object.values(LEGACY_STORAGE_KEYS)))
+                .then(() => ({ styleRules, sites, payload, dangling, collisions }));
+        })
+        .then(saved => {
+            if (!saved) return;
+            applyLoadedConfiguration(saved.sites, saved.styleRules, {
+                enableTopBorder: saved.payload.enableTopBorder,
+                enableDeepSearch: saved.payload.enableDeepSearch,
+                enableToastNotifications: saved.payload.enableToastNotifications
             });
             applyOptionsLocationHash();
-        })
-        .then(() => {
             suppressDirtyTracking = false;
             captureSavedFormSnapshot();
             endOptionsStorageWrite();
             const warnings = [];
-            if (dangling.length > 0) {
-                warnings.push(`${dangling.length} missing style reference(s)`);
+            if (saved.dangling.length > 0) {
+                warnings.push(`${saved.dangling.length} missing style reference(s)`);
             }
-            if (collisions.length > 0) {
-                warnings.push(`${collisions.length} class name collision(s)`);
+            if (saved.collisions.length > 0) {
+                warnings.push(`${saved.collisions.length} class name collision(s)`);
             }
             if (warnings.length > 0) {
                 showStatus(`${successMessage} (with warnings: ${warnings.join("; ")})`, true);
@@ -2222,6 +2286,7 @@ function applyLoadedConfiguration(sites, styleRules, general = {}) {
 
     loadStyleRuleRows(styleRules);
     sitesDraft = normalizeSites(sites, { preserveLinks: true });
+    captureLoadedLinks(sitesDraft);
     selectedSiteIndex = -1;
     detailLinksByLook = null;
     showSiteListView({ skipHash: true });
@@ -2260,7 +2325,7 @@ function restoreOptions() {
     });
 }
 
-function scheduleOptionsStorageReload() {
+function scheduleOptionsStorageReload(changes) {
     if (suppressOptionsStorageReload) return;
     if (optionsStorageReloadTimer) {
         clearTimeout(optionsStorageReloadTimer);
@@ -2268,10 +2333,41 @@ function scheduleOptionsStorageReload() {
     optionsStorageReloadTimer = setTimeout(() => {
         optionsStorageReloadTimer = null;
         if (suppressOptionsStorageReload) return;
+        const linksOnly = isLinksOnlyStorageChange(changes);
+        const mergeRemoteLinks = () => browser.storage.local.get([
+            STORAGE_KEYS.sites,
+            STORAGE_KEYS.siteLinks
+        ]).then(result => {
+            applyRemoteSavedLinkMerge(result);
+            return result;
+        });
+
         if (isFormDirty()) {
-            showExternalOptionsChangeNotice();
+            mergeRemoteLinks()
+                .then(() => {
+                    if (linksOnly) {
+                        showStatus("Saved links updated from the page");
+                    } else {
+                        showExternalOptionsChangeNotice();
+                    }
+                })
+                .catch(err => {
+                    console.error("Could not merge saved links from storage:", err);
+                    showExternalOptionsChangeNotice();
+                });
             return;
         }
+
+        if (linksOnly) {
+            mergeRemoteLinks()
+                .then(() => captureSavedFormSnapshot())
+                .catch(err => {
+                    console.error("Could not update saved links from storage:", err);
+                    restoreOptions();
+                });
+            return;
+        }
+
         restoreOptions().then(() => {
             showStatus("Options updated from another change");
         });
@@ -2303,11 +2399,12 @@ function initSaveLoadEvents() {
 
         const relevant = Object.keys(changes).some(key =>
             CONFIG_REFRESH_STORAGE_KEYS.includes(key) ||
+            key === STORAGE_KEYS.siteLinks ||
             Object.values(LEGACY_STORAGE_KEYS).includes(key) ||
             key === STORAGE_KEYS.enableToastNotifications
         );
         if (relevant) {
-            scheduleOptionsStorageReload();
+            scheduleOptionsStorageReload(changes);
         }
     });
 
@@ -2315,16 +2412,6 @@ function initSaveLoadEvents() {
         "click",
         dismissGettingStarted
     );
-}
-
-function buildExportPayload() {
-    return {
-        sites: collectSitesFromUi(),
-        styleRules: normalizeStyleRules(collectStyleRules()),
-        enableTopBorder: document.querySelector("#enableTopBorder").checked,
-        enableDeepSearch: document.querySelector("#enableDeepSearch").checked,
-        enableToastNotifications: document.querySelector("#enableToastNotifications").checked
-    };
 }
 
 function exportConfigurationFilename() {
@@ -2341,24 +2428,38 @@ function exportToFile() {
 
     beginActionBarBusy(document.querySelector("#exportBtn"), "Exporting…");
 
-    try {
-        const json = JSON.stringify(buildExportPayload(), null, 2);
-        const blob = new Blob([json], { type: "application/json" });
-        const url = URL.createObjectURL(blob);
-        const anchor = document.createElement("a");
-        anchor.href = url;
-        anchor.download = exportConfigurationFilename();
-        document.body.appendChild(anchor);
-        anchor.click();
-        anchor.remove();
-        URL.revokeObjectURL(url);
-        showStatus("Exported configuration");
-    } catch (err) {
-        console.error(err);
-        showStatus("Could not export", true);
-    } finally {
-        endActionBarBusy();
-    }
+    browser.storage.local.get([STORAGE_KEYS.sites, STORAGE_KEYS.siteLinks])
+        .then(result => {
+            const sites = mergeSitesLinksFromStorage(
+                collectSitesFromUi(),
+                loadedLinksByHost,
+                loadSitesFromStorageResult(result, { preserveLinks: true })
+            );
+            const json = JSON.stringify({
+                sites,
+                styleRules: normalizeStyleRules(collectStyleRules()),
+                enableTopBorder: document.querySelector("#enableTopBorder").checked,
+                enableDeepSearch: document.querySelector("#enableDeepSearch").checked,
+                enableToastNotifications: document.querySelector("#enableToastNotifications").checked
+            }, null, 2);
+            const blob = new Blob([json], { type: "application/json" });
+            const url = URL.createObjectURL(blob);
+            const anchor = document.createElement("a");
+            anchor.href = url;
+            anchor.download = exportConfigurationFilename();
+            document.body.appendChild(anchor);
+            anchor.click();
+            anchor.remove();
+            URL.revokeObjectURL(url);
+            showStatus("Exported configuration");
+        })
+        .catch(err => {
+            console.error(err);
+            showStatus("Could not export", true);
+        })
+        .finally(() => {
+            endActionBarBusy();
+        });
 }
 
 function isValidImportedSite(siteConfig) {
