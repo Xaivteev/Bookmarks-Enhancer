@@ -12,12 +12,17 @@ globalThis.__beLookShortcutsInstalled = true;
 const LOOK_SHORTCUTS_HOST_ID = "be-look-shortcuts-host";
 const LOOK_SHORTCUTS_STYLE = `
 :host {
-	all: initial;
-	display: block;
-	position: fixed;
-	top: 12px;
-	right: 12px;
-	z-index: 2147483000;
+	display: block !important;
+	position: fixed !important;
+	inset: auto !important;
+	top: 12px !important;
+	right: 12px !important;
+	left: auto !important;
+	bottom: auto !important;
+	z-index: 2147483000 !important;
+	margin: 0 !important;
+	transform: none !important;
+	filter: none !important;
 	font-family: system-ui, sans-serif;
 	pointer-events: auto;
 }
@@ -29,21 +34,24 @@ const LOOK_SHORTCUTS_STYLE = `
 .bar {
 	display: flex;
 	align-items: center;
-	gap: 2px;
-	padding: 4px 6px;
+	gap: 1px;
+	padding: 1px 3px;
 	background: rgba(255, 255, 255, 0.58);
 	border: 1px solid rgba(255, 255, 255, 0.72);
 	border-radius: 999px;
-	box-shadow: 0 4px 18px rgba(15, 23, 42, 0.18);
+	box-shadow: 0 2px 10px rgba(15, 23, 42, 0.16);
 	backdrop-filter: blur(10px);
+	pointer-events: auto;
+	user-select: none;
+	touch-action: manipulation;
 }
 
 button {
 	display: inline-flex;
 	align-items: center;
 	justify-content: center;
-	width: 30px;
-	height: 30px;
+	width: 20px;
+	height: 20px;
 	margin: 0;
 	padding: 0;
 	border: 0;
@@ -51,6 +59,7 @@ button {
 	background: transparent;
 	cursor: pointer;
 	color: inherit;
+	pointer-events: auto;
 }
 
 button:hover {
@@ -73,8 +82,8 @@ button:disabled {
 
 svg {
 	display: block;
-	width: 20px;
-	height: 20px;
+	width: 16px;
+	height: 16px;
 }
 `;
 
@@ -116,13 +125,141 @@ function overlayStateKey(siteConfig) {
 	return `${siteConfig.site}|${currentPageStyleId(siteConfig)}|${looks}|${location.href}`;
 }
 
+function isFirefoxBrowser() {
+	return typeof CSS !== "undefined" && CSS.supports("(-moz-appearance: none)");
+}
+
+function applyLookShortcutHostStyles(host) {
+	if (!host) return;
+	const hostStyles = [
+		["display", "block"],
+		["position", "fixed"],
+		["z-index", "2147483000"],
+		["inset", "auto"],
+		["top", "12px"],
+		["right", "12px"],
+		["left", "auto"],
+		["bottom", "auto"],
+		["width", "auto"],
+		["height", "auto"],
+		["margin", "0"],
+		["padding", "0"],
+		["border", "none"],
+		["background", "transparent"],
+		["overflow", "visible"],
+		["visibility", "visible"],
+		["opacity", "1"],
+		["pointer-events", "auto"],
+		["transform", "none"],
+		["filter", "none"],
+		["clip", "auto"],
+		["clip-path", "none"],
+		["contain", "none"]
+	];
+	for (const [property, value] of hostStyles) {
+		host.style.setProperty(property, value, "important");
+	}
+}
+
+function pinLookShortcutHost(host) {
+	if (!host) return;
+	if (!host.isConnected) {
+		document.documentElement.appendChild(host);
+	}
+	applyLookShortcutHostStyles(host);
+
+	// Top layer escapes page transforms/filters that make position:fixed
+	// scroll with the document in Chrome. Firefox is reliable with fixed on <html>.
+	if (isFirefoxBrowser() || typeof host.showPopover !== "function") return;
+
+	try {
+		if (host.getAttribute("popover") !== "manual") {
+			host.setAttribute("popover", "manual");
+		}
+		if (!host.matches(":popover-open")) {
+			host.showPopover();
+		}
+		applyLookShortcutHostStyles(host);
+	} catch {
+		try {
+			host.hidePopover?.();
+		} catch {
+			// Host may already be disconnected or not a popover.
+		}
+		host.removeAttribute("popover");
+		applyLookShortcutHostStyles(host);
+	}
+}
+
 function removeOverlay() {
-	document.getElementById(LOOK_SHORTCUTS_HOST_ID)?.remove();
+	const host = document.getElementById(LOOK_SHORTCUTS_HOST_ID);
+	if (host) {
+		try {
+			host.hidePopover?.();
+		} catch {
+			// Ignore if the host was not a popover.
+		}
+		host.remove();
+	}
 	lastOverlayKey = "";
 }
 
-function stopOverlayEvent(event) {
+const LOOK_SHORTCUT_BLOCKED_EVENTS = [
+	"pointerdown",
+	"pointerup",
+	"pointercancel",
+	"mousedown",
+	"mouseup",
+	"click",
+	"auxclick",
+	"dblclick",
+	"contextmenu",
+	"touchstart",
+	"touchend",
+	"touchmove"
+];
+
+function lookShortcutHostFromEvent(event) {
+	const host = document.getElementById(LOOK_SHORTCUTS_HOST_ID);
+	if (!host) return null;
+	const path = typeof event.composedPath === "function" ? event.composedPath() : [];
+	return path.includes(host) ? host : null;
+}
+
+function lookShortcutButtonFromEvent(event) {
+	const path = typeof event.composedPath === "function" ? event.composedPath() : [];
+	return path.find(node =>
+		node && node.tagName === "BUTTON" && node.dataset && node.dataset.styleId
+	) || null;
+}
+
+function swallowLookShortcutEvent(event) {
+	if (!lookShortcutHostFromEvent(event)) return;
+
 	event.stopPropagation();
+	event.stopImmediatePropagation();
+	// Canceling pointerdown/touchstart can suppress the later click we use to toggle.
+	if (
+		event.cancelable &&
+		event.type !== "pointerdown" &&
+		event.type !== "touchstart"
+	) {
+		event.preventDefault();
+	}
+
+	if (event.type === "click") {
+		const button = lookShortcutButtonFromEvent(event);
+		if (button && !button.disabled) {
+			toggleLookShortcut(button.dataset.styleId);
+		}
+	}
+}
+
+function attachLookShortcutEventGuards() {
+	const capture = { capture: true, passive: false };
+	for (const type of LOOK_SHORTCUT_BLOCKED_EVENTS) {
+		window.addEventListener(type, swallowLookShortcutEvent, capture);
+	}
 }
 
 function renderLookShortcuts() {
@@ -136,6 +273,7 @@ function renderLookShortcuts() {
 	const key = overlayStateKey(siteConfig);
 	let host = document.getElementById(LOOK_SHORTCUTS_HOST_ID);
 	if (host && key === lastOverlayKey && pendingShortcutToggles.size === 0) {
+		pinLookShortcutHost(host);
 		return;
 	}
 
@@ -143,6 +281,7 @@ function renderLookShortcuts() {
 		host = document.createElement("div");
 		host.id = LOOK_SHORTCUTS_HOST_ID;
 		host.setAttribute("data-bookmarks-enhancer", "look-shortcuts");
+		applyLookShortcutHostStyles(host);
 		const shadow = host.attachShadow({ mode: "open" });
 		const style = document.createElement("style");
 		style.textContent = LOOK_SHORTCUTS_STYLE;
@@ -151,9 +290,6 @@ function renderLookShortcuts() {
 		bar.setAttribute("role", "toolbar");
 		bar.setAttribute("aria-label", "Look shortcuts");
 		shadow.append(style, bar);
-		host.addEventListener("pointerdown", stopOverlayEvent, true);
-		host.addEventListener("mousedown", stopOverlayEvent, true);
-		host.addEventListener("click", stopOverlayEvent, true);
 		document.documentElement.appendChild(host);
 	}
 
@@ -177,14 +313,10 @@ function renderLookShortcuts() {
 			active,
 			color: rule.shortcutColor
 		});
-		button.addEventListener("click", event => {
-			event.preventDefault();
-			event.stopPropagation();
-			toggleLookShortcut(rule.id);
-		});
 		bar.appendChild(button);
 	}
 
+	pinLookShortcutHost(host);
 	lastOverlayKey = key;
 }
 
@@ -257,5 +389,6 @@ try {
 	// Some pages lock history; tabs.onUpdated still refreshes the overlay.
 }
 
+attachLookShortcutEventGuards();
 loadLookShortcutSettings();
 }
