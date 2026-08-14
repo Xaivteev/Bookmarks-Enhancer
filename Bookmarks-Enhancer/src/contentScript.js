@@ -10,6 +10,7 @@ globalThis.__beContentScriptInstalled = true;
 
 // Load settings from config
 let searchPairs = [];
+let loadedSites = [];
 let classesForSearch = [];
 let preparedStyleRules = DEFAULT_STYLE_RULES.map(rule => ({ ...rule }));
 let preparedTextRules = [];
@@ -26,9 +27,10 @@ let settingsLoaded = false;
 let pendingRuntimeMessages = [];
 
 let getting = browser.storage.local.get([
-    STORAGE_KEYS.searchPairs,
-    STORAGE_KEYS.urlRules,
-    STORAGE_KEYS.textRules,
+    STORAGE_KEYS.sites,
+    LEGACY_STORAGE_KEYS.searchPairs,
+    LEGACY_STORAGE_KEYS.urlRules,
+    LEGACY_STORAGE_KEYS.textRules,
     LEGACY_STORAGE_KEYS.textFilters,
     STORAGE_KEYS.styleRules,
     STORAGE_KEYS.enableTopBorder,
@@ -76,30 +78,34 @@ function getConfiguredClassGroups(pairs) {
 
 function updateClassesForSearch() {
 	if (onlyUseSites) {
-		const matchingPairs = searchPairs.filter(pair =>
-			hostnameMatchesSite(window.location.hostname, pair.site)
+		const matchingSites = loadedSites.filter(siteConfig =>
+			hostnameMatchesSite(window.location.hostname, siteConfig.site)
 		);
-		searchSite = matchingPairs.length > 0;
-		classesForSearch = getConfiguredClassGroups(matchingPairs);
+		searchSite = matchingSites.length > 0;
+		classesForSearch = getConfiguredClassGroups(sitesToSearchPairs(matchingSites));
 	} else {
 		classesForSearch = getConfiguredClassGroups(searchPairs);
 		searchSite = true;
 	}
 }
 
+function applySitesConfig(item) {
+	loadedSites = migrateSitesFromStorage(item);
+	searchPairs = sitesToSearchPairs(loadedSites);
+	urlRules = sitesToUrlRules(loadedSites);
+	preparedTextRules = preprocessTextRules(sitesToTextRules(loadedSites));
+	updateClassesForSearch();
+}
+
 function onGot(item) {
-	searchPairs = Array.isArray(item[STORAGE_KEYS.searchPairs]) ? item[STORAGE_KEYS.searchPairs] : [];
-	urlRules = Array.isArray(item[STORAGE_KEYS.urlRules]) ? item[STORAGE_KEYS.urlRules] : [];
 	preparedStyleRules = migrateStyleRulesFromStorage(item);
 	refreshManagedClassNames();
-	preparedTextRules = preprocessTextRules(migrateTextRulesFromStorage(item));
 	enableTopBorder = !!item[STORAGE_KEYS.enableTopBorder];
 	enableDeepSearch = !!item[STORAGE_KEYS.enableDeepSearch];
 	onlyUseSites = !!item[STORAGE_KEYS.onlyUseSites];
 	enableToastNotifications = item[STORAGE_KEYS.enableToastNotifications] !== false;
-	updateClassesForSearch();
+	applySitesConfig(item);
 	settingsLoaded = true;
-	// Start processing links now that settings are loaded
 	try { initProcessing(); } catch (e) { /* initProcessing may be defined later */ }
 	flushPendingRuntimeMessages();
 }
@@ -110,14 +116,12 @@ browser.storage.onChanged.addListener((changes, areaName) => {
 
 	let needsRefresh = false;
 
-	if (changes[STORAGE_KEYS.searchPairs]) {
-		searchPairs = Array.isArray(changes[STORAGE_KEYS.searchPairs].newValue) ? changes[STORAGE_KEYS.searchPairs].newValue : [];
-		needsRefresh = true;
-	}
-
-	if (changes[STORAGE_KEYS.urlRules]) {
-		urlRules = Array.isArray(changes[STORAGE_KEYS.urlRules].newValue) ? changes[STORAGE_KEYS.urlRules].newValue : [];
+	if (changes[STORAGE_KEYS.sites]) {
+		applySitesConfig({
+			sites: changes[STORAGE_KEYS.sites].newValue
+		});
 		invalidateUrlDependentCaches();
+		invalidateTextFilterCache();
 		needsRefresh = true;
 	}
 
@@ -128,25 +132,10 @@ browser.storage.onChanged.addListener((changes, areaName) => {
 		});
 		refreshManagedClassNames();
 		injectBookmarkStyles();
-		browser.storage.local.get([
-			STORAGE_KEYS.textRules
-		]).then(result => {
-			preparedTextRules = preprocessTextRules(migrateTextRulesFromStorage(result));
-			invalidateTextFilterCache();
-			scheduleLocalAuthoritativeRefresh();
-		}).catch(onError);
+		preparedTextRules = preprocessTextRules(sitesToTextRules(loadedSites));
+		invalidateTextFilterCache();
 		invalidateUrlDependentCaches();
 		needsRefresh = true;
-	}
-
-	if (changes[STORAGE_KEYS.textRules]) {
-		browser.storage.local.get([
-			STORAGE_KEYS.textRules
-		]).then(result => {
-			preparedTextRules = preprocessTextRules(migrateTextRulesFromStorage(result));
-			invalidateTextFilterCache();
-			scheduleLocalAuthoritativeRefresh();
-		}).catch(onError);
 	}
 
 	if (changes[STORAGE_KEYS.enableTopBorder]) {
@@ -181,7 +170,7 @@ browser.storage.onChanged.addListener((changes, areaName) => {
 		}
 	}
 
-	if (needsRefresh && (changes[STORAGE_KEYS.searchPairs] || changes[STORAGE_KEYS.onlyUseSites])) {
+	if (needsRefresh && (changes[STORAGE_KEYS.sites] || changes[STORAGE_KEYS.onlyUseSites])) {
 		updateClassesForSearch();
 	}
 

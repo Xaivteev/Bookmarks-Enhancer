@@ -183,6 +183,40 @@
             font-weight: 600;
         }
 
+        .legacyImport {
+            margin: 1.75rem 0 0;
+            padding: 0.75rem 0 0;
+            border-top: 1px solid #d1d5db;
+        }
+
+        .legacyImportFields {
+            display: grid;
+            gap: 0.35rem;
+            margin: 0.75rem 0 1rem;
+        }
+
+        .legacyImportFields label {
+            margin-top: 0.5rem;
+        }
+
+        .legacyImportFields label:first-of-type {
+            margin-top: 0;
+        }
+
+        .legacyImportFields select {
+            display: block;
+            box-sizing: border-box;
+            width: 100%;
+            max-width: 28rem;
+            height: 2rem;
+            font: inherit;
+            padding: 0.25rem 0.5rem;
+        }
+
+        .legacyImportFields .settingHelp {
+            margin: 0.25rem 0 0;
+        }
+
         .advancedSiteRules {
             margin: 1.75rem 0 0;
             padding: 0.75rem 0 0;
@@ -866,6 +900,212 @@
         table.is-empty {
             display: none;
         }
+
+        .siteListToolbar {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 0.5rem;
+            align-items: center;
+            margin: 0.75rem 0 1rem;
+        }
+
+        .siteListToolbar input {
+            flex: 1 1 14rem;
+            box-sizing: border-box;
+            height: 2rem;
+            font: inherit;
+            padding: 0.25rem 0.5rem;
+        }
+
+        .siteList {
+            list-style: none;
+            margin: 0;
+            padding: 0;
+            border: 1px solid #d1d5db;
+            border-radius: 0.375rem;
+            overflow: hidden;
+        }
+
+        .siteListItem {
+            display: flex;
+            align-items: stretch;
+            border-top: 1px solid #e5e7eb;
+        }
+
+        .siteListItem:first-child {
+            border-top: 0;
+        }
+
+        .siteListOpen {
+            flex: 1;
+            display: flex;
+            flex-direction: column;
+            align-items: flex-start;
+            gap: 0.15rem;
+            margin: 0;
+            padding: 0.7rem 0.85rem;
+            border: 0;
+            background: #fff;
+            color: inherit;
+            font: inherit;
+            text-align: left;
+            cursor: pointer;
+        }
+
+        .siteListOpen:hover {
+            background: #f8fafc;
+        }
+
+        .siteListOpen:focus-visible {
+            outline: 2px solid #1d4ed8;
+            outline-offset: -2px;
+        }
+
+        .siteListHost {
+            font-weight: 600;
+        }
+
+        .siteListMeta {
+            color: #6b7280;
+            font-size: 0.88em;
+        }
+
+        .siteListDelete {
+            display: flex;
+            align-items: center;
+            padding: 0 0.65rem;
+            border-left: 1px solid #e5e7eb;
+        }
+
+        .siteDetailBack {
+            display: inline-flex;
+            align-items: center;
+            gap: 0.35rem;
+            margin: 0 0 1rem;
+            padding: 0.35rem 0.55rem;
+            border: 1px solid #d1d5db;
+            border-radius: 0.375rem;
+            background: #fff;
+            color: #1f2937;
+            font: inherit;
+            cursor: pointer;
+        }
+
+        .siteDetailBack:hover {
+            background: #f3f4f6;
+        }
+
+        .siteDetailBack:focus-visible {
+            outline: 2px solid #1d4ed8;
+            outline-offset: 1px;
+        }
+
+        .siteDetailHostRow {
+            margin: 0 0 1.25rem;
+        }
+
+        .siteDetailHostRow input {
+            box-sizing: border-box;
+            width: 100%;
+            max-width: 28rem;
+            height: 2rem;
+            margin-top: 0.35rem;
+            font: inherit;
+            padding: 0.25rem 0.5rem;
+        }
+
+        .classGroupInput,
+        .savedLinkUrl,
+        .savedLinkTitle,
+        .savedLinkMove,
+        .textRuleText,
+        .textRuleStyle,
+        .siteKeepParams {
+            display: block;
+            box-sizing: border-box;
+            width: 100%;
+            height: 2rem;
+            font: inherit;
+            padding: 0.25rem 0.5rem;
+        }
+
+        .savedLinkGroup {
+            margin: 1rem 0 1.25rem;
+            padding: 0.75rem 0 0;
+            border-top: 1px solid #e5e7eb;
+        }
+
+        .savedLinkAddFolder {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 0.5rem;
+            align-items: center;
+            margin: 0.75rem 0 0;
+        }
+
+        .savedLinkAddFolder select {
+            flex: 1 1 12rem;
+            box-sizing: border-box;
+            height: 2rem;
+            font: inherit;
+            padding: 0.25rem 0.5rem;
+        }
+
+        .savedLinkGroupDelete {
+            margin-left: auto;
+        }
+
+        .savedLinkGroupHeader {
+            display: flex;
+            flex-wrap: wrap;
+            align-items: center;
+            gap: 0.35rem 0.75rem;
+            margin: 0 0 0.5rem;
+        }
+
+        .savedLinkGroupHeader h3 {
+            margin: 0;
+            font-size: 1rem;
+        }
+
+        .savedLinkGroupCount {
+            color: #6b7280;
+            font-size: 0.88em;
+            font-weight: 500;
+        }
+
+        .savedLinkGroup table {
+            table-layout: fixed;
+        }
+
+        .savedLinkGroup th:nth-child(1),
+        .savedLinkGroup td:nth-child(1) {
+            width: auto;
+        }
+
+        .savedLinkGroup th:nth-child(2),
+        .savedLinkGroup td:nth-child(2) {
+            width: 28%;
+        }
+
+        .savedLinkGroup th:nth-child(3),
+        .savedLinkGroup td:nth-child(3) {
+            width: 11.5rem;
+            white-space: nowrap;
+        }
+
+        .savedLinkMove {
+            width: 8.5rem;
+            max-width: 100%;
+        }
+
+        #classGroupTable th:last-child,
+        #classGroupTable td:last-child,
+        #textRuleTable th:last-child,
+        #textRuleTable td:last-child {
+            width: 5.5rem;
+            white-space: nowrap;
+        }
     </style>
 </head>
 <body>
@@ -876,14 +1116,11 @@
             <button type="button" role="tab" id="tabGeneral" aria-controls="panelGeneral" aria-selected="true" data-tab="general">
                 General
             </button>
-            <button type="button" role="tab" id="tabStyleRules" aria-controls="panelStyleRules" aria-selected="false" data-tab="looks">
-                Looks
-            </button>
-            <button type="button" role="tab" id="tabBookmarkRules" aria-controls="panelBookmarkRules" aria-selected="false" data-tab="folders">
-                Folders
-            </button>
             <button type="button" role="tab" id="tabSiteRules" aria-controls="panelSiteRules" aria-selected="false" data-tab="sites">
                 Sites
+            </button>
+            <button type="button" role="tab" id="tabStyleRules" aria-controls="panelStyleRules" aria-selected="false" data-tab="looks">
+                Looks
             </button>
         </div>
 
@@ -908,40 +1145,43 @@
                 <ol>
                     <li>
                         Open
-                        <button type="button" class="tabJump" data-open-tab="folders">Folders</button>
-                        and map bookmark folders to looks (for example Blocked or
-                        Favorited).
+                        <button type="button" class="tabJump" data-open-tab="looks">Looks</button>
+                        if you want names besides Blocked, Favorited, and Seen.
                     </li>
                     <li>
                         On a site, right-click and choose
-                        <strong>Select Target Classes</strong>, or add the site under
+                        <strong>Select Target Classes</strong>, or add the hostname under
                         <button type="button" class="tabJump" data-open-tab="sites">Sites</button>.
                     </li>
                     <li>
-                        Save — open tabs update on their own. If a page does not
-                        change, it still needs site classes; right-click and choose
-                        <strong>Select Target Classes</strong>.
+                        Open that site to set class groups, saved links, and text rules.
+                        Right-click a link or page and choose <strong>Add to list</strong>
+                        to save it under a look.
+                    </li>
+                    <li>
+                        Save — open tabs update on their own.
                     </li>
                 </ol>
                 <p class="hint">
-                    Optional: under Sites → Advanced, use Text Rules for keywords
-                    and URL Parameter Rules when bookmark links include extra query
-                    params.
+                    Optional: on a site, set URL parameters to keep when matching links
+                    that include extra query params.
                 </p>
             </div>
 
             <div class="howItConnects" aria-label="How settings connect">
                 <div class="howItConnectsFlow">
-                    <button type="button" class="tabJump" data-open-tab="folders">Folders</button>
+                    <button type="button" class="tabJump" data-open-tab="sites">Site</button>
+                    <span class="howItConnectsArrow" aria-hidden="true">→</span>
+                    <span>saved links or text</span>
                     <span class="howItConnectsArrow" aria-hidden="true">→</span>
                     <button type="button" class="tabJump" data-open-tab="looks">Looks</button>
                     <span class="howItConnectsArrow" aria-hidden="true">→</span>
-                    <span>cards on a</span>
-                    <button type="button" class="tabJump" data-open-tab="sites">Site</button>
+                    <span>cards on the page</span>
                 </div>
                 <p class="hint">
-                    A bookmark folder picks a look. Sites tell the extension which
-                    listing cards to restyle. Saving updates open tabs.
+                    Each site has class groups (the cards to restyle) and saved
+                    links grouped under looks. Looks act as folders. Saving
+                    updates open tabs.
                 </p>
             </div>
 
@@ -981,6 +1221,29 @@
                 Show a brief on-page summary after bookmark styles are applied,
                 including how many elements were styled and how many were hidden.
             </p>
+
+            <section class="legacyImport" aria-labelledby="legacyImportHeading">
+                <h2 id="legacyImportHeading">Import from bookmarks</h2>
+                <p class="hint">
+                    Choose a bookmark folder and a look. Each website found in that
+                    folder (including nested folders) is added under Sites, and its
+                    links are saved under that look. Save afterwards to apply.
+                </p>
+                <div class="legacyImportFields">
+                    <label for="legacyImportFolder">Bookmark folder</label>
+                    <select id="legacyImportFolder" aria-describedby="legacyImportFolderHelp">
+                        <option value="">Loading folders…</option>
+                    </select>
+                    <p class="settingHelp" id="legacyImportFolderHelp">
+                        Includes the selected folder and all folders inside it.
+                    </p>
+
+                    <label for="legacyImportLook">Look</label>
+                    <select id="legacyImportLook"></select>
+                </div>
+                <button type="button" id="legacyImportBtn">Import folder</button>
+                <p class="fieldError" id="legacyImportError" hidden></p>
+            </section>
         </section>
 
         <section
@@ -992,8 +1255,8 @@
             hidden
         >
             <p class="hint">
-                Define named looks used by Folders and by Text Rules under Sites →
-                Advanced. Choose a predefined look (Blocked / Favorited / Seen) or
+                Define named looks used by saved links and text rules on each site.
+                Choose a predefined look (Blocked / Favorited / Seen) or
                 Custom CSS declarations applied to matching elements.
             </p>
 
@@ -1039,42 +1302,9 @@
                 </tbody>
             </table>
             <p class="tableEmptyState" id="styleRulesEmpty" hidden>
-                No looks yet. Add a look to use with Folders and Text Rules.
+                No looks yet. Add a look to use with saved links and text rules.
             </p>
             <button type="button" id="addStyleRuleBtn">Add Look</button>
-        </section>
-
-        <section
-            id="panelBookmarkRules"
-            class="tabPanel"
-            role="tabpanel"
-            aria-labelledby="tabBookmarkRules"
-            data-tab-panel="folders"
-            hidden
-        >
-            <p class="hint">
-                Each rule maps a bookmark folder (including nested folders) to a look.
-                Type in a folder field to search; folders are grouped by toolbar, menu,
-                and other. Lower numbers win when a bookmark matches more than one
-                folder — use the arrows to change order. The last row styles bookmarks
-                that are not under any folder rule. Choose None to leave them unstyled.
-            </p>
-            <p class="tableEmptyState" id="bookmarkRulesEmpty" hidden>
-                No folder rules yet. Add a rule to map a bookmark folder to a look.
-            </p>
-            <table id="bookmarkRuleTable">
-                <thead>
-                    <tr>
-                        <th>Priority</th>
-                        <th>Folder</th>
-                        <th>Look</th>
-                        <th>Actions</th>
-                    </tr>
-                </thead>
-                <tbody id="bookmarkRuleBody">
-                </tbody>
-            </table>
-            <button type="button" id="addBookmarkRuleBtn">Add Rule</button>
         </section>
 
         <section
@@ -1085,86 +1315,118 @@
             data-tab-panel="sites"
             hidden
         >
-            <p class="hint">
-                Tell the extension which listing cards to restyle. Right-click a page
-                and choose <strong>Select Target Classes</strong>, or add a hostname
-                and CSS classes here. Completely blank rows are ignored when saving.
-            </p>
-            <h2>Search Pairs</h2>
-            <p class="hint">
-                Site is a hostname (example.com). Classes are CSS class names;
-                use spaces within a group and commas between groups.
-            </p>
-            <table id="searchTable">
-                <thead>
-                    <tr>
-                        <th>Site</th>
-                        <th>Classes</th>
-                        <th>Actions</th>
-                    </tr>
-                </thead>
-                <tbody id="tableBody">
-                    <!-- Rows will be added dynamically -->
-                </tbody>
-            </table>
-            <p class="tableEmptyState" id="searchPairsEmpty" hidden>
-                No search pairs yet. Add a site and classes, or use
-                Select Target Classes from the page context menu.
-            </p>
-            <button type="button" id="addRowBtn">Add Row</button>
-
-            <details class="advancedSiteRules" id="advancedSiteRules">
-                <summary>Advanced</summary>
-                <p class="advancedSiteRulesHint">
-                    Optional matching for keywords and extra query parameters.
-                </p>
-
-                <h3>Text Rules</h3>
+            <div id="siteListView">
                 <p class="hint">
-                    Site is a hostname (example.com). Text is matched inside Search Pair
-                    classes on that site. Completely blank rows are ignored when saving.
+                    Each website has its own class groups, saved links, and text rules.
+                    Click a site to edit it, or add a hostname. Right-click a page and
+                    choose <strong>Select Target Classes</strong> to create a site from
+                    the page.
+                </p>
+                <div class="siteListToolbar">
+                    <input
+                        type="text"
+                        id="addSiteInput"
+                        placeholder="example.com"
+                        aria-label="Website hostname"
+                        autocomplete="off"
+                    >
+                    <button type="button" id="addSiteBtn">Add website</button>
+                </div>
+                <p class="fieldError" id="addSiteError" hidden></p>
+                <ul class="siteList" id="siteList"></ul>
+                <p class="tableEmptyState" id="sitesEmpty" hidden>
+                    No websites yet. Add a hostname, or use Select Target Classes
+                    from the page context menu.
+                </p>
+            </div>
+
+            <div id="siteDetailView" hidden>
+                <button type="button" id="siteDetailBack" class="siteDetailBack">
+                    ← All sites
+                </button>
+                <div class="siteDetailHostRow">
+                    <label for="siteDetailHost">Website</label>
+                    <input
+                        type="text"
+                        id="siteDetailHost"
+                        placeholder="example.com"
+                        autocomplete="off"
+                    >
+                    <p class="fieldError" id="siteDetailHostError" hidden></p>
+                </div>
+
+                <h2>Class groups</h2>
+                <p class="hint">
+                    CSS class names for listing cards. Spaces within a group mean
+                    all of those classes must be present. Add more rows for
+                    alternate card layouts.
+                </p>
+                <table id="classGroupTable">
+                    <thead>
+                        <tr>
+                            <th>Classes</th>
+                            <th>Actions</th>
+                        </tr>
+                    </thead>
+                    <tbody id="classGroupBody"></tbody>
+                </table>
+                <p class="tableEmptyState" id="classGroupsEmpty" hidden>
+                    No class groups yet. Add one, or use Select Target Classes on the page.
+                </p>
+                <button type="button" id="addClassGroupBtn">Add class group</button>
+
+                <h2>Saved links</h2>
+                <p class="hint">
+                    Looks act as folders on this site. Add a look below, or
+                    right-click a link or page and choose <strong>Add to list</strong>.
+                    Completely blank rows are ignored when saving.
+                </p>
+                <div id="savedLinkGroups"></div>
+                <p class="tableEmptyState" id="savedLinksEmpty" hidden>
+                    No look folders on this site yet. Add a look, or save a link
+                    from the page context menu.
+                </p>
+                <div class="savedLinkAddFolder" id="savedLinkAddFolder">
+                    <select id="addLinkFolderSelect" aria-label="Look to add"></select>
+                    <button type="button" id="addLinkFolderBtn">Add look</button>
+                </div>
+
+                <h2>Text rules</h2>
+                <p class="hint">
+                    If this text appears inside a targeted class group, apply the look.
+                    Completely blank rows are ignored when saving.
                 </p>
                 <table id="textRuleTable">
                     <thead>
                         <tr>
-                            <th>Site</th>
                             <th>Text</th>
                             <th>Look</th>
                             <th>Actions</th>
                         </tr>
                     </thead>
-                    <tbody id="textRuleBody">
-                    </tbody>
+                    <tbody id="textRuleBody"></tbody>
                 </table>
                 <p class="tableEmptyState" id="textRulesEmpty" hidden>
-                    No text rules yet. Add a rule to style matching text inside Search Pair classes.
+                    No text rules yet. Add a keyword to style matching cards.
                 </p>
-                <button type="button" id="addTextRuleBtn">Add Text Rule</button>
+                <button type="button" id="addTextRuleBtn">Add text rule</button>
 
-                <h3>URL Parameter Rules</h3>
+                <h2>URL parameters</h2>
                 <p class="hint">
-                    Keep only the listed query parameters when matching bookmark URLs
-                    for a site. Example: <code>id, jk</code> — use parameter names only,
-                    separated by commas. Extra parameters in the bookmark URL are ignored.
-                    Completely blank rows are ignored when saving.
+                    Keep only these query parameters when matching saved links.
+                    Example: <code>id, jk</code>. Leave blank to ignore all query
+                    parameters.
                 </p>
-                <table id="urlRuleTable">
-                    <thead>
-                        <tr>
-                            <th>Site</th>
-                            <th>Parameters To Keep</th>
-                            <th>Actions</th>
-                        </tr>
-                    </thead>
-                    <tbody id="urlRuleBody">
-                    </tbody>
-                </table>
-                <p class="tableEmptyState" id="urlRulesEmpty" hidden>
-                    No URL parameter rules yet. Add a rule when bookmark links include
-                    extra query parameters you want to ignore.
-                </p>
-                <button type="button" id="addUrlRuleBtn">Add URL Rule</button>
-            </details>
+                <input
+                    type="text"
+                    id="siteKeepParams"
+                    class="siteKeepParams"
+                    placeholder="id, jk"
+                    aria-label="Parameters to keep"
+                    autocomplete="off"
+                >
+                <p class="fieldError" id="siteKeepParamsError" hidden></p>
+            </div>
         </section>
 
         <div class="actionsBar">

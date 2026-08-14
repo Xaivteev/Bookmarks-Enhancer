@@ -1,26 +1,26 @@
-const BOOKMARK_RULE_STORAGE_KEY = STORAGE_KEYS.bookmarkRules;
 const STYLE_RULE_STORAGE_KEY = STORAGE_KEYS.styleRules;
 
-let cachedBookmarkFolders = [];
 let cachedStyleRules = DEFAULT_STYLE_RULES.map(rule => ({ ...rule }));
+let sitesDraft = [];
+let selectedSiteIndex = -1;
+let sitesReady = false;
 let suppressOptionsStorageReload = false;
 let optionsStorageReloadTimer = null;
-// False while bookmark rule rows are cleared/awaiting bookmarks.getTree().
-// Prevents Save/Export from persisting an empty table as cleared rules.
-let bookmarkRulesReady = false;
 let previewStyleId = "";
 let suppressDirtyTracking = false;
 let savedFormSnapshot = null;
 let dirtyUiSyncTimer = null;
 const OPTIONS_DOC_TITLE = "Bookmarks Enhancer Options";
 const DIRTY_CLICK_SELECTOR = [
-    "#addRowBtn",
-    "#addUrlRuleBtn",
+    "#addSiteBtn",
+    "#addClassGroupBtn",
+    ".addSavedLinkBtn",
+    "#addLinkFolderBtn",
     "#addTextRuleBtn",
-    "#addBookmarkRuleBtn",
     "#addStyleRuleBtn",
+    "#siteDetailBack",
     ".rowDeleteBtn",
-    ".rowMoveBtn"
+    ".siteListOpen"
 ].join(", ");
 
 function applyGettingStartedVisibility(hidden) {
@@ -57,93 +57,6 @@ function createRowActions(...buttons) {
     return actions;
 }
 
-function createMoveButton(direction) {
-    const moveBtn = document.createElement("button");
-    const moveUp = direction < 0;
-    moveBtn.type = "button";
-    moveBtn.className = moveUp ? "rowMoveBtn rowMoveUpBtn" : "rowMoveBtn rowMoveDownBtn";
-    moveBtn.textContent = moveUp ? "↑" : "↓";
-    moveBtn.setAttribute("aria-label", moveUp ? "Move up" : "Move down");
-    moveBtn.title = moveUp ? "Move up (higher priority)" : "Move down (lower priority)";
-    return moveBtn;
-}
-
-function getBookmarkFolderRuleRows() {
-    return Array.from(
-        document.querySelectorAll("#bookmarkRuleBody tr:not(.unmatchedBookmarkRule)")
-    );
-}
-
-function refreshBookmarkRulePriorities() {
-    const rows = getBookmarkFolderRuleRows();
-    rows.forEach((row, index) => {
-        const num = row.querySelector(".bookmarkRulePriorityNum");
-        if (num) {
-            num.textContent = `#${index + 1}`;
-        }
-        const upBtn = row.querySelector(".rowMoveUpBtn");
-        const downBtn = row.querySelector(".rowMoveDownBtn");
-        if (upBtn) upBtn.disabled = index === 0;
-        if (downBtn) downBtn.disabled = index === rows.length - 1;
-    });
-
-    const unmatchedNum = document.querySelector(
-        "#bookmarkRuleBody tr.unmatchedBookmarkRule .bookmarkRulePriorityNum"
-    );
-    if (unmatchedNum) {
-        unmatchedNum.textContent = "Last";
-    }
-}
-
-function moveBookmarkRuleRow(row, direction) {
-    const body = row.parentElement;
-    if (!body) return;
-
-    const folderRows = getBookmarkFolderRuleRows();
-    const index = folderRows.indexOf(row);
-    const targetIndex = index + direction;
-    if (index < 0 || targetIndex < 0 || targetIndex >= folderRows.length) return;
-
-    const reference = direction < 0
-        ? folderRows[targetIndex]
-        : folderRows[targetIndex].nextElementSibling;
-    body.insertBefore(row, reference);
-    refreshBookmarkRulePriorities();
-
-    const preferred = row.querySelector(direction < 0 ? ".rowMoveUpBtn" : ".rowMoveDownBtn");
-    const fallback = row.querySelector(direction < 0 ? ".rowMoveDownBtn" : ".rowMoveUpBtn");
-    if (preferred && !preferred.disabled) {
-        preferred.focus();
-    } else {
-        fallback?.focus();
-    }
-}
-
-function createBookmarkPriorityCell({ unmatched = false } = {}) {
-    const cell = document.createElement("td");
-    const wrap = document.createElement("div");
-    wrap.className = "bookmarkRulePriority";
-
-    const num = document.createElement("span");
-    num.className = "bookmarkRulePriorityNum";
-    num.textContent = unmatched ? "Last" : "#1";
-    wrap.appendChild(num);
-
-    if (!unmatched) {
-        const move = document.createElement("div");
-        move.className = "bookmarkRuleMove";
-        const upBtn = createMoveButton(-1);
-        const downBtn = createMoveButton(1);
-        upBtn.addEventListener("click", () => moveBookmarkRuleRow(cell.parentElement, -1));
-        downBtn.addEventListener("click", () => moveBookmarkRuleRow(cell.parentElement, 1));
-        move.append(upBtn, downBtn);
-        wrap.appendChild(move);
-    }
-
-    cell.appendChild(wrap);
-    return cell;
-}
-
 function syncTableEmptyState(tbodySelector, emptySelector, { rowSelector = "tr", hideTable = true } = {}) {
     const tbody = document.querySelector(tbodySelector);
     const empty = document.querySelector(emptySelector);
@@ -160,28 +73,18 @@ function syncTableEmptyState(tbodySelector, emptySelector, { rowSelector = "tr",
 
 function refreshAllTableEmptyStates() {
     syncTableEmptyState("#styleRuleBody", "#styleRulesEmpty");
-    syncTableEmptyState("#bookmarkRuleBody", "#bookmarkRulesEmpty", {
-        rowSelector: "tr:not(.unmatchedBookmarkRule)",
-        hideTable: false
-    });
+    syncTableEmptyState("#classGroupBody", "#classGroupsEmpty");
     syncTableEmptyState("#textRuleBody", "#textRulesEmpty");
-    syncTableEmptyState("#tableBody", "#searchPairsEmpty");
-    syncTableEmptyState("#urlRuleBody", "#urlRulesEmpty");
-    syncAdvancedSiteRulesOpen();
+    refreshSavedLinkGroupEmptyStates();
+    refreshSitesEmptyState();
 }
 
-function openAdvancedSiteRules() {
-    const panel = document.querySelector("#advancedSiteRules");
-    if (panel) panel.open = true;
-}
-
-function syncAdvancedSiteRulesOpen() {
-    const panel = document.querySelector("#advancedSiteRules");
-    if (!panel) return;
-    const hasRows =
-        document.querySelectorAll("#textRuleBody tr").length > 0 ||
-        document.querySelectorAll("#urlRuleBody tr").length > 0;
-    if (hasRows) panel.open = true;
+function refreshSitesEmptyState() {
+    const empty = document.querySelector("#sitesEmpty");
+    const list = document.querySelector("#siteList");
+    if (!empty || !list) return;
+    empty.hidden = sitesDraft.length > 0;
+    list.hidden = sitesDraft.length === 0;
 }
 
 function createPreviewButton(onClick) {
@@ -219,75 +122,61 @@ function previewStyleFromRow(row) {
 
 function getDefaultPreviewStyleId(styleRules) {
     const rules = styleRules || [];
-    return (
-        rules.find(rule => rule.id === previewStyleId)?.id ||
-        rules.find(rule => rule.id === "favorited")?.id ||
-        rules.find(rule => !styleRuleHidesElements(rule))?.id ||
+    if (previewStyleId && rules.some(rule => rule.id === previewStyleId)) {
+        return previewStyleId;
+    }
+    return rules.find(rule => !styleRuleHidesElements(rule))?.id ||
         rules[0]?.id ||
-        ""
-    );
+        "";
 }
 
 function getAvailableStyleRules() {
-    const fromDom = collectStyleRules();
-    if (fromDom.length > 0) return fromDom;
-    if (cachedStyleRules.length > 0) return cachedStyleRules;
-    return DEFAULT_STYLE_RULES.map(rule => ({ ...rule }));
+    return normalizeStyleRules(collectStyleRules());
 }
 
 function populateStyleSelect(select, selectedId = "blocked", { includeNone = false } = {}) {
+    if (!select) return;
     const styleRules = getAvailableStyleRules();
+    const current = selectedId || "";
     select.replaceChildren();
-
-    let selectedExists = false;
 
     if (includeNone) {
         const noneOption = document.createElement("option");
         noneOption.value = "";
         noneOption.textContent = "None";
-        if (!selectedId) {
-            noneOption.selected = true;
-            selectedExists = true;
-        }
         select.appendChild(noneOption);
     }
 
     for (const rule of styleRules) {
         const option = document.createElement("option");
         option.value = rule.id;
-        option.textContent = rule.name;
-        if (rule.id === selectedId) {
-            option.selected = true;
-            selectedExists = true;
-        }
+        option.textContent = rule.name || rule.id;
         select.appendChild(option);
     }
 
-    if (selectedId && !selectedExists) {
+    if (current && ![...select.options].some(option => option.value === current)) {
         const missingOption = document.createElement("option");
-        missingOption.value = selectedId;
-        missingOption.textContent = `Missing style (${selectedId})`;
-        missingOption.selected = true;
+        missingOption.value = current;
+        missingOption.textContent = `Missing style (${current})`;
         select.appendChild(missingOption);
     }
 
-    if (!selectedExists && select.options.length > 0) {
-        select.selectedIndex = 0;
-    }
+    select.value = current;
 }
 
 function refreshAllStyleSelects() {
+    cachedStyleRules = normalizeStyleRules(collectStyleRules());
     for (const select of document.querySelectorAll(
-        ".bookmarkRuleStyle, .textRuleStyle"
+        ".textRuleStyle, .savedLinkMove, #legacyImportLook"
     )) {
-        const includeNone = select.dataset.includeNone === "true";
-        populateStyleSelect(
-            select,
-            select.value || (includeNone ? "" : "blocked"),
-            { includeNone }
-        );
+        populateStyleSelect(select, select.value);
+    }
+    const legacyLook = document.querySelector("#legacyImportLook");
+    if (legacyLook && !legacyLook.value && legacyLook.options.length > 0) {
+        legacyLook.selectedIndex = 0;
     }
     updateStylePreview();
+    syncSavedLinkGroupsToLooks();
 }
 
 function buildScopedStylePreviewCss(styleRules) {
@@ -296,14 +185,11 @@ function buildScopedStylePreviewCss(styleRules) {
         if (!declarations) return "";
         const className = styleRuleClassName(rule);
         return `#stylePreviewRoot .${className} {\n\t${declarations}\n}`;
-    }).filter(Boolean).join("\n\n");
+    }).filter(Boolean).join("\n");
 }
 
 function getStyleRulesForPreview() {
-    const fromDom = normalizeStyleRules(collectStyleRules());
-    if (fromDom.length > 0) return fromDom;
-    if (cachedStyleRules.length > 0) return cachedStyleRules;
-    return DEFAULT_STYLE_RULES.map(rule => ({ ...rule }));
+    return normalizeStyleRules(collectStyleRules());
 }
 
 function clearPreviewStyleClasses(element) {
@@ -325,25 +211,19 @@ function updateStylePreview() {
 
     const styleRules = getStyleRulesForPreview();
     styleEl.textContent = buildScopedStylePreviewCss(styleRules);
-
-    clearPreviewStyleClasses(link);
-    clearPreviewStyleClasses(card);
-
     previewStyleId = getDefaultPreviewStyleId(styleRules);
     const selectedRule = styleRules.find(rule => rule.id === previewStyleId);
 
-    if (activeLabel) {
-        activeLabel.textContent = selectedRule?.name
-            ? `Showing: ${selectedRule.name}`
-            : "";
-    }
-
+    clearPreviewStyleClasses(link);
+    clearPreviewStyleClasses(card);
     if (selectedRule) {
         const className = styleRuleClassName(selectedRule);
         link.classList.add(className);
         card.classList.add(className);
     }
-
+    if (activeLabel) {
+        activeLabel.textContent = selectedRule?.name || "";
+    }
     if (hideNote) {
         hideNote.hidden = !(selectedRule && styleRuleHidesElements(selectedRule));
     }
@@ -465,67 +345,262 @@ function createStyleRuleRow(rule = null) {
 
 function loadStyleRuleRows(rules) {
     clearStyleRuleTable();
-    cachedStyleRules = normalizeStyleRules(rules);
-    if (cachedStyleRules.length === 0) {
-        for (const rule of DEFAULT_STYLE_RULES) {
-            createStyleRuleRow(rule);
-        }
-    } else {
-        cachedStyleRules.forEach(rule => createStyleRuleRow(rule));
-    }
+    cachedStyleRules = Array.isArray(rules)
+        ? normalizeStyleRules(rules)
+        : DEFAULT_STYLE_RULES.map(rule => ({ ...rule }));
+    cachedStyleRules.forEach(rule => createStyleRuleRow(rule));
     refreshAllStyleSelects();
     refreshAllTableEmptyStates();
 }
 
-function collectSearchPairs() {
-    const rows = Array.from(document.querySelectorAll("#tableBody tr")).map(row => {
-        const inputs = row.querySelectorAll("input");
-        return {
-            site: inputs[0].value,
-            classes: inputs[1].value
-        };
-    });
-
-    return mergeRowsBySite(rows, "classes", parseClassGroups, getClassGroupKey);
-}
-
-function collectUrlRules() {
-    const rows = Array.from(document.querySelectorAll("#urlRuleBody tr")).map(row => {
-        return {
-            site: row.querySelector(".urlRuleSite")?.value || "",
-            keepParams: row.querySelector(".urlRuleParams")?.value || ""
-        };
-    });
-
-    return mergeRowsBySite(rows, "keepParams", parseCommaSeparatedValues);
-}
-
-function collectTextRules() {
-    return Array.from(document.querySelectorAll("#textRuleBody tr")).map(row => {
-        const siteInput = row.querySelector(".textRuleSite");
-        const textInput = row.querySelector(".textRuleText");
-        const styleSelect = row.querySelector(".textRuleStyle");
-        return {
-            site: siteInput?.value.trim() || "",
-            text: textInput?.value.trim() || "",
-            style: styleSelect?.value || "blocked"
-        };
-    }).filter(rule => rule.site && rule.text);
-}
-
-function replaceConfigurationRows(searchPairs, urlRules, textRules, bookmarkRules, styleRules) {
-    clearSearchTable();
-    clearUrlRuleTable();
-    clearTextRuleTable();
-    loadStyleRuleRows(styleRules);
-
-    searchPairs.forEach(({ site, classes }) => createRow(site, classes));
-    urlRules.forEach(({ site, keepParams }) => createUrlRuleRow(site, keepParams));
-    if (textRules && textRules.length > 0) {
-        textRules.forEach(rule => createTextRuleRow(rule.site, rule.text, rule.style));
+function setFieldError(input, errorEl, message) {
+    if (input) {
+        input.classList.toggle("fieldInvalid", !!message);
+        if (message) {
+            input.setAttribute("aria-invalid", "true");
+        } else {
+            input.removeAttribute("aria-invalid");
+        }
     }
+    if (errorEl) {
+        errorEl.textContent = message || "";
+        errorEl.hidden = !message;
+    }
+}
+
+function createFieldError(errorId) {
+    const errorEl = document.createElement("p");
+    errorEl.className = "fieldError";
+    errorEl.id = errorId;
+    errorEl.hidden = true;
+    return errorEl;
+}
+
+function showRowValidationError(tabId, selector, message, actionLabel, extra = {}) {
+    showStatus(message, {
+        isError: true,
+        actions: [
+            {
+                label: actionLabel,
+                onClick: () => {
+                    if (typeof extra.openSiteIndex === "number") {
+                        activateOptionsTab("sites");
+                        openSiteDetail(extra.openSiteIndex);
+                    } else {
+                        activateOptionsTab(tabId);
+                    }
+                    const field = document.querySelector(selector);
+                    field?.focus();
+                    field?.scrollIntoView({ behavior: "smooth", block: "center" });
+                }
+            }
+        ]
+    });
+}
+
+function formatCount(count, singular, plural = `${singular}s`) {
+    return `${count} ${count === 1 ? singular : plural}`;
+}
+
+function siteSummary(siteConfig) {
+    const groups = siteConfig.classGroups?.length || 0;
+    const links = siteConfig.links?.length || 0;
+    const texts = siteConfig.textRules?.length || 0;
+    return [
+        formatCount(groups, "class group"),
+        formatCount(links, "saved link"),
+        formatCount(texts, "text rule")
+    ].join(" · ");
+}
+
+function isSiteDetailOpen() {
+    return selectedSiteIndex >= 0;
+}
+
+function collectClassGroupsFromDetail() {
+    return Array.from(document.querySelectorAll("#classGroupBody tr")).map(row =>
+        row.querySelector(".classGroupInput")?.value || ""
+    );
+}
+
+function collectLinkFoldersFromDetail() {
+    return Array.from(document.querySelectorAll(".savedLinkGroup"))
+        .map(group => group.dataset.styleId)
+        .filter(Boolean);
+}
+
+function collectSavedLinksFromDetail() {
+    return Array.from(document.querySelectorAll(".savedLinkGroup")).flatMap(group => {
+        const style = group.dataset.styleId || "blocked";
+        return Array.from(group.querySelectorAll("tbody tr")).map(row => ({
+            url: row.querySelector(".savedLinkUrl")?.value.trim() || "",
+            title: row.querySelector(".savedLinkTitle")?.value.trim() || "",
+            style
+        }));
+    }).filter(link => link.url || link.title);
+}
+
+function collectTextRulesFromDetail() {
+    return Array.from(document.querySelectorAll("#textRuleBody tr")).map(row => ({
+        text: row.querySelector(".textRuleText")?.value.trim() || "",
+        style: row.querySelector(".textRuleStyle")?.value || "blocked"
+    })).filter(rule => rule.text);
+}
+
+function flushSiteDetailToDraft() {
+    if (!isSiteDetailOpen() || !sitesDraft[selectedSiteIndex]) return;
+    const hostInput = document.querySelector("#siteDetailHost");
+    const keepParamsInput = document.querySelector("#siteKeepParams");
+    const current = sitesDraft[selectedSiteIndex];
+    const nextHost = normalizeSite(hostInput?.value || current.site) || current.site;
+    sitesDraft[selectedSiteIndex] = normalizeSiteConfig({
+        site: nextHost,
+        classGroups: collectClassGroupsFromDetail(),
+        keepParams: keepParamsInput?.value || "",
+        textRules: collectTextRulesFromDetail(),
+        links: collectSavedLinksFromDetail(),
+        linkFolders: collectLinkFoldersFromDetail()
+    }) || current;
+}
+
+function collectSitesFromUi() {
+    flushSiteDetailToDraft();
+    return normalizeSites(sitesDraft);
+}
+
+function clearDetailTables() {
+    document.querySelector("#classGroupBody")?.replaceChildren();
+    document.querySelector("#savedLinkGroups")?.replaceChildren();
+    document.querySelector("#textRuleBody")?.replaceChildren();
+}
+
+function renderSiteList() {
+    const list = document.querySelector("#siteList");
+    if (!list) return;
+    list.replaceChildren();
+
+    sitesDraft.forEach((siteConfig, index) => {
+        const item = document.createElement("li");
+        item.className = "siteListItem";
+
+        const openBtn = document.createElement("button");
+        openBtn.type = "button";
+        openBtn.className = "siteListOpen";
+        openBtn.setAttribute("aria-label", `Edit ${siteConfig.site}`);
+
+        const host = document.createElement("span");
+        host.className = "siteListHost";
+        host.textContent = siteConfig.site;
+
+        const meta = document.createElement("span");
+        meta.className = "siteListMeta";
+        meta.textContent = siteSummary(siteConfig);
+
+        openBtn.append(host, meta);
+        openBtn.addEventListener("click", () => openSiteDetail(index));
+
+        const deleteWrap = document.createElement("div");
+        deleteWrap.className = "siteListDelete";
+        deleteWrap.appendChild(createDeleteButton(() => deleteSite(index)));
+
+        item.append(openBtn, deleteWrap);
+        list.appendChild(item);
+    });
+
+    refreshSitesEmptyState();
+}
+
+function showSiteListView() {
+    const listView = document.querySelector("#siteListView");
+    const detailView = document.querySelector("#siteDetailView");
+    if (listView) listView.hidden = false;
+    if (detailView) detailView.hidden = true;
+    selectedSiteIndex = -1;
+    renderSiteList();
+}
+
+function openSiteDetail(index) {
+    if (index < 0 || index >= sitesDraft.length) return;
+    if (isSiteDetailOpen() && index !== selectedSiteIndex) {
+        flushSiteDetailToDraft();
+    }
+
+    selectedSiteIndex = index;
+    const siteConfig = sitesDraft[index];
+    const listView = document.querySelector("#siteListView");
+    const detailView = document.querySelector("#siteDetailView");
+    if (listView) listView.hidden = true;
+    if (detailView) detailView.hidden = false;
+
+    const hostInput = document.querySelector("#siteDetailHost");
+    const keepParamsInput = document.querySelector("#siteKeepParams");
+    if (hostInput) hostInput.value = siteConfig.site || "";
+    if (keepParamsInput) keepParamsInput.value = siteConfig.keepParams || "";
+    setFieldError(hostInput, document.querySelector("#siteDetailHostError"), "");
+    setFieldError(keepParamsInput, document.querySelector("#siteKeepParamsError"), "");
+
+    clearDetailTables();
+    (siteConfig.classGroups || []).forEach(group => createClassGroupRow(group));
+    (siteConfig.textRules || []).forEach(rule =>
+        createTextRuleRow(rule.text, rule.style)
+    );
+    renderSavedLinkGroups(siteConfig.links || [], siteConfig.linkFolders || []);
+    refreshAllStyleSelects();
     refreshAllTableEmptyStates();
-    // Bookmark rows are rebuilt by loadBookmarkRuleRows (keeps existing rows until then).
+    window.scrollTo(0, 0);
+}
+
+function closeSiteDetail() {
+    flushSiteDetailToDraft();
+    showSiteListView();
+    scheduleDirtyUiUpdate();
+}
+
+function deleteSite(index) {
+    const siteConfig = sitesDraft[index];
+    if (!siteConfig) return;
+    const confirmed = window.confirm(
+        `Delete ${siteConfig.site} and its class groups, saved links, and text rules?`
+    );
+    if (!confirmed) return;
+    if (selectedSiteIndex === index) {
+        selectedSiteIndex = -1;
+        showSiteListView();
+    } else if (selectedSiteIndex > index) {
+        selectedSiteIndex -= 1;
+    }
+    sitesDraft.splice(index, 1);
+    renderSiteList();
+    scheduleDirtyUiUpdate();
+}
+
+function addSiteFromInput() {
+    const input = document.querySelector("#addSiteInput");
+    const errorEl = document.querySelector("#addSiteError");
+    const raw = input?.value.trim() || "";
+    if (!raw) {
+        setFieldError(input, errorEl, "Enter a site hostname.");
+        input?.focus();
+        return;
+    }
+    if (!isPlausibleHostname(raw)) {
+        setFieldError(input, errorEl, "Enter a valid hostname (example.com).");
+        input?.focus();
+        return;
+    }
+    const hostname = normalizeSite(raw);
+    if (sitesDraft.some(siteConfig => siteConfig.site === hostname)) {
+        setFieldError(input, errorEl, "That website is already in the list.");
+        input?.focus();
+        return;
+    }
+    setFieldError(input, errorEl, "");
+    if (input) input.value = "";
+    sitesDraft.push(createEmptySiteConfig(hostname));
+    sitesDraft = normalizeSites(sitesDraft);
+    const index = sitesDraft.findIndex(siteConfig => siteConfig.site === hostname);
+    openSiteDetail(index);
+    scheduleDirtyUiUpdate();
 }
 
 function isBookmarkRootNode(node) {
@@ -545,372 +620,476 @@ function flattenBookmarkFolders(nodes, path = "", group = null) {
         const nextPath = isRoot ? "" : (path ? `${path} / ${title}` : title);
 
         if (!isRoot && nextGroup) {
-            const displayLabel = nextPath === nextGroup.title
-                ? nextGroup.title
-                : nextPath.startsWith(`${nextGroup.title} / `)
-                    ? nextPath.slice(nextGroup.title.length + 3)
-                    : nextPath;
             folders.push({
                 id: node.id,
                 label: nextPath,
-                displayLabel,
-                groupId: nextGroup.id,
-                groupTitle: nextGroup.title,
-                searchText: nextPath.toLowerCase()
+                groupTitle: nextGroup.title
             });
         }
 
         if (Array.isArray(node.children)) {
-            folders.push(...flattenBookmarkFolders(
-                node.children,
-                nextPath,
-                nextGroup
-            ));
+            folders.push(...flattenBookmarkFolders(node.children, nextPath, nextGroup));
         }
     }
 
     return folders;
 }
 
-function findCachedBookmarkFolder(folderId) {
-    return cachedBookmarkFolders.find(folder => folder.id === folderId) || null;
-}
+function populateLegacyImportFolderSelect(folders) {
+    const select = document.querySelector("#legacyImportFolder");
+    if (!select) return;
+    const previous = select.value;
+    select.replaceChildren();
 
-function foldersForCombobox(selectedId) {
-    const folders = cachedBookmarkFolders.slice();
-    if (selectedId && !folders.some(folder => folder.id === selectedId)) {
-        const label = `Missing folder (${selectedId})`;
-        folders.unshift({
-            id: selectedId,
-            label,
-            displayLabel: label,
-            groupId: "__missing__",
-            groupTitle: "Missing",
-            searchText: label.toLowerCase()
-        });
-    }
-    return folders;
-}
-
-function groupBookmarkFolders(folders) {
-    const groups = [];
-    const byId = new Map();
-    for (const folder of folders) {
-        const key = folder.groupId || "";
-        if (!byId.has(key)) {
-            const group = {
-                id: key,
-                title: folder.groupTitle || "Folders",
-                folders: []
-            };
-            byId.set(key, group);
-            groups.push(group);
-        }
-        byId.get(key).folders.push(folder);
-    }
-    return groups;
-}
-
-function getFolderComboboxLabel(folderId) {
-    if (!folderId) return "";
-    return findCachedBookmarkFolder(folderId)?.label || `Missing folder (${folderId})`;
-}
-
-let folderComboboxSeq = 0;
-const folderComboboxState = new WeakMap();
-
-function getOpenFolderCombobox() {
-    return document.querySelector(".folderCombobox.is-open");
-}
-
-function closeFolderCombobox(box, { revert = true } = {}) {
-    const state = folderComboboxState.get(box);
-    if (!state) return;
-    if (revert) {
-        state.input.value = state.committedLabel;
-    }
-    state.activeId = "";
-    state.input.setAttribute("aria-expanded", "false");
-    state.input.removeAttribute("aria-activedescendant");
-    state.listbox.hidden = true;
-    box.classList.remove("is-open");
-}
-
-function closeAllFolderComboboxes(except = null) {
-    for (const box of document.querySelectorAll(".folderCombobox.is-open")) {
-        if (box !== except) closeFolderCombobox(box);
-    }
-}
-
-function getVisibleFolderOptions(box) {
-    const state = folderComboboxState.get(box);
-    if (!state) return [];
-    return Array.from(state.listbox.querySelectorAll('[role="option"]'));
-}
-
-function setActiveFolderOption(box, option) {
-    const state = folderComboboxState.get(box);
-    if (!state) return;
-    for (const item of getVisibleFolderOptions(box)) {
-        item.classList.toggle("is-active", item === option);
-    }
-    state.activeId = option?.id || "";
-    if (option) {
-        state.input.setAttribute("aria-activedescendant", option.id);
-        option.scrollIntoView({ block: "nearest" });
-    } else {
-        state.input.removeAttribute("aria-activedescendant");
-    }
-}
-
-function commitFolderCombobox(box, folderId) {
-    const state = folderComboboxState.get(box);
-    if (!state) return;
-    const label = getFolderComboboxLabel(folderId);
-    const changed = state.hidden.value !== (folderId || "");
-    state.hidden.value = folderId || "";
-    state.committedId = folderId || "";
-    state.committedLabel = label;
-    state.input.value = label;
-    closeFolderCombobox(box, { revert: false });
-    if (changed) {
-        state.hidden.dispatchEvent(new Event("input", { bubbles: true }));
-        state.hidden.dispatchEvent(new Event("change", { bubbles: true }));
-    }
-}
-
-function getFolderComboboxFilter(state) {
-    const typed = state.input.value.trim().toLowerCase();
-    const committed = (state.committedLabel || "").trim().toLowerCase();
-    if (!typed || typed === committed) return "";
-    return typed;
-}
-
-function renderFolderComboboxList(box) {
-    const state = folderComboboxState.get(box);
-    if (!state) return;
-
-    const query = getFolderComboboxFilter(state);
-    const folders = foldersForCombobox(state.committedId).filter(folder =>
-        !query || folder.searchText.includes(query) || folder.displayLabel.toLowerCase().includes(query)
-    );
-    const groups = groupBookmarkFolders(folders);
-
-    state.listbox.replaceChildren();
-    if (folders.length === 0) {
-        const empty = document.createElement("div");
-        empty.className = "folderComboboxEmpty";
-        empty.textContent = cachedBookmarkFolders.length === 0
-            ? "No bookmark folders found"
-            : "No matching folders";
-        state.listbox.appendChild(empty);
-        setActiveFolderOption(box, null);
+    if (!folders || folders.length === 0) {
+        const option = document.createElement("option");
+        option.value = "";
+        option.textContent = "No bookmark folders found";
+        select.appendChild(option);
+        select.disabled = true;
         return;
     }
 
-    let optionIndex = 0;
-    let selectedOption = null;
-    for (const group of groups) {
-        const groupEl = document.createElement("div");
-        groupEl.className = "folderComboboxGroup";
-        groupEl.setAttribute("role", "group");
-        groupEl.setAttribute("aria-label", group.title);
+    select.disabled = false;
+    const placeholder = document.createElement("option");
+    placeholder.value = "";
+    placeholder.textContent = "Select a folder";
+    select.appendChild(placeholder);
 
-        const label = document.createElement("div");
-        label.className = "folderComboboxGroupLabel";
-        label.textContent = group.title;
-        groupEl.appendChild(label);
+    const groups = new Map();
+    for (const folder of folders) {
+        const groupTitle = folder.groupTitle || "Other";
+        if (!groups.has(groupTitle)) groups.set(groupTitle, []);
+        groups.get(groupTitle).push(folder);
+    }
 
-        for (const folder of group.folders) {
-            const option = document.createElement("div");
-            option.className = "folderComboboxOption";
-            option.id = `${state.listbox.id}-opt-${optionIndex++}`;
-            option.setAttribute("role", "option");
-            option.setAttribute("aria-selected", folder.id === state.committedId ? "true" : "false");
-            option.dataset.folderId = folder.id;
-            option.textContent = folder.displayLabel;
-            option.title = folder.label;
-            option.addEventListener("pointerdown", event => {
-                event.preventDefault();
-                commitFolderCombobox(box, folder.id);
-            });
-            if (folder.id === state.committedId) {
-                selectedOption = option;
-            }
-            groupEl.appendChild(option);
+    for (const [groupTitle, groupFolders] of groups) {
+        const optgroup = document.createElement("optgroup");
+        optgroup.label = groupTitle;
+        for (const folder of groupFolders) {
+            const option = document.createElement("option");
+            option.value = folder.id;
+            option.textContent = folder.label;
+            optgroup.appendChild(option);
         }
-
-        state.listbox.appendChild(groupEl);
+        select.appendChild(optgroup);
     }
 
-    setActiveFolderOption(box, selectedOption || getVisibleFolderOptions(box)[0] || null);
-}
-
-function openFolderCombobox(box) {
-    const state = folderComboboxState.get(box);
-    if (!state) return;
-    closeAllFolderComboboxes(box);
-    renderFolderComboboxList(box);
-    state.listbox.hidden = false;
-    state.input.setAttribute("aria-expanded", "true");
-    box.classList.add("is-open");
-}
-
-function moveFolderComboboxActive(box, offset) {
-    const options = getVisibleFolderOptions(box);
-    if (options.length === 0) return;
-    const state = folderComboboxState.get(box);
-    const currentIndex = options.findIndex(option => option.id === state?.activeId);
-    let nextIndex = currentIndex + offset;
-    if (currentIndex < 0) {
-        nextIndex = offset > 0 ? 0 : options.length - 1;
-    } else {
-        nextIndex = (nextIndex + options.length) % options.length;
+    if (previous && [...select.options].some(option => option.value === previous)) {
+        select.value = previous;
     }
-    setActiveFolderOption(box, options[nextIndex]);
 }
 
-function createFolderCombobox(selectedId = "") {
-    const id = `folder-combobox-${++folderComboboxSeq}`;
-    const box = document.createElement("div");
-    box.className = "folderCombobox";
+function loadLegacyImportFolders() {
+    const select = document.querySelector("#legacyImportFolder");
+    if (!select) return Promise.resolve();
+    if (!browser.bookmarks || typeof browser.bookmarks.getTree !== "function") {
+        populateLegacyImportFolderSelect([]);
+        return Promise.resolve();
+    }
 
-    const hidden = document.createElement("input");
-    hidden.type = "hidden";
-    hidden.className = "bookmarkRuleFolder";
-    hidden.value = selectedId || "";
+    return browser.bookmarks.getTree()
+        .then(tree => {
+            populateLegacyImportFolderSelect(flattenBookmarkFolders(tree));
+        })
+        .catch(error => {
+            console.error("Could not load bookmark folders:", error);
+            populateLegacyImportFolderSelect([]);
+        });
+}
 
-    const input = document.createElement("input");
-    input.type = "text";
-    input.className = "folderComboboxInput";
-    input.setAttribute("role", "combobox");
-    input.setAttribute("aria-expanded", "false");
-    input.setAttribute("aria-controls", `${id}-list`);
-    input.setAttribute("aria-autocomplete", "list");
-    input.setAttribute("aria-label", "Bookmark folder");
-    input.placeholder = "Search folders";
-    input.autocomplete = "off";
-    input.spellcheck = false;
+function importLegacyBookmarkFolder() {
+    const folderSelect = document.querySelector("#legacyImportFolder");
+    const lookSelect = document.querySelector("#legacyImportLook");
+    const errorEl = document.querySelector("#legacyImportError");
+    const folderId = folderSelect?.value || "";
+    const styleId = lookSelect?.value || "";
 
-    const listbox = document.createElement("div");
-    listbox.className = "folderComboboxList";
-    listbox.id = `${id}-list`;
-    listbox.setAttribute("role", "listbox");
-    listbox.hidden = true;
+    if (!folderId) {
+        setFieldError(folderSelect, errorEl, "Choose a bookmark folder to import.");
+        folderSelect?.focus();
+        return;
+    }
+    if (!styleId) {
+        setFieldError(lookSelect, errorEl, "Choose a look, or add one on the Looks tab.");
+        lookSelect?.focus();
+        return;
+    }
+    setFieldError(folderSelect, errorEl, "");
+    setFieldError(lookSelect, errorEl, "");
 
-    const committedLabel = getFolderComboboxLabel(selectedId);
-    input.value = committedLabel;
-    folderComboboxState.set(box, {
-        hidden,
-        input,
-        listbox,
-        activeId: "",
-        committedId: selectedId || "",
-        committedLabel
-    });
+    flushSiteDetailToDraft();
+    const openHost = isSiteDetailOpen() ? sitesDraft[selectedSiteIndex]?.site : "";
+    const button = document.querySelector("#legacyImportBtn");
+    if (button) {
+        button.disabled = true;
+        button.textContent = "Importing…";
+    }
 
-    input.addEventListener("focus", () => {
-        input.select();
-    });
-    input.addEventListener("click", () => {
-        openFolderCombobox(box);
-    });
-    input.addEventListener("input", () => {
-        openFolderCombobox(box);
-    });
-    input.addEventListener("keydown", event => {
-        const isOpen = box.classList.contains("is-open");
-        if (event.key === "ArrowDown") {
-            event.preventDefault();
-            if (!isOpen) openFolderCombobox(box);
-            else moveFolderComboboxActive(box, 1);
-        } else if (event.key === "ArrowUp") {
-            event.preventDefault();
-            if (!isOpen) openFolderCombobox(box);
-            else moveFolderComboboxActive(box, -1);
-        } else if (event.key === "Home" && isOpen) {
-            event.preventDefault();
-            const options = getVisibleFolderOptions(box);
-            if (options[0]) setActiveFolderOption(box, options[0]);
-        } else if (event.key === "End" && isOpen) {
-            event.preventDefault();
-            const options = getVisibleFolderOptions(box);
-            if (options.length) setActiveFolderOption(box, options[options.length - 1]);
-        } else if (event.key === "Enter") {
-            event.preventDefault();
-            if (!isOpen) {
-                openFolderCombobox(box);
+    importBookmarkFolderIntoSites(sitesDraft, folderId, styleId)
+        .then(result => {
+            sitesDraft = result.sites;
+            if (openHost) {
+                const index = sitesDraft.findIndex(siteConfig => siteConfig.site === openHost);
+                if (index >= 0) {
+                    openSiteDetail(index);
+                } else {
+                    showSiteListView();
+                }
+            } else {
+                renderSiteList();
+            }
+            scheduleDirtyUiUpdate();
+
+            if (result.sitesTouched === 0) {
+                showStatus("No http(s) bookmarks found in that folder", true);
                 return;
             }
-            const current = folderComboboxState.get(box);
-            const active = current?.activeId
-                ? document.getElementById(current.activeId)
-                : null;
-            if (active?.dataset.folderId) {
-                commitFolderCombobox(box, active.dataset.folderId);
+
+            const parts = [
+                `Added ${formatCount(result.linksAdded, "link")} across ${formatCount(result.sitesTouched, "site")}`
+            ];
+            if (result.sitesCreated > 0) {
+                parts.push(`${formatCount(result.sitesCreated, "new site")}`);
             }
-        } else if (event.key === "Escape") {
-            if (isOpen) {
-                event.preventDefault();
-                closeFolderCombobox(box);
+            if (result.linksSkipped > 0) {
+                parts.push(`${formatCount(result.linksSkipped, "duplicate")} skipped`);
             }
-        } else if (event.key === "Tab") {
-            if (isOpen) closeFolderCombobox(box);
-        }
-    });
-    input.addEventListener("blur", () => {
-        window.setTimeout(() => {
-            if (box.classList.contains("is-open") && document.activeElement !== input) {
-                closeFolderCombobox(box);
+            showStatus(`${parts.join(". ")}. Save to apply.`);
+        })
+        .catch(error => {
+            console.error("Bookmark folder import failed:", error);
+            showStatus("Could not import that bookmark folder", true);
+        })
+        .finally(() => {
+            if (button) {
+                button.disabled = false;
+                button.textContent = "Import folder";
             }
-        }, 0);
-    });
-
-    box.append(hidden, input, listbox);
-    return box;
+        });
 }
 
-function refreshFolderCombobox(box) {
-    const state = folderComboboxState.get(box);
-    if (!state) return;
-    const folderId = state.hidden.value || "";
-    state.committedId = folderId;
-    state.committedLabel = getFolderComboboxLabel(folderId);
-    if (!box.classList.contains("is-open")) {
-        state.input.value = state.committedLabel;
-    } else {
-        renderFolderComboboxList(box);
-    }
-}
-
-function refreshBookmarkFolderSelectOptions() {
-    for (const hidden of document.querySelectorAll(".bookmarkRuleFolder")) {
-        const box = hidden.closest(".folderCombobox");
-        if (box) refreshFolderCombobox(box);
-    }
-}
-
-function setupFolderComboboxDismiss() {
-    document.addEventListener("pointerdown", event => {
-        const open = getOpenFolderCombobox();
-        if (!open) return;
-        const target = event.target instanceof Element ? event.target : null;
-        if (target && open.contains(target)) return;
-        closeFolderCombobox(open);
-    });
-}
-
-function createBookmarkRuleRow(folderId = "", style = "blocked") {
+let classGroupFieldIdSeq = 0;
+function createClassGroupRow(classes = "") {
     const row = document.createElement("tr");
+    const idSuffix = `cg-${++classGroupFieldIdSeq}`;
 
-    const priorityCell = createBookmarkPriorityCell();
+    const classesCell = document.createElement("td");
+    const input = document.createElement("input");
+    input.type = "text";
+    input.className = "classGroupInput";
+    input.value = classes;
+    input.placeholder = "job-card-container";
+    input.setAttribute("aria-label", "Class group");
+    input.setAttribute("aria-describedby", `${idSuffix}-error`);
+    input.autocomplete = "off";
+    const errorEl = createFieldError(`${idSuffix}-error`);
+    classesCell.append(input, errorEl);
 
-    const folderCell = document.createElement("td");
-    folderCell.appendChild(createFolderCombobox(folderId || ""));
+    const actionCell = document.createElement("td");
+    actionCell.appendChild(createRowActions(
+        createDeleteButton(() => {
+            row.remove();
+            validateSiteDetail();
+            refreshAllTableEmptyStates();
+        })
+    ));
+
+    input.addEventListener("input", () => validateSiteDetail());
+    input.addEventListener("blur", () => validateSiteDetail());
+
+    row.append(classesCell, actionCell);
+    document.querySelector("#classGroupBody").appendChild(row);
+    refreshAllTableEmptyStates();
+}
+
+let savedLinkFieldIdSeq = 0;
+
+function getLookLabel(styleId) {
+    const rules = getAvailableStyleRules();
+    const rule = rules.find(entry => entry.id === styleId);
+    if (rule?.name) return rule.name;
+    return styleId ? `Missing look (${styleId})` : "Look";
+}
+
+function refreshSavedLinkGroupEmptyStates() {
+    const groups = document.querySelectorAll(".savedLinkGroup");
+    const globalEmpty = document.querySelector("#savedLinksEmpty");
+    if (globalEmpty) {
+        globalEmpty.hidden = groups.length > 0;
+    }
+
+    for (const group of groups) {
+        const tbody = group.querySelector("tbody");
+        const empty = group.querySelector(".savedLinkGroupEmpty");
+        const table = group.querySelector("table");
+        const count = group.querySelector(".savedLinkGroupCount");
+        const rowCount = tbody ? tbody.querySelectorAll("tr").length : 0;
+        if (empty) empty.hidden = rowCount > 0;
+        if (table) table.classList.toggle("is-empty", rowCount === 0);
+        if (count) {
+            count.textContent = formatCount(rowCount, "link");
+        }
+        const moveSelects = group.querySelectorAll(".savedLinkMove");
+        for (const select of moveSelects) {
+            if (select.value !== group.dataset.styleId) {
+                populateStyleSelect(select, group.dataset.styleId);
+            }
+        }
+    }
+    refreshAddLinkFolderSelect();
+}
+
+function refreshAddLinkFolderSelect() {
+    const select = document.querySelector("#addLinkFolderSelect");
+    const toolbar = document.querySelector("#savedLinkAddFolder");
+    const button = document.querySelector("#addLinkFolderBtn");
+    if (!select || !toolbar) return;
+
+    const used = new Set(
+        Array.from(document.querySelectorAll(".savedLinkGroup"))
+            .map(group => group.dataset.styleId)
+    );
+    const unused = getAvailableStyleRules().filter(rule => !used.has(rule.id));
+    const previous = select.value;
+    select.replaceChildren();
+
+    if (unused.length === 0) {
+        const option = document.createElement("option");
+        option.value = "";
+        option.textContent = getAvailableStyleRules().length === 0
+            ? "Add a look on the Looks tab first"
+            : "All looks are on this site";
+        select.appendChild(option);
+        select.disabled = true;
+        if (button) button.disabled = true;
+        return;
+    }
+
+    select.disabled = false;
+    if (button) button.disabled = false;
+    for (const rule of unused) {
+        const option = document.createElement("option");
+        option.value = rule.id;
+        option.textContent = rule.name || rule.id;
+        select.appendChild(option);
+    }
+    select.value = unused.some(rule => rule.id === previous)
+        ? previous
+        : unused[0].id;
+}
+
+function addLinkFolderFromSelect() {
+    const select = document.querySelector("#addLinkFolderSelect");
+    const styleId = select?.value;
+    if (!styleId) return;
+    if (document.querySelector(`.savedLinkGroup[data-style-id="${CSS.escape(styleId)}"]`)) {
+        return;
+    }
+    createSavedLinkGroup(styleId, []);
+    scheduleDirtyUiUpdate();
+}
+
+function createSavedLinkGroup(styleId, links = []) {
+    const groupsRoot = document.querySelector("#savedLinkGroups");
+    if (!groupsRoot || !styleId) return null;
+
+    const group = document.createElement("section");
+    group.className = "savedLinkGroup";
+    group.dataset.styleId = styleId;
+
+    const header = document.createElement("div");
+    header.className = "savedLinkGroupHeader";
+
+    const heading = document.createElement("h3");
+    heading.className = "savedLinkGroupTitle";
+    heading.textContent = getLookLabel(styleId);
+
+    const count = document.createElement("span");
+    count.className = "savedLinkGroupCount";
+
+    const deleteFolderBtn = createDeleteButton(() => {
+        const rowCount = group.querySelectorAll("tbody tr").length;
+        if (rowCount > 0) {
+            const confirmed = window.confirm(
+                `Remove the "${getLookLabel(styleId)}" folder and its ${formatCount(rowCount, "link")} from this site?`
+            );
+            if (!confirmed) return;
+        }
+        group.remove();
+        validateSiteDetail();
+        refreshSavedLinkGroupEmptyStates();
+        scheduleDirtyUiUpdate();
+    });
+    deleteFolderBtn.classList.add("savedLinkGroupDelete");
+    deleteFolderBtn.setAttribute("aria-label", `Remove ${getLookLabel(styleId)} folder`);
+    deleteFolderBtn.title = "Remove folder";
+    header.append(heading, count, deleteFolderBtn);
+
+    const table = document.createElement("table");
+    const thead = document.createElement("thead");
+    thead.innerHTML = "<tr><th>URL</th><th>Title</th><th>Actions</th></tr>";
+    const tbody = document.createElement("tbody");
+    table.append(thead, tbody);
+
+    const empty = document.createElement("p");
+    empty.className = "tableEmptyState savedLinkGroupEmpty";
+    empty.textContent = "No links in this look yet.";
+
+    const addBtn = document.createElement("button");
+    addBtn.type = "button";
+    addBtn.className = "addSavedLinkBtn";
+    addBtn.textContent = "Add link";
+    addBtn.addEventListener("click", () => createSavedLinkRow("", "", group));
+
+    group.append(header, table, empty, addBtn);
+    groupsRoot.appendChild(group);
+
+    for (const link of links) {
+        createSavedLinkRow(link.url, link.title, group);
+    }
+    refreshSavedLinkGroupEmptyStates();
+    return group;
+}
+
+function renderSavedLinkGroups(links = [], folderIds = []) {
+    const groupsRoot = document.querySelector("#savedLinkGroups");
+    if (!groupsRoot) return;
+    groupsRoot.replaceChildren();
+
+    const byStyle = new Map();
+    for (const link of links || []) {
+        const styleId = link.style || "blocked";
+        if (!byStyle.has(styleId)) byStyle.set(styleId, []);
+        byStyle.get(styleId).push(link);
+    }
+
+    for (const styleId of normalizeLinkFolderIds(folderIds, links)) {
+        createSavedLinkGroup(styleId, byStyle.get(styleId) || []);
+    }
+
+    refreshSavedLinkGroupEmptyStates();
+}
+
+function syncSavedLinkGroupsToLooks() {
+    const groupsRoot = document.querySelector("#savedLinkGroups");
+    if (!groupsRoot) return;
+
+    const lookIds = new Set(getAvailableStyleRules().map(rule => rule.id));
+
+    for (const group of Array.from(groupsRoot.querySelectorAll(".savedLinkGroup"))) {
+        const styleId = group.dataset.styleId;
+        const title = group.querySelector(".savedLinkGroupTitle");
+        const hasRows = group.querySelectorAll("tbody tr").length > 0;
+        if (lookIds.has(styleId)) {
+            if (title) title.textContent = getLookLabel(styleId);
+            continue;
+        }
+        if (hasRows) {
+            if (title) title.textContent = getLookLabel(styleId);
+        } else {
+            group.remove();
+        }
+    }
+
+    refreshSavedLinkGroupEmptyStates();
+}
+
+function moveSavedLinkRow(row, styleId) {
+    if (!row || !styleId) return;
+    let group = document.querySelector(`.savedLinkGroup[data-style-id="${CSS.escape(styleId)}"]`);
+    if (!group) {
+        group = createSavedLinkGroup(styleId, []);
+    }
+    const tbody = group?.querySelector("tbody");
+    if (!tbody) return;
+    tbody.appendChild(row);
+    const moveSelect = row.querySelector(".savedLinkMove");
+    if (moveSelect && moveSelect.value !== styleId) {
+        populateStyleSelect(moveSelect, styleId);
+    }
+    validateSiteDetail();
+    refreshSavedLinkGroupEmptyStates();
+    scheduleDirtyUiUpdate();
+}
+
+function createSavedLinkRow(url = "", title = "", group = null) {
+    if (!group) return;
+    const tbody = group.querySelector("tbody");
+    if (!tbody) return;
+
+    const row = document.createElement("tr");
+    const idSuffix = `sl-${++savedLinkFieldIdSeq}`;
+
+    const urlCell = document.createElement("td");
+    const urlInput = document.createElement("input");
+    urlInput.type = "text";
+    urlInput.className = "savedLinkUrl";
+    urlInput.value = url;
+    urlInput.placeholder = "https://example.com/job/123";
+    urlInput.setAttribute("aria-label", "URL");
+    urlInput.setAttribute("aria-describedby", `${idSuffix}-url-error`);
+    urlInput.autocomplete = "off";
+    const urlError = createFieldError(`${idSuffix}-url-error`);
+    urlCell.append(urlInput, urlError);
+
+    const titleCell = document.createElement("td");
+    const titleInput = document.createElement("input");
+    titleInput.type = "text";
+    titleInput.className = "savedLinkTitle";
+    titleInput.value = title || "";
+    titleInput.placeholder = "Optional title";
+    titleInput.setAttribute("aria-label", "Title");
+    titleInput.autocomplete = "off";
+    titleCell.appendChild(titleInput);
+
+    const actionCell = document.createElement("td");
+    const moveSelect = document.createElement("select");
+    moveSelect.className = "savedLinkMove";
+    moveSelect.setAttribute("aria-label", "Move to look");
+    populateStyleSelect(moveSelect, group.dataset.styleId || "blocked");
+    moveSelect.addEventListener("change", () => {
+        moveSavedLinkRow(row, moveSelect.value);
+    });
+
+    actionCell.appendChild(createRowActions(
+        moveSelect,
+        createDeleteButton(() => {
+            row.remove();
+            validateSiteDetail();
+            refreshSavedLinkGroupEmptyStates();
+        })
+    ));
+
+    urlInput.addEventListener("input", () => validateSiteDetail());
+    urlInput.addEventListener("blur", () => validateSiteDetail());
+
+    row.append(urlCell, titleCell, actionCell);
+    tbody.appendChild(row);
+    refreshSavedLinkGroupEmptyStates();
+}
+
+let textRuleFieldIdSeq = 0;
+function createTextRuleRow(text = "", style = "blocked") {
+    const row = document.createElement("tr");
+    const idSuffix = `tr-${++textRuleFieldIdSeq}`;
+
+    const textCell = document.createElement("td");
+    const textInput = document.createElement("input");
+    textInput.type = "text";
+    textInput.className = "textRuleText";
+    textInput.value = text;
+    textInput.placeholder = "company or keyword";
+    textInput.setAttribute("aria-label", "Text");
+    textInput.setAttribute("aria-describedby", `${idSuffix}-text-error`);
+    textInput.autocomplete = "off";
+    const textError = createFieldError(`${idSuffix}-text-error`);
+    textCell.append(textInput, textError);
 
     const styleCell = document.createElement("td");
     const styleSelect = document.createElement("select");
-    styleSelect.className = "bookmarkRuleStyle";
+    styleSelect.className = "textRuleStyle";
+    styleSelect.setAttribute("aria-label", "Look");
     populateStyleSelect(styleSelect, style || "blocked");
     styleCell.appendChild(styleSelect);
 
@@ -918,236 +1097,184 @@ function createBookmarkRuleRow(folderId = "", style = "blocked") {
     actionCell.appendChild(createRowActions(
         createDeleteButton(() => {
             row.remove();
-            refreshBookmarkRulePriorities();
-            refreshAllTableEmptyStates();
+            validateSiteDetail();
+    refreshAllTableEmptyStates();
         })
     ));
 
-    row.append(priorityCell, folderCell, styleCell, actionCell);
+    textInput.addEventListener("input", () => validateSiteDetail());
+    textInput.addEventListener("blur", () => validateSiteDetail());
 
-    const body = document.querySelector("#bookmarkRuleBody");
-    const unmatchedRow = body?.querySelector("tr.unmatchedBookmarkRule");
-    if (unmatchedRow) {
-        body.insertBefore(row, unmatchedRow);
+    row.append(textCell, styleCell, actionCell);
+    document.querySelector("#textRuleBody").appendChild(row);
+    refreshAllTableEmptyStates();
+}
+
+function isPlausibleQueryParamName(name) {
+    return /^[A-Za-z0-9._~-]+$/.test(name);
+}
+
+function validateSiteDetail() {
+    if (!isSiteDetailOpen()) return true;
+
+    const hostInput = document.querySelector("#siteDetailHost");
+    const hostError = document.querySelector("#siteDetailHostError");
+    const keepParamsInput = document.querySelector("#siteKeepParams");
+    const keepParamsError = document.querySelector("#siteKeepParamsError");
+    const hostRaw = hostInput?.value.trim() || "";
+    let allValid = true;
+    let hostMessage = "";
+
+    if (!hostRaw) {
+        hostMessage = "Enter a site hostname.";
+    } else if (!isPlausibleHostname(hostRaw)) {
+        hostMessage = "Enter a valid hostname (example.com).";
     } else {
-        body.appendChild(row);
+        const hostname = normalizeSite(hostRaw);
+        const duplicate = sitesDraft.some((siteConfig, index) =>
+            index !== selectedSiteIndex && siteConfig.site === hostname
+        );
+        if (duplicate) {
+            hostMessage = "That website is already in the list.";
+        }
     }
-    refreshBookmarkRulePriorities();
-    refreshAllTableEmptyStates();
-}
+    setFieldError(hostInput, hostError, hostMessage);
+    if (hostMessage) allValid = false;
 
-function createUnmatchedBookmarkRuleRow(style = "") {
-    const body = document.querySelector("#bookmarkRuleBody");
-    const existing = body?.querySelector("tr.unmatchedBookmarkRule");
-    if (existing) existing.remove();
+    const keepParamsRaw = keepParamsInput?.value.trim() || "";
+    let keepParamsMessage = "";
+    if (keepParamsRaw) {
+        const invalidNames = parseCommaSeparatedValues(keepParamsRaw)
+            .filter(name => !isPlausibleQueryParamName(name));
+        if (invalidNames.length > 0) {
+            keepParamsMessage = "Use parameter names only (id, jk), not values or full URLs.";
+        }
+    }
+    setFieldError(keepParamsInput, keepParamsError, keepParamsMessage);
+    if (keepParamsMessage) allValid = false;
 
-    const row = document.createElement("tr");
-    row.className = "unmatchedBookmarkRule";
-    row.dataset.folderId = UNMATCHED_BOOKMARK_RULE_ID;
+    const seenClassGroups = new Map();
+    for (const row of document.querySelectorAll("#classGroupBody tr")) {
+        const input = row.querySelector(".classGroupInput");
+        const errorEl = input?.parentElement?.querySelector(".fieldError");
+        const raw = input?.value.trim() || "";
+        let message = "";
+        if (raw) {
+            const groups = parseClassGroups(raw);
+            if (groups.length === 0) {
+                message = "Enter CSS class names, separated by spaces.";
+            } else {
+                const key = getClassGroupKey(groups[0]);
+                if (seenClassGroups.has(key)) {
+                    message = "Duplicate class group.";
+                } else {
+                    seenClassGroups.set(key, true);
+                }
+            }
+        }
+        setFieldError(input, errorEl, message);
+        if (message) allValid = false;
+    }
 
-    const priorityCell = createBookmarkPriorityCell({ unmatched: true });
-
-    const folderCell = document.createElement("td");
-    const label = document.createElement("span");
-    label.textContent = "Bookmarks outside rule folders";
-    label.className = "unmatchedBookmarkLabel";
-    folderCell.appendChild(label);
-
-    const styleCell = document.createElement("td");
-    const styleSelect = document.createElement("select");
-    styleSelect.className = "bookmarkRuleStyle";
-    styleSelect.dataset.includeNone = "true";
-    populateStyleSelect(styleSelect, style || "", { includeNone: true });
-    styleCell.appendChild(styleSelect);
-
-    const actionCell = document.createElement("td");
-    const note = document.createElement("span");
-    note.textContent = "Always applied last";
-    note.className = "hint";
-    actionCell.appendChild(note);
-
-    row.append(priorityCell, folderCell, styleCell, actionCell);
-    body.appendChild(row);
-    refreshBookmarkRulePriorities();
-    refreshAllTableEmptyStates();
-}
-
-function collectBookmarkRules() {
-    const rules = [];
-
-    for (const row of document.querySelectorAll("#bookmarkRuleBody tr")) {
-        if (row.classList.contains("unmatchedBookmarkRule")) {
-            const styleSelect = row.querySelector(".bookmarkRuleStyle");
-            rules.push({
-                folderId: UNMATCHED_BOOKMARK_RULE_ID,
-                style: styleSelect?.value || ""
-            });
+    const seenUrls = new Map();
+    for (const row of document.querySelectorAll(".savedLinkGroup tbody tr")) {
+        const input = row.querySelector(".savedLinkUrl");
+        const errorEl = input?.parentElement?.querySelector(".fieldError");
+        const title = row.querySelector(".savedLinkTitle")?.value.trim() || "";
+        const raw = input?.value.trim() || "";
+        let message = "";
+        if (!raw && !title) {
+            setFieldError(input, errorEl, "");
             continue;
         }
-
-        const folderSelect = row.querySelector(".bookmarkRuleFolder");
-        const styleSelect = row.querySelector(".bookmarkRuleStyle");
-        const folderId = folderSelect?.value || "";
-        if (!folderId) continue;
-        rules.push({
-            folderId,
-            style: styleSelect?.value || "blocked"
-        });
+        if (!raw) {
+            message = "Enter a URL.";
+        } else if (!isValidHttpUrl(raw)) {
+            message = "Enter a valid http(s) URL.";
+        } else if (seenUrls.has(raw)) {
+            message = "Duplicate URL.";
+        } else {
+            seenUrls.set(raw, true);
+        }
+        setFieldError(input, errorEl, message);
+        if (message) allValid = false;
     }
 
-    return rules;
-}
-
-function renderBookmarkRuleRows(rules) {
-    clearBookmarkRuleTable();
-    const normalizedRules = normalizeBookmarkRules(rules);
-    const folderRules = normalizedRules.filter(rule => !isUnmatchedBookmarkRule(rule));
-    const unmatchedRule = normalizedRules.find(isUnmatchedBookmarkRule);
-    const unmatchedStyle = unmatchedRule
-        ? unmatchedRule.style
-        : migrateUnmatchedBookmarkStyle({ bookmarkRules: rules });
-
-    folderRules.forEach(rule => createBookmarkRuleRow(rule.folderId, rule.style));
-    createUnmatchedBookmarkRuleRow(unmatchedStyle || "");
-    refreshAllTableEmptyStates();
-}
-
-function setBookmarkRulesReady(ready) {
-    bookmarkRulesReady = ready;
-    // Keep Save/Export disabled until rows exist; Import may still run once busy ends.
-    const saveBtn = document.querySelector("#saveBtn");
-    const exportBtn = document.querySelector("#exportBtn");
-    if (!actionBarBusy) {
-        if (saveBtn) saveBtn.disabled = !ready;
-        if (exportBtn) exportBtn.disabled = !ready;
-    }
-}
-
-let lastBookmarkRulesForLoad = [];
-
-function retryLoadBookmarkFolders() {
-    const rules = lastBookmarkRulesForLoad.length > 0
-        ? lastBookmarkRulesForLoad
-        : normalizeBookmarkRules(collectBookmarkRules());
-    return loadBookmarkRuleRows(rules).then(() => {
-        if (bookmarkRulesReady && cachedBookmarkFolders.length > 0) {
-            showStatus("Bookmark folders loaded");
+    const seenText = new Map();
+    for (const row of document.querySelectorAll("#textRuleBody tr")) {
+        const input = row.querySelector(".textRuleText");
+        const errorEl = input?.parentElement?.querySelector(".fieldError");
+        const raw = input?.value.trim() || "";
+        let message = "";
+        if (!raw) {
+            setFieldError(input, errorEl, "");
+            continue;
         }
-    });
-}
-
-function loadBookmarkRuleRows(rules) {
-    lastBookmarkRulesForLoad = Array.isArray(rules) ? rules.slice() : [];
-    // Rebuild immediately from cache so saves don't flash an empty table while
-    // waiting on bookmarks.getTree().
-    if (cachedBookmarkFolders.length > 0) {
-        renderBookmarkRuleRows(rules);
-        setBookmarkRulesReady(true);
-        if (suppressDirtyTracking) {
-            captureSavedFormSnapshot();
+        const key = raw.toLowerCase();
+        if (seenText.has(key)) {
+            message = "Duplicate text for this site.";
+        } else {
+            seenText.set(key, true);
         }
-        return browser.bookmarks.getTree().then(tree => {
-            cachedBookmarkFolders = flattenBookmarkFolders(tree);
-            refreshBookmarkFolderSelectOptions();
-        }).catch(err => {
-            console.error("Could not refresh bookmark folders:", err);
-            showStatus("Could not refresh bookmark folders", {
-                isError: true,
-                actions: [
-                    {
-                        label: "Retry",
-                        onClick: () => retryLoadBookmarkFolders()
-                    }
-                ]
-            });
-        });
+        setFieldError(input, errorEl, message);
+        if (message) allValid = false;
     }
 
-    setBookmarkRulesReady(false);
-    return browser.bookmarks.getTree().then(tree => {
-        cachedBookmarkFolders = flattenBookmarkFolders(tree);
-        renderBookmarkRuleRows(rules);
-        setBookmarkRulesReady(true);
-        if (suppressDirtyTracking) {
-            captureSavedFormSnapshot();
-        }
-    }).catch(err => {
-        console.error("Could not load bookmark folders:", err);
-        // Still render stored rules (folder selects show "Missing folder") so a
-        // later Save cannot overwrite storage with an empty table.
-        renderBookmarkRuleRows(rules);
-        setBookmarkRulesReady(true);
-        if (suppressDirtyTracking) {
-            captureSavedFormSnapshot();
-        }
-        showStatus("Could not load bookmark folders", {
-            isError: true,
-            actions: [
-                {
-                    label: "Retry",
-                    onClick: () => retryLoadBookmarkFolders()
-                }
-            ]
-        });
-    });
+    return allValid;
 }
 
-function clearBookmarkRuleTable() {
-    document.querySelector("#bookmarkRuleBody")?.replaceChildren();
-    refreshAllTableEmptyStates();
+function validateConfigurableRuleRows() {
+    if (isSiteDetailOpen() && !validateSiteDetail()) {
+        showRowValidationError(
+            "sites",
+            ".fieldInvalid",
+            "Fix the highlighted fields before saving",
+            "Review site",
+            { openSiteIndex: selectedSiteIndex }
+        );
+        return false;
+    }
+    return true;
 }
 
 function findDomRulesReferencingStyle(styleId) {
     if (!styleId) return [];
-
+    flushSiteDetailToDraft();
     const references = [];
-    for (const row of document.querySelectorAll("#textRuleBody tr")) {
-        const styleSelect = row.querySelector(".textRuleStyle");
-        if (styleSelect?.value !== styleId) continue;
-        const text = row.querySelector(".textRuleText")?.value.trim() || "(text)";
-        const site = row.querySelector(".textRuleSite")?.value.trim() || "(site)";
-        references.push(`Text rule "${text}" on ${site}`);
-    }
-
-    for (const row of document.querySelectorAll("#bookmarkRuleBody tr")) {
-        const styleSelect = row.querySelector(".bookmarkRuleStyle");
-        if (styleSelect?.value !== styleId) continue;
-        if (row.classList.contains("unmatchedBookmarkRule")) {
-            references.push("Bookmarks outside rule folders");
-            continue;
+    sitesDraft.forEach(siteConfig => {
+        for (const link of siteConfig.links || []) {
+            if (link.style === styleId) {
+                references.push(`Saved link on ${siteConfig.site}`);
+            }
         }
-        const folderInput = row.querySelector(".bookmarkRuleFolder");
-        const combobox = folderInput?.closest(".folderCombobox");
-        const label = combobox?.querySelector(".folderComboboxInput")?.value ||
-            folderInput?.value ||
-            "Bookmark folder";
-        references.push(`Bookmark rule: ${label}`);
-    }
-
+        for (const rule of siteConfig.textRules || []) {
+            if (rule.style === styleId) {
+                references.push(`Text rule "${rule.text}" on ${siteConfig.site}`);
+            }
+        }
+    });
     return references;
 }
 
-function findDanglingStyleReferences(styleRules, textRules, bookmarkRules) {
+function findDanglingStyleReferences(styleRules, sites) {
     const styleIds = new Set(
         (styleRules || []).map(rule => rule.id).filter(Boolean)
     );
     const dangling = [];
-
-    for (const rule of textRules || []) {
-        if (!rule?.style || styleIds.has(rule.style)) continue;
+    for (const siteConfig of sites || []) {
+        for (const link of siteConfig.links || []) {
+            if (!link.style || styleIds.has(link.style)) continue;
         dangling.push(
-            `Text rule "${rule.text}" on ${rule.site || "(site)"} uses missing style "${rule.style}"`
-        );
+                `Saved link on ${siteConfig.site} uses missing style "${link.style}"`
+            );
+        }
+        for (const rule of siteConfig.textRules || []) {
+            if (!rule.style || styleIds.has(rule.style)) continue;
+            dangling.push(
+                `Text rule "${rule.text}" on ${siteConfig.site} uses missing style "${rule.style}"`
+            );
+        }
     }
-
-    for (const rule of bookmarkRules || []) {
-        if (!rule?.style || styleIds.has(rule.style)) continue;
-        const label = isUnmatchedBookmarkRule(rule)
-            ? "Bookmarks outside rule folders"
-            : `Bookmark folder ${rule.folderId}`;
-        dangling.push(`${label} uses missing style "${rule.style}"`);
-    }
-
     return dangling;
 }
 
@@ -1162,44 +1289,30 @@ function formatIssueList(issues, limit = 5) {
 function buildOptionsPayload() {
     const styleRules = normalizeStyleRules(collectStyleRules());
     cachedStyleRules = styleRules;
-    const searchPairs = collectSearchPairs();
-    const urlRules = collectUrlRules();
-    const textRules = normalizeTextRules(collectTextRules());
-    const bookmarkRules = normalizeBookmarkRules(collectBookmarkRules());
+    const sites = collectSitesFromUi();
 
     return {
         styleRules,
-        searchPairs,
-        urlRules,
-        textRules,
-        bookmarkRules,
+        sites,
         payload: {
             enableTopBorder: document.querySelector("#enableTopBorder").checked,
             enableDeepSearch: document.querySelector("#enableDeepSearch").checked,
             onlyUseSites: document.querySelector("#onlyUseSites").checked,
             enableToastNotifications: document.querySelector("#enableToastNotifications").checked,
             [STYLE_RULE_STORAGE_KEY]: styleRules,
-            searchPairs,
-            urlRules,
-            textRules,
-            [BOOKMARK_RULE_STORAGE_KEY]: bookmarkRules
+            [STORAGE_KEYS.sites]: sites
         }
     };
 }
 
 function getFormSnapshot() {
-    if (!bookmarkRulesReady) return null;
+    if (!sitesReady) return null;
     try {
         return JSON.stringify({
             payload: buildExportPayload(),
             rows: {
                 styles: document.querySelectorAll("#styleRuleBody tr").length,
-                bookmarks: document.querySelectorAll(
-                    "#bookmarkRuleBody tr:not(.unmatchedBookmarkRule)"
-                ).length,
-                text: document.querySelectorAll("#textRuleBody tr").length,
-                search: document.querySelectorAll("#tableBody tr").length,
-                url: document.querySelectorAll("#urlRuleBody tr").length
+                sites: sitesDraft.length
             }
         });
     } catch (err) {
@@ -1295,7 +1408,7 @@ function setupDirtyTracking() {
         }
         if (event.key !== "s" && event.key !== "S") return;
         event.preventDefault();
-        if (actionBarBusy || !bookmarkRulesReady) return;
+        if (actionBarBusy || !sitesReady) return;
         persistOptionsFromForm({
             successMessage: "Options saved",
             busyLabel: "Saving…",
@@ -1352,8 +1465,17 @@ function endActionBarBusy() {
     }
 
     actionBarBusyButton = null;
-    // Re-apply hydration gate after busy ends (Save/Export stay off until ready).
-    setBookmarkRulesReady(bookmarkRulesReady);
+    setSitesReady(sitesReady);
+}
+
+function setSitesReady(ready) {
+    sitesReady = ready;
+    const saveBtn = document.querySelector("#saveBtn");
+    const exportBtn = document.querySelector("#exportBtn");
+    if (!actionBarBusy) {
+        if (saveBtn) saveBtn.disabled = !ready;
+        if (exportBtn) exportBtn.disabled = !ready;
+    }
 }
 
 function persistOptionsFromForm({
@@ -1362,8 +1484,8 @@ function persistOptionsFromForm({
     busyLabel = "Saving…",
     busyButton = null
 } = {}) {
-    if (!bookmarkRulesReady) {
-        showStatus("Bookmark rules are still loading — try saving again", true);
+    if (!sitesReady) {
+        showStatus("Settings are still loading — try saving again", true);
         return Promise.resolve();
     }
 
@@ -1371,20 +1493,8 @@ function persistOptionsFromForm({
         return Promise.resolve();
     }
 
-    const {
-        styleRules,
-        searchPairs,
-        urlRules,
-        textRules,
-        bookmarkRules,
-        payload
-    } = buildOptionsPayload();
-
-    const dangling = findDanglingStyleReferences(
-        styleRules,
-        textRules,
-        bookmarkRules
-    );
+    const { styleRules, sites, payload } = buildOptionsPayload();
+    const dangling = findDanglingStyleReferences(styleRules, sites);
     const collisions = findStyleRuleClassNameCollisions(styleRules);
 
     if (dangling.length > 0) {
@@ -1419,22 +1529,25 @@ function persistOptionsFromForm({
 
     suppressOptionsStorageReload = true;
     suppressDirtyTracking = true;
+    const openHost = isSiteDetailOpen() ? sitesDraft[selectedSiteIndex]?.site : "";
     return browser.storage.local.set(payload)
         .then(() => browser.storage.local.remove(Object.values(LEGACY_STORAGE_KEYS)))
         .then(() => {
-            replaceConfigurationRows(
-                searchPairs,
-                urlRules,
-                textRules,
-                bookmarkRules,
-                styleRules
-            );
-            return loadBookmarkRuleRows(bookmarkRules);
+            applyLoadedConfiguration(sites, styleRules, {
+                enableTopBorder: payload.enableTopBorder,
+                enableDeepSearch: payload.enableDeepSearch,
+                onlyUseSites: payload.onlyUseSites,
+                enableToastNotifications: payload.enableToastNotifications
+            });
+            if (openHost) {
+                const index = sitesDraft.findIndex(siteConfig => siteConfig.site === openHost);
+                if (index >= 0) openSiteDetail(index);
+            }
         })
         .then(() => {
             suppressOptionsStorageReload = false;
             suppressDirtyTracking = false;
-            updateDirtyUi();
+            captureSavedFormSnapshot();
             const warnings = [];
             if (dangling.length > 0) {
                 warnings.push(`${dangling.length} missing style reference(s)`);
@@ -1473,579 +1586,55 @@ function saveOptions(e) {
     });
 }
 
-let searchPairFieldIdSeq = 0;
+function applyLoadedConfiguration(sites, styleRules, general = {}) {
+    if (general.enableTopBorder !== undefined) {
+        document.querySelector("#enableTopBorder").checked = !!general.enableTopBorder;
+    }
+    if (general.enableDeepSearch !== undefined) {
+        document.querySelector("#enableDeepSearch").checked = !!general.enableDeepSearch;
+    }
+    if (general.onlyUseSites !== undefined) {
+        document.querySelector("#onlyUseSites").checked = !!general.onlyUseSites;
+    }
+    if (general.enableToastNotifications !== undefined) {
+        document.querySelector("#enableToastNotifications").checked =
+            general.enableToastNotifications !== false;
+    }
 
-function createRow(site = "", classes = "") {
-    const row = document.createElement("tr");
-    row.className = "searchPairRow";
-
-    const idSuffix = `sp-${++searchPairFieldIdSeq}`;
-
-    const siteCell = document.createElement("td");
-    const siteInput = document.createElement("input");
-    siteInput.type = "text";
-    siteInput.className = "searchPairSite";
-    siteInput.value = site;
-    siteInput.placeholder = "example.com";
-    siteInput.setAttribute("aria-label", "Site");
-    siteInput.setAttribute("aria-describedby", `${idSuffix}-site-error`);
-    siteInput.autocomplete = "off";
-
-    const siteError = document.createElement("p");
-    siteError.className = "fieldError";
-    siteError.id = `${idSuffix}-site-error`;
-    siteError.hidden = true;
-
-    siteCell.append(siteInput, siteError);
-
-    const classesCell = document.createElement("td");
-    const classesInput = document.createElement("input");
-    classesInput.type = "text";
-    classesInput.className = "searchPairClasses";
-    classesInput.value = classes;
-    classesInput.placeholder = "card-class, other-class";
-    classesInput.setAttribute("aria-label", "Classes");
-    classesInput.setAttribute("aria-describedby", `${idSuffix}-classes-error`);
-    classesInput.autocomplete = "off";
-
-    const classesError = document.createElement("p");
-    classesError.className = "fieldError";
-    classesError.id = `${idSuffix}-classes-error`;
-    classesError.hidden = true;
-
-    classesCell.append(classesInput, classesError);
-
-    const actionCell = document.createElement("td");
-    actionCell.appendChild(createRowActions(
-        createDeleteButton(() => {
-            row.remove();
-            validateAllSearchPairRows();
-            refreshAllTableEmptyStates();
-        })
-    ));
-
-    const scheduleValidate = () => {
-        validateAllSearchPairRows();
-    };
-    siteInput.addEventListener("input", scheduleValidate);
-    siteInput.addEventListener("blur", scheduleValidate);
-    classesInput.addEventListener("input", scheduleValidate);
-    classesInput.addEventListener("blur", scheduleValidate);
-
-    row.append(siteCell, classesCell, actionCell);
-    document.querySelector("#tableBody").appendChild(row);
-    validateAllSearchPairRows();
+    loadStyleRuleRows(styleRules);
+    sitesDraft = normalizeSites(sites);
+    selectedSiteIndex = -1;
+    showSiteListView();
+    setSitesReady(true);
     refreshAllTableEmptyStates();
-}
-
-function setFieldError(input, errorEl, message) {
-    if (!input || !errorEl) return;
-
-    const invalid = Boolean(message);
-    input.classList.toggle("fieldInvalid", invalid);
-    input.setAttribute("aria-invalid", invalid ? "true" : "false");
-    if (invalid) {
-        errorEl.textContent = message;
-        errorEl.hidden = false;
-    } else {
-        errorEl.textContent = "";
-        errorEl.hidden = true;
-    }
-}
-
-function createFieldError(errorId) {
-    const error = document.createElement("p");
-    error.className = "fieldError";
-    error.id = errorId;
-    error.hidden = true;
-    return error;
-}
-
-function showRowValidationError(tabId, selector, message, actionLabel, {
-    openAdvanced = false
-} = {}) {
-    activateOptionsTab(tabId);
-    if (openAdvanced) openAdvancedSiteRules();
-    const firstInvalid = document.querySelector(selector);
-    firstInvalid?.focus();
-    showStatus(message, {
-        isError: true,
-        actions: [
-            {
-                label: actionLabel,
-                onClick: () => {
-                    activateOptionsTab(tabId);
-                    if (openAdvanced) openAdvancedSiteRules();
-                    document.querySelector(selector)?.focus();
-                }
-            }
-        ]
-    });
-}
-
-function validateConfigurableRuleRows() {
-    const textValid = validateAllTextRuleRows();
-    const searchValid = validateAllSearchPairRows();
-    const urlValid = validateAllUrlRuleRows();
-    if (textValid && searchValid && urlValid) return true;
-
-    if (!textValid) {
-        showRowValidationError(
-            "sites",
-            "#textRuleBody .fieldInvalid",
-            "Fix Text Rule errors before saving",
-            "Open Text Rules",
-            { openAdvanced: true }
-        );
-    } else if (!searchValid) {
-        showRowValidationError(
-            "sites",
-            "#tableBody input.fieldInvalid",
-            "Fix Search Pair errors before saving",
-            "Open Sites"
-        );
-    } else {
-        showRowValidationError(
-            "sites",
-            "#urlRuleBody input.fieldInvalid",
-            "Fix URL Parameter Rule errors before saving",
-            "Open URL Rules",
-            { openAdvanced: true }
-        );
-    }
-    return false;
-}
-
-function getSearchPairRowState(row) {
-    const siteInput = row.querySelector(".searchPairSite");
-    const classesInput = row.querySelector(".searchPairClasses");
-    const siteRaw = siteInput?.value.trim() || "";
-    const classesRaw = classesInput?.value.trim() || "";
-    const classGroups = parseClassGroups(classesRaw);
-    const normalizedSite = siteRaw ? normalizeSite(siteRaw) : "";
-
-    return {
-        row,
-        siteInput,
-        classesInput,
-        siteError: siteInput?.parentElement?.querySelector(".fieldError"),
-        classesError: classesInput?.parentElement?.querySelector(".fieldError"),
-        siteRaw,
-        classesRaw,
-        classGroups,
-        normalizedSite,
-        isBlank: !siteRaw && !classesRaw
-    };
-}
-
-/**
- * Inline validation for Search Pairs: invalid host, empty classes/site,
- * and duplicate site+class-group pairs. Returns false when any row is invalid.
- */
-function validateAllSearchPairRows() {
-    const rows = Array.from(document.querySelectorAll("#tableBody tr"))
-        .map(getSearchPairRowState)
-        .filter(state => state.siteInput && state.classesInput);
-
-    const seenKeys = new Map(); // key -> first row index
-    let allValid = true;
-
-    for (let index = 0; index < rows.length; index++) {
-        const state = rows[index];
-        let siteMessage = "";
-        let classesMessage = "";
-
-        if (state.isBlank) {
-            setFieldError(state.siteInput, state.siteError, "");
-            setFieldError(state.classesInput, state.classesError, "");
-            continue;
-        }
-
-        if (!state.siteRaw) {
-            siteMessage = "Enter a site hostname.";
-        } else if (!isPlausibleHostname(state.siteRaw)) {
-            siteMessage = "Enter a valid hostname (example.com).";
-        }
-
-        if (!state.classesRaw || state.classGroups.length === 0) {
-            classesMessage = "Enter at least one CSS class group.";
-        }
-
-        if (!siteMessage && !classesMessage && state.normalizedSite) {
-            const duplicateGroups = [];
-            for (const group of state.classGroups) {
-                const key = `${state.normalizedSite}\u0000${getClassGroupKey(group)}`;
-                if (seenKeys.has(key)) {
-                    duplicateGroups.push(group);
-                } else {
-                    seenKeys.set(key, index);
-                }
-            }
-            if (duplicateGroups.length > 0) {
-                classesMessage = duplicateGroups.length === 1
-                    ? `Duplicate of class group "${duplicateGroups[0]}" for this site.`
-                    : `Duplicate of class groups: ${duplicateGroups.map(g => `"${g}"`).join(", ")}.`;
-            }
-        }
-
-        setFieldError(state.siteInput, state.siteError, siteMessage);
-        setFieldError(state.classesInput, state.classesError, classesMessage);
-
-        if (siteMessage || classesMessage) {
-            allValid = false;
-        }
-    }
-
-    return allValid;
-}
-
-function isPlausibleQueryParamName(name) {
-    return /^[A-Za-z0-9._~-]+$/.test(name);
-}
-
-let urlRuleFieldIdSeq = 0;
-
-function createUrlRuleRow(site = "", keepParams = "") {
-    const row = document.createElement("tr");
-    const idSuffix = `url-${++urlRuleFieldIdSeq}`;
-
-    const siteCell = document.createElement("td");
-    const siteInput = document.createElement("input");
-    siteInput.type = "text";
-    siteInput.className = "urlRuleSite";
-    siteInput.value = site;
-    siteInput.placeholder = "example.com";
-    siteInput.setAttribute("aria-label", "Site");
-    siteInput.setAttribute("aria-describedby", `${idSuffix}-site-error`);
-    siteInput.autocomplete = "off";
-    const siteError = createFieldError(`${idSuffix}-site-error`);
-    siteCell.append(siteInput, siteError);
-
-    const paramsCell = document.createElement("td");
-    const paramsInput = document.createElement("input");
-    paramsInput.type = "text";
-    paramsInput.className = "urlRuleParams";
-    paramsInput.value = keepParams;
-    paramsInput.placeholder = "id, jk";
-    paramsInput.setAttribute("aria-label", "Parameters to keep");
-    paramsInput.setAttribute("aria-describedby", `${idSuffix}-params-error`);
-    paramsInput.autocomplete = "off";
-    const paramsError = createFieldError(`${idSuffix}-params-error`);
-    paramsCell.append(paramsInput, paramsError);
-
-    const actionCell = document.createElement("td");
-    actionCell.appendChild(createRowActions(
-        createDeleteButton(() => {
-            row.remove();
-            validateAllUrlRuleRows();
-            refreshAllTableEmptyStates();
-        })
-    ));
-
-    const scheduleValidate = () => {
-        validateAllUrlRuleRows();
-    };
-    siteInput.addEventListener("input", scheduleValidate);
-    siteInput.addEventListener("blur", scheduleValidate);
-    paramsInput.addEventListener("input", scheduleValidate);
-    paramsInput.addEventListener("blur", scheduleValidate);
-
-    row.append(siteCell, paramsCell, actionCell);
-    document.querySelector("#urlRuleBody").appendChild(row);
-    validateAllUrlRuleRows();
-    refreshAllTableEmptyStates();
-}
-
-function getUrlRuleRowState(row) {
-    const siteInput = row.querySelector(".urlRuleSite");
-    const paramsInput = row.querySelector(".urlRuleParams");
-    const siteRaw = siteInput?.value.trim() || "";
-    const paramsRaw = paramsInput?.value.trim() || "";
-    const keepParams = parseCommaSeparatedValues(paramsRaw);
-    const normalizedSite = siteRaw ? normalizeSite(siteRaw) : "";
-
-    return {
-        siteInput,
-        paramsInput,
-        siteError: siteInput?.parentElement?.querySelector(".fieldError"),
-        paramsError: paramsInput?.parentElement?.querySelector(".fieldError"),
-        siteRaw,
-        paramsRaw,
-        keepParams,
-        normalizedSite,
-        isBlank: !siteRaw && !paramsRaw
-    };
-}
-
-function validateAllUrlRuleRows() {
-    const rows = Array.from(document.querySelectorAll("#urlRuleBody tr"))
-        .map(getUrlRuleRowState)
-        .filter(state => state.siteInput && state.paramsInput);
-
-    const seenSites = new Map();
-    let allValid = true;
-
-    for (let index = 0; index < rows.length; index++) {
-        const state = rows[index];
-        let siteMessage = "";
-        let paramsMessage = "";
-
-        if (state.isBlank) {
-            setFieldError(state.siteInput, state.siteError, "");
-            setFieldError(state.paramsInput, state.paramsError, "");
-            continue;
-        }
-
-        if (!state.siteRaw) {
-            siteMessage = "Enter a site hostname.";
-        } else if (!isPlausibleHostname(state.siteRaw)) {
-            siteMessage = "Enter a valid hostname (example.com).";
-        }
-
-        if (!state.paramsRaw || state.keepParams.length === 0) {
-            paramsMessage = "Enter at least one parameter to keep (id, jk).";
-        } else {
-            const invalidNames = state.keepParams.filter(
-                name => !isPlausibleQueryParamName(name)
-            );
-            if (invalidNames.length > 0) {
-                paramsMessage = "Use parameter names only (id, jk), not values or full URLs.";
-            }
-        }
-
-        if (!siteMessage && !paramsMessage && state.normalizedSite) {
-            if (seenSites.has(state.normalizedSite)) {
-                siteMessage = "Duplicate site. Combine parameters into one row.";
-            } else {
-                seenSites.set(state.normalizedSite, index);
-            }
-        }
-
-        setFieldError(state.siteInput, state.siteError, siteMessage);
-        setFieldError(state.paramsInput, state.paramsError, paramsMessage);
-
-        if (siteMessage || paramsMessage) {
-            allValid = false;
-        }
-    }
-
-    return allValid;
-}
-
-let textRuleFieldIdSeq = 0;
-
-function createTextRuleRow(site = "", text = "", style = "blocked") {
-    const row = document.createElement("tr");
-    const idSuffix = `tr-${++textRuleFieldIdSeq}`;
-
-    const siteCell = document.createElement("td");
-    const siteInput = document.createElement("input");
-    siteInput.type = "text";
-    siteInput.className = "textRuleSite";
-    siteInput.value = site;
-    siteInput.placeholder = "example.com";
-    siteInput.setAttribute("aria-label", "Site");
-    siteInput.setAttribute("aria-describedby", `${idSuffix}-site-error`);
-    siteInput.autocomplete = "off";
-    const siteError = createFieldError(`${idSuffix}-site-error`);
-    siteCell.append(siteInput, siteError);
-
-    const textCell = document.createElement("td");
-    const textInput = document.createElement("input");
-    textInput.type = "text";
-    textInput.className = "textRuleText";
-    textInput.value = text;
-    textInput.placeholder = "company or keyword";
-    textInput.setAttribute("aria-label", "Text");
-    textInput.setAttribute("aria-describedby", `${idSuffix}-text-error`);
-    textInput.autocomplete = "off";
-    const textError = createFieldError(`${idSuffix}-text-error`);
-    textCell.append(textInput, textError);
-
-    const styleCell = document.createElement("td");
-    const styleSelect = document.createElement("select");
-    styleSelect.className = "textRuleStyle";
-    styleSelect.setAttribute("aria-label", "Style");
-    populateStyleSelect(styleSelect, style || "blocked");
-    styleCell.appendChild(styleSelect);
-
-    const actionCell = document.createElement("td");
-    actionCell.appendChild(createRowActions(
-        createDeleteButton(() => {
-            row.remove();
-            validateAllTextRuleRows();
-            refreshAllTableEmptyStates();
-        })
-    ));
-
-    const scheduleValidate = () => {
-        validateAllTextRuleRows();
-    };
-    siteInput.addEventListener("input", scheduleValidate);
-    siteInput.addEventListener("blur", scheduleValidate);
-    textInput.addEventListener("input", scheduleValidate);
-    textInput.addEventListener("blur", scheduleValidate);
-
-    row.append(siteCell, textCell, styleCell, actionCell);
-    document.querySelector("#textRuleBody").appendChild(row);
-    validateAllTextRuleRows();
-    refreshAllTableEmptyStates();
-}
-
-function getTextRuleRowState(row) {
-    const siteInput = row.querySelector(".textRuleSite");
-    const textInput = row.querySelector(".textRuleText");
-    const siteRaw = siteInput?.value.trim() || "";
-    const textRaw = textInput?.value.trim() || "";
-    const normalizedSite = siteRaw ? normalizeSite(siteRaw) : "";
-
-    return {
-        siteInput,
-        textInput,
-        siteError: siteInput?.parentElement?.querySelector(".fieldError"),
-        textError: textInput?.parentElement?.querySelector(".fieldError"),
-        siteRaw,
-        textRaw,
-        normalizedSite,
-        isBlank: !siteRaw && !textRaw
-    };
-}
-
-function validateAllTextRuleRows() {
-    const rows = Array.from(document.querySelectorAll("#textRuleBody tr"))
-        .map(getTextRuleRowState)
-        .filter(state => state.siteInput && state.textInput);
-
-    const seenKeys = new Map();
-    let allValid = true;
-
-    for (let index = 0; index < rows.length; index++) {
-        const state = rows[index];
-        let siteMessage = "";
-        let textMessage = "";
-
-        if (state.isBlank) {
-            setFieldError(state.siteInput, state.siteError, "");
-            setFieldError(state.textInput, state.textError, "");
-            continue;
-        }
-
-        if (!state.siteRaw) {
-            siteMessage = "Enter a site hostname.";
-        } else if (!isPlausibleHostname(state.siteRaw)) {
-            siteMessage = "Enter a valid hostname (example.com).";
-        }
-
-        if (!state.textRaw) {
-            textMessage = "Enter text to match.";
-        }
-
-        if (!siteMessage && !textMessage && state.normalizedSite) {
-            const key = `${state.normalizedSite}\u0000${state.textRaw.toLowerCase()}`;
-            if (seenKeys.has(key)) {
-                textMessage = "Duplicate text for this site.";
-            } else {
-                seenKeys.set(key, index);
-            }
-        }
-
-        setFieldError(state.siteInput, state.siteError, siteMessage);
-        setFieldError(state.textInput, state.textError, textMessage);
-
-        if (siteMessage || textMessage) {
-            allValid = false;
-        }
-    }
-
-    return allValid;
+    loadLegacyImportFolders();
 }
 
 function restoreOptions() {
     suppressOptionsStorageReload = true;
     suppressDirtyTracking = true;
-    // Do not clear bookmark rows here — keep the previous table until
-    // loadBookmarkRuleRows/renderBookmarkRuleRows replaces it, so a mid-restore
-    // Save cannot persist an empty bookmarkRules array.
-    setBookmarkRulesReady(false);
+    setSitesReady(false);
 
-    function handleStorage(result) {
-        clearSearchTable();
-        clearUrlRuleTable();
-        clearTextRuleTable();
-        clearStyleRuleTable();
-
-        document.querySelector("#enableTopBorder").checked =
-            !!result.enableTopBorder;
-
-        document.querySelector("#enableDeepSearch").checked =
-            !!result.enableDeepSearch;
-
-        document.querySelector("#onlyUseSites").checked =
-            !!result.onlyUseSites;
-
-        document.querySelector("#enableToastNotifications").checked =
-            result.enableToastNotifications !== false;
-
+    return browser.storage.local.get(null)
+        .then(result => {
         applyGettingStartedVisibility(!!result[STORAGE_KEYS.hideGettingStarted]);
-
-        loadStyleRuleRows(migrateStyleRulesFromStorage(result));
-
-        if (result.searchPairs) {
-            result.searchPairs.forEach(pair => {
-                const classes = typeof pair.classes === "string"
-                    ? pair.classes
-                    : pair.tag;
-                createRow(pair.site, classes);
+            const styleRules = migrateStyleRulesFromStorage(result);
+            return purgeLegacyStorage(result).then(sites => {
+                applyLoadedConfiguration(sites, styleRules, {
+                    enableTopBorder: !!result.enableTopBorder,
+                    enableDeepSearch: !!result.enableDeepSearch,
+                    onlyUseSites: !!result.onlyUseSites,
+                    enableToastNotifications: result.enableToastNotifications !== false
+                });
             });
-        }
-
-
-        if (result.urlRules) {
-            result.urlRules.forEach(
-                ({ site, keepParams }) =>
-                    createUrlRuleRow(site, keepParams)
-            );
-        }
-
-        if (result[LEGACY_STORAGE_KEYS.textFilters] || result.textRules) {
-            const textRules = migrateTextRulesFromStorage(result);
-            textRules.forEach(rule => createTextRuleRow(
-                rule.site,
-                rule.text,
-                rule.style
-            ));
-        }
-
-        return loadBookmarkRuleRows(migrateBookmarkRulesFromStorage(result))
-            .then(() => purgeLegacyStorage(result))
-            .then(() => refreshAllTableEmptyStates());
-    }
-
-
-    return browser.storage.local.get([
-        STORAGE_KEYS.searchPairs,
-        STORAGE_KEYS.urlRules,
-        STORAGE_KEYS.textRules,
-        LEGACY_STORAGE_KEYS.textFilters,
-        STORAGE_KEYS.styleRules,
-        STORAGE_KEYS.enableTopBorder,
-        STORAGE_KEYS.enableDeepSearch,
-        STORAGE_KEYS.onlyUseSites,
-        STORAGE_KEYS.enableToastNotifications,
-        STORAGE_KEYS.hideGettingStarted,
-        LEGACY_STORAGE_KEYS.enableSeenStyling,
-        STORAGE_KEYS.bookmarkRules,
-        LEGACY_STORAGE_KEYS.blockedFolderId,
-        LEGACY_STORAGE_KEYS.favoritedFolderId
-    ])
-    .then(handleStorage)
+        })
     .catch(error => {
         console.error(error);
     })
     .finally(() => {
         suppressOptionsStorageReload = false;
         suppressDirtyTracking = false;
-        updateDirtyUi();
+            captureSavedFormSnapshot();
     });
 }
 
@@ -2068,7 +1657,7 @@ function scheduleOptionsStorageReload() {
 }
 
 function initSaveLoadEvents() {
-    setBookmarkRulesReady(false);
+    setSitesReady(false);
     restoreOptions();
     document.querySelector("form").addEventListener("submit", saveOptions);
 
@@ -2094,17 +1683,15 @@ function initSaveLoadEvents() {
         dismissGettingStarted
     );
 }
+
 function buildExportPayload() {
     return {
-        searchPairs: collectSearchPairs(),
-        urlRules: collectUrlRules(),
-        textRules: normalizeTextRules(collectTextRules()),
+        sites: collectSitesFromUi(),
         styleRules: normalizeStyleRules(collectStyleRules()),
         enableTopBorder: document.querySelector("#enableTopBorder").checked,
         onlyUseSites: document.querySelector("#onlyUseSites").checked,
         enableDeepSearch: document.querySelector("#enableDeepSearch").checked,
-        enableToastNotifications: document.querySelector("#enableToastNotifications").checked,
-        bookmarkRules: normalizeBookmarkRules(collectBookmarkRules())
+        enableToastNotifications: document.querySelector("#enableToastNotifications").checked
     };
 }
 
@@ -2115,8 +1702,8 @@ function exportConfigurationFilename() {
 
 function exportToFile() {
     if (actionBarBusy) return;
-    if (!bookmarkRulesReady) {
-        showStatus("Bookmark rules are still loading — try exporting again", true);
+    if (!sitesReady) {
+        showStatus("Settings are still loading — try exporting again", true);
         return;
     }
 
@@ -2142,18 +1729,25 @@ function exportToFile() {
     }
 }
 
+function isValidImportedSite(siteConfig) {
+    return !!siteConfig && typeof siteConfig.site === "string";
+}
+
 function importFromJson(jsonString) {
     let data;
 
     try {
         data = JSON.parse(jsonString);
 
-        if (
-            !data ||
-            typeof data !== "object" ||
-            Array.isArray(data)
-        ) {
+        if (!data || typeof data !== "object" || Array.isArray(data)) {
             throw new Error("Invalid format");
+        }
+
+        if (
+            data.sites !== undefined &&
+            (!Array.isArray(data.sites) || !data.sites.every(isValidImportedSite))
+        ) {
+            throw new Error("Invalid sites");
         }
 
         if (
@@ -2226,13 +1820,6 @@ function importFromJson(jsonString) {
         }
 
         if (
-            data.enableSeenStyling !== undefined &&
-            typeof data.enableSeenStyling !== "boolean"
-        ) {
-            throw new Error("Invalid enableSeenStyling");
-        }
-
-        if (
             data.bookmarkRules !== undefined &&
             (
                 !Array.isArray(data.bookmarkRules) ||
@@ -2241,24 +1828,7 @@ function importFromJson(jsonString) {
         ) {
             throw new Error("Invalid bookmarkRules");
         }
-
-        if (
-            data.blockedFolderId !== undefined &&
-            data.blockedFolderId !== null &&
-            typeof data.blockedFolderId !== "string"
-        ) {
-            throw new Error("Invalid blockedFolderId");
-        }
-
-        if (
-            data.favoritedFolderId !== undefined &&
-            data.favoritedFolderId !== null &&
-            typeof data.favoritedFolderId !== "string"
-        ) {
-            throw new Error("Invalid favoritedFolderId");
-        }
-    }
-    catch (err) {
+    } catch (err) {
         console.error(err);
         showStatus("Import failed", {
             isError: true,
@@ -2272,51 +1842,19 @@ function importFromJson(jsonString) {
         return Promise.resolve();
     }
 
-    clearSearchTable();
-    clearUrlRuleTable();
-    clearTextRuleTable();
-    loadStyleRuleRows(migrateStyleRulesFromStorage(data));
+    const styleRules = migrateStyleRulesFromStorage(data);
+    const loadSites = Array.isArray(data.sites)
+        ? Promise.resolve(normalizeSites(data.sites))
+        : importBookmarkFolderLinksIntoSites(data, migrateSitesFromStorage(data));
 
-    (data.searchPairs || []).forEach(pair => {
-        const classes = typeof pair.classes === "string"
-            ? pair.classes
-            : pair.tag;
-        createRow(pair.site, classes);
-    });
-
-    (data.urlRules || []).forEach(
-        ({ site, keepParams }) =>
-            createUrlRuleRow(site, keepParams)
-    );
-
-    const importedTextRules = migrateTextRulesFromStorage(data);
-    importedTextRules.forEach(rule => createTextRuleRow(
-        rule.site,
-        rule.text,
-        rule.style
-    ));
-
-    if (data.enableDeepSearch !== undefined) {
-        document.querySelector("#enableDeepSearch").checked =
-            data.enableDeepSearch;
-    }
-
-    if (data.enableTopBorder !== undefined) {
-        document.querySelector("#enableTopBorder").checked =
-            data.enableTopBorder;
-    }
-
-    if (data.onlyUseSites !== undefined) {
-        document.querySelector("#onlyUseSites").checked =
-            data.onlyUseSites;
-    }
-
-    if (data.enableToastNotifications !== undefined) {
-        document.querySelector("#enableToastNotifications").checked =
-            data.enableToastNotifications;
-    }
-
-    return loadBookmarkRuleRows(migrateBookmarkRulesFromStorage(data)).then(() => {
+    return loadSites.then(sites => {
+        applyLoadedConfiguration(sites, styleRules, {
+            enableDeepSearch: data.enableDeepSearch,
+            enableTopBorder: data.enableTopBorder,
+            onlyUseSites: data.onlyUseSites,
+            enableToastNotifications: data.enableToastNotifications
+        });
+        setSitesReady(true);
         return persistOptionsFromForm({
             successMessage: "Imported and saved configuration",
             setBusy: false
@@ -2399,20 +1937,6 @@ function handleImportFileChange(event) {
             endActionBarBusy();
             event.target.value = "";
         });
-}
-function clearSearchTable() {
-    document.querySelector("#tableBody").replaceChildren();
-    refreshAllTableEmptyStates();
-}
-
-function clearUrlRuleTable() {
-    document.querySelector("#urlRuleBody").replaceChildren();
-    refreshAllTableEmptyStates();
-}
-
-function clearTextRuleTable() {
-    document.querySelector("#textRuleBody")?.replaceChildren();
-    refreshAllTableEmptyStates();
 }
 
 let statusTimeout = null;
@@ -2525,8 +2049,11 @@ function activateOptionsTab(tabId) {
         panel.hidden = !selected;
     }
 
-    if (tabId === "folders" || tabId === "sites" || tabId === "looks") {
+    if (tabId === "sites" || tabId === "looks" || tabId === "general") {
         refreshAllStyleSelects();
+    }
+    if (tabId === "general") {
+        loadLegacyImportFolders();
     }
 
     if (!alreadySelected) {
@@ -2601,53 +2128,31 @@ function setupEventListeners() {
         setupOptionsTabs();
         setupStickyTabShadow();
         setupTabJumps();
-        setupFolderComboboxDismiss();
         setupDirtyTracking();
 
-        const addRowBtn = document.querySelector("#addRowBtn");
-        const exportBtn = document.querySelector("#exportBtn");
-        const importBtn = document.querySelector("#importBtn");
-        const addUrlRuleBtn = document.querySelector("#addUrlRuleBtn");
-        const addTextRuleBtn = document.querySelector("#addTextRuleBtn");
-        const addBookmarkRuleBtn = document.querySelector("#addBookmarkRuleBtn");
-        const addStyleRuleBtn = document.querySelector("#addStyleRuleBtn");
-
-        if (!addRowBtn) console.warn("addRowBtn not found");
-        if (!exportBtn) console.warn("exportBtn not found");
-        if (!importBtn) console.warn("importBtn not found");
-        if (!addUrlRuleBtn) console.warn("addUrlRuleBtn not found");
-        if (!addTextRuleBtn) console.warn("addTextRuleBtn not found");
-        if (!addBookmarkRuleBtn) console.warn("addBookmarkRuleBtn not found");
-        if (!addStyleRuleBtn) console.warn("addStyleRuleBtn not found");
-
-        if (addRowBtn) addRowBtn.addEventListener("click", () => createRow());
-        if (exportBtn) exportBtn.addEventListener("click", exportToFile);
-        if (importBtn) importBtn.addEventListener("click", importFromFile);
-        const importFileInput = document.querySelector("#importFileInput");
-        if (importFileInput) {
-            importFileInput.addEventListener("change", handleImportFileChange);
-        }
-        if (addUrlRuleBtn) {
-            addUrlRuleBtn.addEventListener("click", () => {
-                openAdvancedSiteRules();
-                createUrlRuleRow();
-            });
-        }
-        if (addTextRuleBtn) {
-            addTextRuleBtn.addEventListener("click", () => {
-                openAdvancedSiteRules();
-                createTextRuleRow();
-            });
-        }
-        if (addBookmarkRuleBtn) {
-            addBookmarkRuleBtn.addEventListener("click", () => createBookmarkRuleRow());
-        }
-        if (addStyleRuleBtn) {
-            addStyleRuleBtn.addEventListener("click", () => {
+        document.querySelector("#addSiteBtn")?.addEventListener("click", addSiteFromInput);
+        document.querySelector("#addSiteInput")?.addEventListener("keydown", event => {
+            if (event.key === "Enter") {
+                event.preventDefault();
+                addSiteFromInput();
+            }
+        });
+        document.querySelector("#siteDetailBack")?.addEventListener("click", closeSiteDetail);
+        document.querySelector("#siteDetailHost")?.addEventListener("input", () => validateSiteDetail());
+        document.querySelector("#siteDetailHost")?.addEventListener("blur", () => validateSiteDetail());
+        document.querySelector("#siteKeepParams")?.addEventListener("input", () => validateSiteDetail());
+        document.querySelector("#siteKeepParams")?.addEventListener("blur", () => validateSiteDetail());
+        document.querySelector("#addClassGroupBtn")?.addEventListener("click", () => createClassGroupRow());
+        document.querySelector("#addLinkFolderBtn")?.addEventListener("click", addLinkFolderFromSelect);
+        document.querySelector("#legacyImportBtn")?.addEventListener("click", importLegacyBookmarkFolder);
+        document.querySelector("#addTextRuleBtn")?.addEventListener("click", () => createTextRuleRow());
+        document.querySelector("#addStyleRuleBtn")?.addEventListener("click", () => {
                 createStyleRuleRow();
                 refreshAllStyleSelects();
             });
-        }
+        document.querySelector("#exportBtn")?.addEventListener("click", exportToFile);
+        document.querySelector("#importBtn")?.addEventListener("click", importFromFile);
+        document.querySelector("#importFileInput")?.addEventListener("change", handleImportFileChange);
 
         const stylePreviewLink = document.querySelector("#stylePreviewLink");
         if (stylePreviewLink) {
@@ -2655,8 +2160,6 @@ function setupEventListeners() {
                 event.preventDefault();
             });
         }
-
-        console.log("Event listeners attached successfully");
     } catch (err) {
         console.error("Error setting up event listeners:", err);
     }

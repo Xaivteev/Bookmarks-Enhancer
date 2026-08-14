@@ -1,9 +1,6 @@
 const STORAGE_KEYS = {
-	searchPairs: "searchPairs",
-	urlRules: "urlRules",
-	textRules: "textRules",
+	sites: "sites",
 	styleRules: "styleRules",
-	bookmarkRules: "bookmarkRules",
 	enableTopBorder: "enableTopBorder",
 	enableDeepSearch: "enableDeepSearch",
 	onlyUseSites: "onlyUseSites",
@@ -14,6 +11,10 @@ const STORAGE_KEYS = {
 
 // One-shot migration only — removed after first successful migrate/purge.
 const LEGACY_STORAGE_KEYS = {
+	searchPairs: "searchPairs",
+	urlRules: "urlRules",
+	textRules: "textRules",
+	bookmarkRules: "bookmarkRules",
 	textFilters: "textFilters",
 	enableSeenStyling: "enableSeenStyling",
 	blockedFolderId: "blockedFolderId",
@@ -21,11 +22,8 @@ const LEGACY_STORAGE_KEYS = {
 };
 
 const CONFIG_REFRESH_STORAGE_KEYS = [
-	STORAGE_KEYS.searchPairs,
-	STORAGE_KEYS.urlRules,
-	STORAGE_KEYS.textRules,
+	STORAGE_KEYS.sites,
 	STORAGE_KEYS.styleRules,
-	STORAGE_KEYS.bookmarkRules,
 	STORAGE_KEYS.enableTopBorder,
 	STORAGE_KEYS.enableDeepSearch,
 	STORAGE_KEYS.onlyUseSites
@@ -118,8 +116,9 @@ function normalizeBookmarkRules(rules) {
 
 function migrateBookmarkRulesFromStorage(result) {
 	let rules;
-	if (Array.isArray(result?.bookmarkRules)) {
-		rules = result.bookmarkRules.slice();
+	const storedRules = result?.bookmarkRules || result?.[LEGACY_STORAGE_KEYS.bookmarkRules];
+	if (Array.isArray(storedRules)) {
+		rules = storedRules.slice();
 	} else {
 		rules = [];
 		const blockedFolderId = normalizeStoredFolderId(
@@ -155,34 +154,33 @@ function listPresentLegacyStorageKeys(result) {
 /**
  * Persist migrated current-format keys and delete legacy keys when present.
  * Safe to call on every startup; no-ops when already migrated.
+ * Bookmark-folder URLs are imported only when `sites` is missing.
  */
 function purgeLegacyStorage(result) {
 	const legacyKeys = listPresentLegacyStorageKeys(result);
-	const writes = {};
+	const needsSites = !Array.isArray(result?.sites);
+	const needsStyles = !Array.isArray(result?.styleRules);
+	const sites = migrateSitesFromStorage(result);
+	const defaultStyles = () => DEFAULT_STYLE_RULES.map(rule => ({ ...rule }));
 
-	if (!Array.isArray(result?.bookmarkRules)) {
-		writes[STORAGE_KEYS.bookmarkRules] = migrateBookmarkRulesFromStorage(result);
-	}
+	const persistConfig = merged => {
+		const writes = {};
+		if (needsSites) writes[STORAGE_KEYS.sites] = merged;
+		if (needsStyles) writes[STORAGE_KEYS.styleRules] = defaultStyles();
+		if (Object.keys(writes).length === 0) return Promise.resolve(merged);
+		return browser.storage.local.set(writes).then(() => merged);
+	};
 
-	if (!Array.isArray(result?.textRules) && Array.isArray(result?.[LEGACY_STORAGE_KEYS.textFilters])) {
-		writes[STORAGE_KEYS.textRules] = migrateTextRulesFromStorage(result);
-	}
+	const persistSites = needsSites
+		? importBookmarkFolderLinksIntoSites(result, sites).then(persistConfig)
+		: persistConfig(sites);
 
-	if (Object.keys(writes).length === 0 && legacyKeys.length === 0) {
-		return Promise.resolve(false);
-	}
-
-	const setPromise = Object.keys(writes).length > 0
-		? browser.storage.local.set(writes)
-		: Promise.resolve();
-
-	return setPromise
-		.then(() => (
+	return persistSites
+		.then(merged => (
 			legacyKeys.length > 0
-				? browser.storage.local.remove(legacyKeys)
-				: undefined
-		))
-		.then(() => true);
+				? browser.storage.local.remove(legacyKeys).then(() => merged)
+				: merged
+		));
 }
 
 function parseCommaSeparatedValues(value) {
@@ -244,6 +242,448 @@ function mergeClassGroupIntoSearchPairs(existingPairs, site, classGroup) {
 	]);
 }
 
+function isValidHttpUrl(href) {
+	try {
+		const url = new URL(href);
+		return url.protocol === "http:" || url.protocol === "https:";
+	} catch {
+		return false;
+	}
+}
+
+function createEmptySiteConfig(site) {
+	return {
+		site: normalizeSite(site),
+		classGroups: [],
+		keepParams: "",
+		textRules: [],
+		links: [],
+		linkFolders: []
+	};
+}
+
+function normalizeClassGroupList(classGroups) {
+	const seen = new Set();
+	const normalized = [];
+	const values = Array.isArray(classGroups)
+		? classGroups
+		: parseClassGroups(classGroups);
+	for (const group of values) {
+		const parsed = parseClassGroups(
+			typeof group === "string" ? group : ""
+		)[0];
+		if (!parsed) continue;
+		const key = getClassGroupKey(parsed);
+		if (seen.has(key)) continue;
+		seen.add(key);
+		normalized.push(parsed);
+	}
+	return normalized;
+}
+
+function normalizeSiteTextRule(rule, fallbackStyle = "blocked") {
+	if (!rule || typeof rule.text !== "string") return null;
+	const text = rule.text.trim();
+	if (!text) return null;
+	return {
+		text,
+		style: typeof rule.style === "string" && rule.style.trim()
+			? rule.style.trim()
+			: fallbackStyle
+	};
+}
+
+function normalizeSavedLink(link, fallbackStyle = "blocked") {
+	if (!link || typeof link.url !== "string") return null;
+	const url = link.url.trim();
+	if (!url || !isValidHttpUrl(url)) return null;
+	return {
+		url,
+		title: typeof link.title === "string" ? link.title : "",
+		style: typeof link.style === "string" && link.style.trim()
+			? link.style.trim()
+			: fallbackStyle
+	};
+}
+
+function normalizeLinkFolderIds(folderIds, links) {
+	const seen = new Set();
+	const ids = [];
+	for (const id of folderIds || []) {
+		const styleId = typeof id === "string" ? id.trim() : "";
+		if (!styleId || seen.has(styleId)) continue;
+		seen.add(styleId);
+		ids.push(styleId);
+	}
+	for (const link of links || []) {
+		const styleId = typeof link?.style === "string" ? link.style.trim() : "";
+		if (!styleId || seen.has(styleId)) continue;
+		seen.add(styleId);
+		ids.push(styleId);
+	}
+	return ids;
+}
+
+function addLinkFolderId(folderIds, styleId) {
+	const next = Array.isArray(folderIds) ? folderIds.slice() : [];
+	const id = typeof styleId === "string" ? styleId.trim() : "";
+	if (!id || next.includes(id)) return next;
+	next.push(id);
+	return next;
+}
+
+function normalizeSiteConfig(siteConfig) {
+	if (!siteConfig || typeof siteConfig !== "object") return null;
+	const site = normalizeSite(siteConfig.site);
+	if (!site) return null;
+
+	const textSeen = new Set();
+	const textRules = [];
+	for (const rule of siteConfig.textRules || []) {
+		const normalized = normalizeSiteTextRule(rule);
+		if (!normalized) continue;
+		const key = normalized.text.toLowerCase();
+		if (textSeen.has(key)) continue;
+		textSeen.add(key);
+		textRules.push(normalized);
+	}
+
+	const linkSeen = new Set();
+	const links = [];
+	for (const link of siteConfig.links || []) {
+		const normalized = normalizeSavedLink(link);
+		if (!normalized) continue;
+		if (linkSeen.has(normalized.url)) continue;
+		linkSeen.add(normalized.url);
+		links.push(normalized);
+	}
+
+	return {
+		site,
+		classGroups: normalizeClassGroupList(siteConfig.classGroups),
+		keepParams: normalizeKeepParams(siteConfig.keepParams),
+		textRules,
+		links,
+		linkFolders: normalizeLinkFolderIds(siteConfig.linkFolders, links)
+	};
+}
+
+function normalizeSites(sites) {
+	if (!Array.isArray(sites)) return [];
+
+	const bySite = new Map();
+	for (const raw of sites) {
+		const siteConfig = normalizeSiteConfig(raw);
+		if (!siteConfig) continue;
+
+		const existing = bySite.get(siteConfig.site);
+		if (!existing) {
+			bySite.set(siteConfig.site, siteConfig);
+			continue;
+		}
+
+		existing.classGroups = normalizeClassGroupList([
+			...existing.classGroups,
+			...siteConfig.classGroups
+		]);
+		if (!existing.keepParams && siteConfig.keepParams) {
+			existing.keepParams = siteConfig.keepParams;
+		}
+
+		const textSeen = new Set(
+			existing.textRules.map(rule => rule.text.toLowerCase())
+		);
+		for (const rule of siteConfig.textRules) {
+			const key = rule.text.toLowerCase();
+			if (textSeen.has(key)) continue;
+			textSeen.add(key);
+			existing.textRules.push(rule);
+		}
+
+		const linkSeen = new Set(existing.links.map(link => link.url));
+		for (const link of siteConfig.links) {
+			if (linkSeen.has(link.url)) continue;
+			linkSeen.add(link.url);
+			existing.links.push(link);
+		}
+		existing.linkFolders = normalizeLinkFolderIds(
+			[...existing.linkFolders, ...siteConfig.linkFolders],
+			existing.links
+		);
+	}
+
+	return Array.from(bySite.values()).sort((a, b) =>
+		a.site.localeCompare(b.site)
+	);
+}
+
+function findMatchingSiteConfig(sites, hostname) {
+	let best = null;
+	for (const siteConfig of sites || []) {
+		if (!hostnameMatchesSite(hostname, siteConfig.site)) continue;
+		if (!best || siteConfig.site.length > best.site.length) {
+			best = siteConfig;
+		}
+	}
+	return best;
+}
+
+function sitesToSearchPairs(sites) {
+	return (sites || [])
+		.filter(siteConfig => (siteConfig.classGroups || []).length > 0)
+		.map(siteConfig => ({
+			site: siteConfig.site,
+			classes: siteConfig.classGroups.join(", ")
+		}));
+}
+
+function sitesToUrlRules(sites) {
+	return (sites || [])
+		.filter(siteConfig => siteConfig.keepParams)
+		.map(siteConfig => ({
+			site: siteConfig.site,
+			keepParams: siteConfig.keepParams
+		}));
+}
+
+function sitesToTextRules(sites) {
+	return (sites || []).flatMap(siteConfig =>
+		(siteConfig.textRules || []).map(rule => ({
+			site: siteConfig.site,
+			text: rule.text,
+			style: rule.style
+		}))
+	);
+}
+
+function ensureSiteConfig(sites, site) {
+	const hostname = normalizeSite(site);
+	const next = normalizeSites(sites);
+	if (!hostname) return { sites: next, siteConfig: null };
+
+	let siteConfig = next.find(entry => entry.site === hostname);
+	if (!siteConfig) {
+		siteConfig = createEmptySiteConfig(hostname);
+		next.push(siteConfig);
+		next.sort((a, b) => a.site.localeCompare(b.site));
+	}
+	return { sites: next, siteConfig };
+}
+
+function mergeClassGroupIntoSites(sites, site, classGroup) {
+	const { sites: next, siteConfig } = ensureSiteConfig(sites, site);
+	if (!siteConfig) return next;
+	siteConfig.classGroups = normalizeClassGroupList([
+		...siteConfig.classGroups,
+		classGroup
+	]);
+	return next;
+}
+
+function upsertSiteLink(sites, url, title, styleId) {
+	if (!isValidHttpUrl(url)) return sites;
+	let hostname = "";
+	try {
+		hostname = normalizeSite(new URL(url).hostname);
+	} catch {
+		return sites;
+	}
+
+	const { sites: next, siteConfig } = ensureSiteConfig(sites, hostname);
+	if (!siteConfig) return next;
+
+	const normalizedUrl = normalizeHrefForSearch(url, sitesToUrlRules(next));
+	const existingIndex = siteConfig.links.findIndex(link =>
+		link.url === normalizedUrl || link.url === url
+	);
+	const saved = {
+		url: normalizedUrl,
+		title: typeof title === "string" ? title : "",
+		style: typeof styleId === "string" && styleId.trim()
+			? styleId.trim()
+			: "blocked"
+	};
+	if (existingIndex >= 0) {
+		if (!saved.title) saved.title = siteConfig.links[existingIndex].title;
+		siteConfig.links[existingIndex] = saved;
+	} else {
+		siteConfig.links.push(saved);
+	}
+	siteConfig.linkFolders = addLinkFolderId(siteConfig.linkFolders, saved.style);
+	return next;
+}
+
+function addTextRuleToSites(sites, site, text, styleId) {
+	const { sites: next, siteConfig } = ensureSiteConfig(sites, site);
+	if (!siteConfig) return next;
+	const rule = normalizeSiteTextRule({ text, style: styleId });
+	if (!rule) return next;
+	const key = rule.text.toLowerCase();
+	const existingIndex = siteConfig.textRules.findIndex(
+		entry => entry.text.toLowerCase() === key
+	);
+	if (existingIndex >= 0) {
+		siteConfig.textRules[existingIndex] = rule;
+	} else {
+		siteConfig.textRules.push(rule);
+	}
+	return next;
+}
+
+function migrateSitesFromStorage(result) {
+	if (Array.isArray(result?.sites)) {
+		return normalizeSites(result.sites);
+	}
+
+	const bySite = new Map();
+	function ensure(site) {
+		const hostname = normalizeSite(site);
+		if (!hostname) return null;
+		if (!bySite.has(hostname)) {
+			bySite.set(hostname, createEmptySiteConfig(hostname));
+		}
+		return bySite.get(hostname);
+	}
+
+	for (const pair of normalizeSearchPairs(
+		result?.[LEGACY_STORAGE_KEYS.searchPairs] || result?.searchPairs
+	)) {
+		const siteConfig = ensure(pair.site);
+		if (!siteConfig) continue;
+		siteConfig.classGroups = normalizeClassGroupList(pair.classes);
+	}
+
+	const urlRules = result?.[LEGACY_STORAGE_KEYS.urlRules] || result?.urlRules;
+	if (Array.isArray(urlRules)) {
+		for (const rule of urlRules) {
+			const siteConfig = ensure(rule?.site);
+			if (!siteConfig) continue;
+			siteConfig.keepParams = normalizeKeepParams(rule.keepParams);
+		}
+	}
+
+	for (const rule of migrateTextRulesFromStorage(result)) {
+		const siteConfig = ensure(rule.site);
+		if (!siteConfig) continue;
+		const textRule = normalizeSiteTextRule(rule);
+		if (!textRule) continue;
+		siteConfig.textRules.push(textRule);
+	}
+
+	return normalizeSites(Array.from(bySite.values()));
+}
+
+function mergeBookmarkLinksBySiteIntoSites(sites, linksBySite) {
+	let next = normalizeSites(sites);
+	const existingHosts = new Set(next.map(siteConfig => siteConfig.site));
+	let sitesCreated = 0;
+	let linksAdded = 0;
+	let linksSkipped = 0;
+
+	for (const [hostname, links] of linksBySite || []) {
+		const existed = existingHosts.has(hostname);
+		const { sites: merged, siteConfig } = ensureSiteConfig(next, hostname);
+		next = merged;
+		if (!siteConfig) continue;
+		if (!existed) {
+			sitesCreated += 1;
+			existingHosts.add(hostname);
+		}
+
+		const seen = new Set(siteConfig.links.map(link => link.url));
+		for (const link of links || []) {
+			const saved = normalizeSavedLink(link);
+			if (!saved) continue;
+			siteConfig.linkFolders = addLinkFolderId(siteConfig.linkFolders, saved.style);
+			if (seen.has(saved.url)) {
+				linksSkipped += 1;
+				continue;
+			}
+			seen.add(saved.url);
+			siteConfig.links.push(saved);
+			linksAdded += 1;
+		}
+	}
+
+	return {
+		sites: normalizeSites(next),
+		sitesCreated,
+		sitesTouched: (linksBySite && linksBySite.size) || 0,
+		linksAdded,
+		linksSkipped
+	};
+}
+
+function importBookmarkFolderIntoSites(sites, folderId, styleId) {
+	const style = typeof styleId === "string" ? styleId.trim() : "";
+	if (!folderId || !style) {
+		return Promise.resolve({
+			sites: normalizeSites(sites),
+			sitesCreated: 0,
+			sitesTouched: 0,
+			linksAdded: 0,
+			linksSkipped: 0
+		});
+	}
+	if (!browser.bookmarks || typeof browser.bookmarks.getSubTree !== "function") {
+		return Promise.reject(new Error("Bookmark folders are not available"));
+	}
+
+	return browser.bookmarks.getSubTree(folderId).then(tree => {
+		const linksBySite = new Map();
+		collectBookmarkUrlsFromTree(tree, style, linksBySite);
+		return mergeBookmarkLinksBySiteIntoSites(sites, linksBySite);
+	});
+}
+
+function collectBookmarkUrlsFromTree(nodes, style, linksBySite) {
+	for (const node of nodes || []) {
+		if (node && node.url && isValidHttpUrl(node.url)) {
+			let hostname = "";
+			try {
+				hostname = normalizeSite(new URL(node.url).hostname);
+			} catch {
+				hostname = "";
+			}
+			if (hostname) {
+				if (!linksBySite.has(hostname)) {
+					linksBySite.set(hostname, []);
+				}
+				linksBySite.get(hostname).push({
+					url: node.url,
+					title: typeof node.title === "string" ? node.title : "",
+					style
+				});
+			}
+		}
+		if (node && Array.isArray(node.children)) {
+			collectBookmarkUrlsFromTree(node.children, style, linksBySite);
+		}
+	}
+}
+
+function importBookmarkFolderLinksIntoSites(result, sites) {
+	const folderRules = migrateBookmarkRulesFromStorage(result)
+		.filter(rule => !isUnmatchedBookmarkRule(rule));
+	if (folderRules.length === 0) return Promise.resolve(normalizeSites(sites));
+	if (!browser.bookmarks || typeof browser.bookmarks.getSubTree !== "function") {
+		return Promise.resolve(normalizeSites(sites));
+	}
+
+	return Promise.all(folderRules.map(rule =>
+		browser.bookmarks.getSubTree(rule.folderId)
+			.then(tree => ({ tree, style: rule.style }))
+			.catch(() => null)
+	)).then(results => {
+		const linksBySite = new Map();
+		for (const entry of results) {
+			if (!entry) continue;
+			collectBookmarkUrlsFromTree(entry.tree, entry.style, linksBySite);
+		}
+		return mergeBookmarkLinksBySiteIntoSites(sites, linksBySite).sites;
+	}).catch(() => normalizeSites(sites));
+}
+
 function isValidTextRule(rule) {
 	return !!rule &&
 		typeof rule.site === "string" &&
@@ -278,8 +718,9 @@ function normalizeTextRules(rules) {
 }
 
 function migrateTextRulesFromStorage(result) {
-	if (Array.isArray(result?.textRules)) {
-		return normalizeTextRules(result.textRules);
+	const storedRules = result?.textRules || result?.[LEGACY_STORAGE_KEYS.textRules];
+	if (Array.isArray(storedRules)) {
+		return normalizeTextRules(storedRules);
 	}
 
 	if (!Array.isArray(result?.[LEGACY_STORAGE_KEYS.textFilters])) return [];
@@ -420,9 +861,7 @@ function isValidStyleRule(rule) {
 }
 
 function normalizeStyleRules(rules) {
-	if (!Array.isArray(rules) || rules.length === 0) {
-		return DEFAULT_STYLE_RULES.map(rule => ({ ...rule }));
-	}
+	if (!Array.isArray(rules)) return [];
 
 	const seenIds = new Set();
 	const normalized = [];
@@ -451,9 +890,7 @@ function normalizeStyleRules(rules) {
 		}
 	}
 
-	return normalized.length > 0
-		? normalized
-		: DEFAULT_STYLE_RULES.map(rule => ({ ...rule }));
+	return normalized;
 }
 
 function migrateStyleRulesFromStorage(result) {
@@ -557,18 +994,30 @@ function writeUrlNormalizationCache(href, normalized) {
 	}
 }
 
-function normalizeHrefForSearch(href) {
+function getActiveUrlRules(explicitRules) {
+	if (Array.isArray(explicitRules)) return explicitRules;
+	try {
+		if (typeof urlRules !== "undefined" && Array.isArray(urlRules)) {
+			return urlRules;
+		}
+	} catch {
+		// options page and other contexts may not declare urlRules
+	}
+	return [];
+}
+
+function normalizeHrefForSearch(href, explicitRules) {
 	try {
 		const cached = readUrlNormalizationCache(href);
-		if (cached !== undefined) {
+		if (cached !== undefined && explicitRules === undefined) {
 			return cached;
 		}
 
 		const url = new URL(href, typeof window !== 'undefined' ? window.location.origin : undefined);
 		if (url.protocol !== "http:" && url.protocol !== "https:") return href;
 
-		const rule = urlRules.find(rule =>
-			hostnameMatchesSite(url.hostname, rule.site)
+		const rule = getActiveUrlRules(explicitRules).find(entry =>
+			hostnameMatchesSite(url.hostname, entry.site)
 		);
 
 		if (rule) {
@@ -601,10 +1050,14 @@ function normalizeHrefForSearch(href) {
 			normalized = normalized.slice(0, -1);
 		}
 
-		writeUrlNormalizationCache(href, normalized);
+		if (explicitRules === undefined) {
+			writeUrlNormalizationCache(href, normalized);
+		}
 		return normalized;
 	} catch {
-		writeUrlNormalizationCache(href, href);
+		if (explicitRules === undefined) {
+			writeUrlNormalizationCache(href, href);
+		}
 		return href;
 	}
 }

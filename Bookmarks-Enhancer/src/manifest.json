@@ -2,7 +2,7 @@
   "manifest_version": 3,
   "name": "Bookmarks Enhancer",
   "version": "1.0",
-  "description": "Hides 'Blocked' bookmarked links. Marks bookmarked and 'Favorite' links.",
+  "description": "Hides and highlights listing cards from an in-extension list of saved links and text rules.",
   "icons": {
     "48": "icons/highlighter-48.png",
     "96": "icons/highlighter-96.png"

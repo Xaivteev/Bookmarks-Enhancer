@@ -625,16 +625,14 @@ function saveClassPickerSelection() {
 	classPickerState.saveButton.disabled = true;
 	classPickerState.saveButton.textContent = "Saving…";
 
-	browser.storage.local.get([STORAGE_KEYS.searchPairs]).then(result => {
-		const existingPairs = Array.isArray(result[STORAGE_KEYS.searchPairs])
-			? result[STORAGE_KEYS.searchPairs]
-			: [];
-		const mergedPairs = mergeClassGroupIntoSearchPairs(
-			existingPairs,
+	browser.storage.local.get(null).then(result => {
+		const existing = migrateSitesFromStorage(result);
+		const next = mergeClassGroupIntoSites(
+			existing,
 			site,
 			selectedClassGroup
 		);
-		return browser.storage.local.set({ [STORAGE_KEYS.searchPairs]: mergedPairs });
+		return browser.storage.local.set({ [STORAGE_KEYS.sites]: next });
 	}).then(() => {
 		if (classPickerState?.sessionId !== sessionId) return;
 		classPickerState.saveButton.textContent = "Saved";
