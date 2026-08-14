@@ -29,10 +29,49 @@ const CONFIG_REFRESH_STORAGE_KEYS = [
 	STORAGE_KEYS.onlyUseSites
 ];
 
+const SHORTCUT_ICON_IDS = ["star", "x", "eye", "bookmark", "heart"];
+const SHORTCUT_ICON_LABELS = {
+	star: "Star",
+	x: "X",
+	eye: "Eye",
+	bookmark: "Bookmark",
+	heart: "Heart"
+};
+const DEFAULT_SHORTCUT_COLOR = "#64748b";
+const DEFAULT_LOOK_SHORTCUTS = {
+	blocked: { shortcutIcon: "x", shortcutColor: "#dc2626" },
+	favorited: { shortcutIcon: "star", shortcutColor: "#eab308" },
+	seen: { shortcutIcon: "eye", shortcutColor: "#64748b" }
+};
+
 const DEFAULT_STYLE_RULES = [
-	{ id: "blocked", name: "Blocked", kind: "predefined", predefined: "blocked", css: "" },
-	{ id: "favorited", name: "Favorited", kind: "predefined", predefined: "favorited", css: "" },
-	{ id: "seen", name: "Seen", kind: "predefined", predefined: "seen", css: "" }
+	{
+		id: "blocked",
+		name: "Blocked",
+		kind: "predefined",
+		predefined: "blocked",
+		css: "",
+		shortcutIcon: "x",
+		shortcutColor: "#dc2626"
+	},
+	{
+		id: "favorited",
+		name: "Favorited",
+		kind: "predefined",
+		predefined: "favorited",
+		css: "",
+		shortcutIcon: "star",
+		shortcutColor: "#eab308"
+	},
+	{
+		id: "seen",
+		name: "Seen",
+		kind: "predefined",
+		predefined: "seen",
+		css: "",
+		shortcutIcon: "eye",
+		shortcutColor: "#64748b"
+	}
 ];
 
 const UNMATCHED_BOOKMARK_RULE_ID = "__unmatched__";
@@ -513,6 +552,48 @@ function upsertSiteLink(sites, url, title, styleId) {
 	return next;
 }
 
+function toggleSiteLookShortcut(sites, url, title, styleId) {
+	if (!isValidHttpUrl(url) || typeof styleId !== "string" || !styleId.trim()) {
+		return sites;
+	}
+
+	let hostname = "";
+	try {
+		hostname = new URL(url).hostname;
+	} catch {
+		return sites;
+	}
+
+	const next = normalizeSites(sites);
+	const siteConfig = findMatchingSiteConfig(next, hostname);
+	if (!siteConfig) return next;
+
+	const lookId = styleId.trim();
+	const normalizedUrl = normalizeHrefForSearch(url, sitesToUrlRules(next));
+	const existingIndex = siteConfig.links.findIndex(link =>
+		link.url === normalizedUrl || link.url === url
+	);
+	const existing = existingIndex >= 0 ? siteConfig.links[existingIndex] : null;
+	if (existing && existing.style === lookId) {
+		siteConfig.links.splice(existingIndex, 1);
+		return next;
+	}
+
+	const saved = {
+		url: normalizedUrl,
+		title: typeof title === "string" ? title : "",
+		style: lookId
+	};
+	if (existingIndex >= 0) {
+		if (!saved.title) saved.title = siteConfig.links[existingIndex].title;
+		siteConfig.links[existingIndex] = saved;
+	} else {
+		siteConfig.links.push(saved);
+	}
+	siteConfig.linkFolders = addLinkFolderId(siteConfig.linkFolders, saved.style);
+	return next;
+}
+
 function addTextRuleToSites(sites, site, text, styleId) {
 	const { sites: next, siteConfig } = ensureSiteConfig(sites, site);
 	if (!siteConfig) return next;
@@ -845,6 +926,78 @@ function createStyleRuleId() {
 	return `style_${Date.now()}_${Math.random().toString(36).slice(2, 10)}`;
 }
 
+function normalizeShortcutIcon(value) {
+	if (typeof value !== "string") return "";
+	const icon = value.trim().toLowerCase();
+	return SHORTCUT_ICON_IDS.includes(icon) ? icon : "";
+}
+
+function normalizeShortcutColor(value) {
+	if (typeof value !== "string") return "";
+	const trimmed = value.trim();
+	if (/^#[0-9a-fA-F]{6}$/.test(trimmed)) return trimmed.toLowerCase();
+	if (/^#[0-9a-fA-F]{3}$/.test(trimmed)) {
+		return `#${trimmed[1]}${trimmed[1]}${trimmed[2]}${trimmed[2]}${trimmed[3]}${trimmed[3]}`.toLowerCase();
+	}
+	return "";
+}
+
+function escapeSvgAttr(value) {
+	return String(value)
+		.replace(/&/g, "&amp;")
+		.replace(/"/g, "&quot;")
+		.replace(/</g, "&lt;");
+}
+
+function shortcutIconSvgMarkup(iconId, { active = false, color = DEFAULT_SHORTCUT_COLOR } = {}) {
+	const safeColor = escapeSvgAttr(normalizeShortcutColor(color) || DEFAULT_SHORTCUT_COLOR);
+	const stroke = active ? "#ffffff" : safeColor;
+	const fill = active ? safeColor : "none";
+	const shape = `fill="${fill}" stroke="${stroke}" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"`;
+	let inner = "";
+
+	switch (iconId) {
+		case "star":
+			inner = `<path ${shape} d="M12 3.1l2.4 4.86 5.36.78-3.88 3.78.92 5.35L12 15.24 7.2 17.87l.92-5.35-3.88-3.78 5.36-.78L12 3.1z"/>`;
+			break;
+		case "x":
+			if (active) {
+				inner = `<circle cx="12" cy="12" r="9" fill="${safeColor}" stroke="none"/>` +
+					`<path fill="none" stroke="#ffffff" stroke-width="1.75" stroke-linecap="round" d="M8 8l8 8M16 8l-8 8"/>`;
+			} else {
+				inner = `<path fill="none" stroke="${safeColor}" stroke-width="1.75" stroke-linecap="round" d="M7 7l10 10M17 7L7 17"/>`;
+			}
+			break;
+		case "eye":
+			inner = `<path ${shape} d="M2.6 12s3.5-6.4 9.4-6.4S21.4 12 21.4 12s-3.5 6.4-9.4 6.4S2.6 12 2.6 12z"/>` +
+				`<circle cx="12" cy="12" r="2.35" fill="${active ? "#ffffff" : "none"}" stroke="${stroke}" stroke-width="1.75"/>`;
+			break;
+		case "bookmark":
+			inner = `<path ${shape} d="M7 4.4h10a1 1 0 0 1 1 1v14.4l-6-3.15-6 3.15V5.4a1 1 0 0 1 1-1z"/>`;
+			break;
+		case "heart":
+			inner = `<path ${shape} d="M12 19.15S5.45 14.8 3.3 11.2C1.75 8.6 2.95 5.55 5.7 4.75c1.55-.45 3.35.25 4.95 1.85 1.6-1.6 3.4-2.3 4.95-1.85 2.75.8 3.95 3.85 2.4 6.45C18.55 14.8 12 19.15 12 19.15z"/>`;
+			break;
+		default:
+			return "";
+	}
+
+	return `<svg viewBox="0 0 24 24" width="20" height="20" aria-hidden="true">${inner}</svg>`;
+}
+
+function resolveStyleRuleShortcut(rule) {
+	const id = typeof rule?.id === "string" ? rule.id.trim() : "";
+	const defaults = DEFAULT_LOOK_SHORTCUTS[id];
+	const icon = rule?.shortcutIcon === undefined && defaults
+		? defaults.shortcutIcon
+		: normalizeShortcutIcon(rule?.shortcutIcon);
+	let color = rule?.shortcutColor === undefined && defaults
+		? defaults.shortcutColor
+		: normalizeShortcutColor(rule?.shortcutColor);
+	if (!color) color = defaults?.shortcutColor || DEFAULT_SHORTCUT_COLOR;
+	return { shortcutIcon: icon, shortcutColor: color };
+}
+
 function isValidStyleRule(rule) {
 	if (!rule || typeof rule !== "object") return false;
 	if (typeof rule.id !== "string" || !rule.id.trim()) return false;
@@ -864,6 +1017,7 @@ function normalizeStyleRules(rules) {
 	if (!Array.isArray(rules)) return [];
 
 	const seenIds = new Set();
+	const usedIcons = new Set();
 	const normalized = [];
 	for (const rule of rules) {
 		if (!isValidStyleRule(rule)) continue;
@@ -871,18 +1025,28 @@ function normalizeStyleRules(rules) {
 		if (seenIds.has(id)) continue;
 		seenIds.add(id);
 
+		const shortcut = resolveStyleRuleShortcut(rule);
+		let shortcutIcon = shortcut.shortcutIcon;
+		if (shortcutIcon && usedIcons.has(shortcutIcon)) shortcutIcon = "";
+		if (shortcutIcon) usedIcons.add(shortcutIcon);
+
+		const base = {
+			id,
+			name: rule.name.trim(),
+			shortcutIcon,
+			shortcutColor: shortcut.shortcutColor
+		};
+
 		if (rule.kind === "custom") {
 			normalized.push({
-				id,
-				name: rule.name.trim(),
+				...base,
 				kind: "custom",
 				predefined: "",
 				css: typeof rule.css === "string" ? rule.css : ""
 			});
 		} else {
 			normalized.push({
-				id,
-				name: rule.name.trim(),
+				...base,
 				kind: "predefined",
 				predefined: rule.predefined,
 				css: ""

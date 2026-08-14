@@ -234,6 +234,8 @@ function collectStyleRules() {
         const nameInput = row.querySelector(".styleRuleName");
         const kindSelect = row.querySelector(".styleRuleKind");
         const cssInput = row.querySelector(".styleRuleCss");
+        const iconSelect = row.querySelector(".styleRuleShortcutIcon");
+        const colorInput = row.querySelector(".styleRuleShortcutColor");
         const kind = kindSelect?.value === "custom" ? "custom" : "predefined";
         const predefined = kind === "predefined" ? (kindSelect?.value || "blocked") : "";
         return {
@@ -241,7 +243,9 @@ function collectStyleRules() {
             name: nameInput?.value.trim() || "",
             kind,
             predefined: predefined === "favorited" || predefined === "seen" ? predefined : (kind === "predefined" ? "blocked" : ""),
-            css: cssInput?.value || ""
+            css: cssInput?.value || "",
+            shortcutIcon: iconSelect?.value || "",
+            shortcutColor: colorInput?.value || ""
         };
     }).filter(rule => rule.name);
 }
@@ -259,13 +263,49 @@ function updateStyleRuleRowVisibility(row) {
     cssInput.hidden = !isCustom;
 }
 
+function usedShortcutIcons(exceptRow = null) {
+    const used = new Set();
+    for (const row of document.querySelectorAll("#styleRuleBody tr")) {
+        if (row === exceptRow) continue;
+        const value = row.querySelector(".styleRuleShortcutIcon")?.value;
+        if (value) used.add(value);
+    }
+    return used;
+}
+
+function updateStyleRuleShortcutPreview(row) {
+    const preview = row.querySelector(".styleRuleShortcutPreview");
+    const iconSelect = row.querySelector(".styleRuleShortcutIcon");
+    const colorInput = row.querySelector(".styleRuleShortcutColor");
+    if (!preview) return;
+    const icon = iconSelect?.value || "";
+    const color = colorInput?.value || DEFAULT_SHORTCUT_COLOR;
+    preview.innerHTML = icon ? shortcutIconSvgMarkup(icon, { active: false, color }) : "";
+    preview.hidden = !icon;
+}
+
+function refreshShortcutIconOptions() {
+    for (const row of document.querySelectorAll("#styleRuleBody tr")) {
+        const select = row.querySelector(".styleRuleShortcutIcon");
+        if (!select) continue;
+        const used = usedShortcutIcons(row);
+        for (const option of select.options) {
+            if (!option.value) continue;
+            option.disabled = used.has(option.value);
+        }
+        updateStyleRuleShortcutPreview(row);
+    }
+}
+
 function createStyleRuleRow(rule = null) {
     const styleRule = rule || {
         id: createStyleRuleId(),
         name: "",
         kind: "predefined",
         predefined: "blocked",
-        css: ""
+        css: "",
+        shortcutIcon: "",
+        shortcutColor: DEFAULT_SHORTCUT_COLOR
     };
 
     const row = document.createElement("tr");
@@ -333,13 +373,50 @@ function createStyleRuleRow(rule = null) {
             }
             row.remove();
             refreshAllStyleSelects();
+            refreshShortcutIconOptions();
             refreshAllTableEmptyStates();
         })
     ));
 
-    row.append(nameCell, kindCell, cssCell, actionCell);
+    const shortcutCell = document.createElement("td");
+    shortcutCell.className = "styleRuleShortcutCell";
+    const shortcutWrap = document.createElement("div");
+    shortcutWrap.className = "styleRuleShortcut";
+
+    const iconSelect = document.createElement("select");
+    iconSelect.className = "styleRuleShortcutIcon";
+    iconSelect.setAttribute("aria-label", "Shortcut icon");
+    const noneOption = document.createElement("option");
+    noneOption.value = "";
+    noneOption.textContent = "None";
+    iconSelect.appendChild(noneOption);
+    for (const iconId of SHORTCUT_ICON_IDS) {
+        const option = document.createElement("option");
+        option.value = iconId;
+        option.textContent = SHORTCUT_ICON_LABELS[iconId];
+        if ((styleRule.shortcutIcon || "") === iconId) option.selected = true;
+        iconSelect.appendChild(option);
+    }
+    iconSelect.addEventListener("change", refreshShortcutIconOptions);
+
+    const colorInput = document.createElement("input");
+    colorInput.type = "color";
+    colorInput.className = "styleRuleShortcutColor";
+    colorInput.value = normalizeShortcutColor(styleRule.shortcutColor) || DEFAULT_SHORTCUT_COLOR;
+    colorInput.setAttribute("aria-label", "Shortcut color");
+    colorInput.addEventListener("input", () => updateStyleRuleShortcutPreview(row));
+
+    const preview = document.createElement("span");
+    preview.className = "styleRuleShortcutPreview";
+    preview.setAttribute("aria-hidden", "true");
+
+    shortcutWrap.append(preview, iconSelect, colorInput);
+    shortcutCell.appendChild(shortcutWrap);
+
+    row.append(nameCell, kindCell, cssCell, shortcutCell, actionCell);
     document.querySelector("#styleRuleBody").appendChild(row);
     updateStyleRuleRowVisibility(row);
+    refreshShortcutIconOptions();
     refreshAllTableEmptyStates();
 }
 
@@ -2149,6 +2226,7 @@ function setupEventListeners() {
         document.querySelector("#addStyleRuleBtn")?.addEventListener("click", () => {
                 createStyleRuleRow();
                 refreshAllStyleSelects();
+                refreshShortcutIconOptions();
             });
         document.querySelector("#exportBtn")?.addEventListener("click", exportToFile);
         document.querySelector("#importBtn")?.addEventListener("click", importFromFile);

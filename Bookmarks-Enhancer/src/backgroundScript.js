@@ -1,4 +1,4 @@
-﻿const CONTENT_SCRIPT_FILES = ["browser-polyfill.js", "utils.js", "contentScript.js"];
+﻿const CONTENT_SCRIPT_FILES = ["browser-polyfill.js", "utils.js", "contentScript.js", "lookShortcuts.js"];
 
 const DEFAULT_ACTION_TITLE = "Enhance Bookmarks";
 const ACTION_BUSY_TIMEOUT_MS = 60000;
@@ -54,6 +54,23 @@ browser.runtime.onMessage.addListener((message, sender, sendResponse) => {
 	if (message && message.refreshBusyComplete) {
 		endActionBusy(message.actionBusyGeneration);
 		return false;
+	}
+
+	if (message && message.toggleLookShortcut) {
+		const styleId = typeof message.styleId === "string" ? message.styleId : "";
+		const url = message.url || (sender && sender.tab && sender.tab.url) || "";
+		const title = message.title || (sender && sender.tab && sender.tab.title) || "";
+		ensureSettingsReady()
+			.then(() => toggleLookShortcut(url, title, styleId))
+			.then(sendResponse)
+			.catch(error => {
+				onError(error);
+				sendResponse({
+					ok: false,
+					error: String(error && error.message ? error.message : error)
+				});
+			});
+		return true;
 	}
 
 	if (message && message.hrefs) {
@@ -442,6 +459,31 @@ function addUrlToSiteList(url, title, styleId) {
 		const existing = migrateSitesFromStorage(result);
 		const next = upsertSiteLink(existing, url, title, styleId);
 		return persistSites(next);
+	});
+}
+
+function toggleLookShortcut(url, title, styleId) {
+	if (!isValidHttpUrl(url) || !styleId) {
+		return Promise.resolve({ ok: false });
+	}
+	if (!styleRules.some(rule => rule.id === styleId && rule.shortcutIcon)) {
+		return Promise.resolve({ ok: false });
+	}
+
+	let hostname = "";
+	try {
+		hostname = new URL(url).hostname;
+	} catch {
+		return Promise.resolve({ ok: false });
+	}
+
+	return browser.storage.local.get(null).then(result => {
+		const existing = migrateSitesFromStorage(result);
+		if (!findMatchingSiteConfig(existing, hostname)) {
+			return { ok: false };
+		}
+		const next = toggleSiteLookShortcut(existing, url, title, styleId);
+		return persistSites(next).then(() => ({ ok: true }));
 	});
 }
 

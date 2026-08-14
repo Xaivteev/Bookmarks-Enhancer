@@ -425,6 +425,46 @@
             padding: 0.25rem 0.5rem;
         }
 
+        table input[type="color"] {
+            box-sizing: border-box;
+            width: 2rem;
+            height: 2rem;
+            padding: 0.1rem;
+            border: 1px solid #d1d5db;
+            border-radius: 0.25rem;
+            background: #fff;
+        }
+
+        .styleRuleShortcut {
+            display: flex;
+            align-items: center;
+            gap: 0.35rem;
+        }
+
+        .styleRuleShortcutIcon {
+            min-width: 6.5rem;
+        }
+
+        .styleRuleShortcutPreview {
+            display: inline-flex;
+            width: 1.25rem;
+            height: 1.25rem;
+            flex: 0 0 1.25rem;
+            align-items: center;
+            justify-content: center;
+        }
+
+        .styleRuleShortcutPreview[hidden] {
+            display: inline-flex !important;
+            visibility: hidden;
+        }
+
+        .styleRuleShortcutPreview svg {
+            display: block;
+            width: 1.25rem;
+            height: 1.25rem;
+        }
+
         #bookmarkRuleTable {
             table-layout: fixed;
         }
@@ -448,6 +488,12 @@
         #bookmarkRuleTable th:nth-child(4),
         #bookmarkRuleTable td:nth-child(4) {
             width: 5.5rem;
+            white-space: nowrap;
+        }
+
+        #styleRuleTable th:nth-child(4),
+        #styleRuleTable td:nth-child(4) {
+            width: 12.5rem;
             white-space: nowrap;
         }
 
@@ -1258,6 +1304,9 @@
                 Define named looks used by saved links and text rules on each site.
                 Choose a predefined look (Blocked / Favorited / Seen) or
                 Custom CSS declarations applied to matching elements.
+                Assign a unique shortcut icon and color to show a toggle in the
+                top-right of matching sites. Icons cannot be reused, so at most
+                five looks can have shortcuts — other looks stay on the context menu.
             </p>
 
             <div class="stylePreview" id="stylePreviewRoot">
@@ -1295,6 +1344,7 @@
                         <th>Name</th>
                         <th>Look</th>
                         <th>Custom CSS</th>
+                        <th>Shortcut</th>
                         <th>Actions</th>
                     </tr>
                 </thead>

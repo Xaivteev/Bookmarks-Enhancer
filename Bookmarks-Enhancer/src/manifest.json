@@ -12,11 +12,12 @@
       "matches": [
         "<all_urls>"
       ],
-      "js": [
-        "browser-polyfill.js",
-        "utils.js",
-        "contentScript.js"
-      ]
+        "js": [
+          "browser-polyfill.js",
+          "utils.js",
+          "contentScript.js",
+          "lookShortcuts.js"
+        ]
     }
   ],
   "background": {
