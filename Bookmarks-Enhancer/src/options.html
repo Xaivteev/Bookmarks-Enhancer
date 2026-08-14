@@ -1103,13 +1103,16 @@
             margin: 0;
         }
 
+        .savedLinkGroupHeader:hover {
+            background: #f8fafc;
+        }
+
         .savedLinkGroupToggle {
-            flex: 1;
+            flex: 0 0 auto;
             display: flex;
             align-items: center;
-            gap: 0.5rem;
             margin: 0;
-            padding: 0.55rem 0.7rem;
+            padding: 0.55rem 0.35rem 0.55rem 0.7rem;
             border: 0;
             background: transparent;
             color: inherit;
@@ -1139,20 +1142,31 @@
             transform: rotate(90deg);
         }
 
-        .savedLinkGroupTitle {
+        .savedLinkGroupLook {
+            flex: 0 1 10rem;
+            box-sizing: border-box;
+            width: auto;
+            min-width: 7rem;
+            max-width: 14rem;
+            height: 1.85rem;
             margin: 0;
-            font-size: 1rem;
+            font: inherit;
+            font-size: 0.95rem;
             font-weight: 600;
         }
 
         .savedLinkGroupCount {
+            flex: 1;
+            min-width: 0;
+            padding: 0.55rem 0.5rem;
             color: #6b7280;
             font-size: 0.88em;
             font-weight: 500;
+            cursor: pointer;
         }
 
         .savedLinkGroupDelete {
-            margin: 0 0.45rem 0 auto;
+            margin: 0 0.45rem 0 0;
         }
 
         .savedLinkGroupBody {
@@ -1510,9 +1524,10 @@
 
                 <h2>Saved links</h2>
                 <p class="hint">
-                    Looks act as folders on this site. Click a look to load its
-                    links (100 per page) and search them. Add a look below, or
-                    right-click a link or page and choose <strong>Add to list</strong>.
+                    Looks act as folders on this site. Click a folder to load its
+                    links (100 per page) and search them. Change a folder’s look
+                    to update every link in it. Add a look below, or right-click
+                    a link or page and choose <strong>Add to list</strong>.
                     Completely blank rows are ignored when saving.
                 </p>
                 <div id="savedLinkGroups"></div>

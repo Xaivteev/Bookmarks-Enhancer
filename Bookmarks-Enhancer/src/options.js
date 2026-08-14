@@ -187,7 +187,7 @@ function populateStyleSelect(select, selectedId = "blocked", { includeNone = fal
 function refreshAllStyleSelects() {
     cachedStyleRules = normalizeStyleRules(collectStyleRules());
     for (const select of document.querySelectorAll(
-        ".textRuleStyle, .savedLinkMove, #legacyImportLook"
+        ".textRuleStyle, .savedLinkMove, .savedLinkGroupLook, #legacyImportLook"
     )) {
         populateStyleSelect(select, select.value);
     }
@@ -985,6 +985,14 @@ function replaceLinksForLook(styleId, lookLinks) {
     bumpLinksRevision(site);
 }
 
+function commitLookIndexToSite() {
+    const site = sitesDraft[selectedSiteIndex];
+    if (!site || !detailLinksByLook) return;
+    site.linkFolders = collectLinkFoldersFromDetail();
+    flattenDetailLinksToSite();
+    bumpLinksRevision(site);
+}
+
 function collectVisibleSavedLinkRows(group) {
     return Array.from(group.querySelectorAll("tbody tr")).map(row => ({
         url: row.querySelector(".savedLinkUrl")?.value.trim() || "",
@@ -1182,26 +1190,39 @@ function createSavedLinkGroup(styleId) {
     chevron.setAttribute("aria-hidden", "true");
     chevron.textContent = "▸";
 
-    const heading = document.createElement("span");
-    heading.className = "savedLinkGroupTitle";
-    heading.textContent = getLookLabel(styleId);
-
     const count = document.createElement("span");
     count.className = "savedLinkGroupCount";
 
-    toggle.append(chevron, heading, count);
-    toggle.addEventListener("click", () => toggleSavedLinkGroup(group));
+    toggle.append(chevron);
+    toggle.addEventListener("click", event => {
+        event.stopPropagation();
+        toggleSavedLinkGroup(group);
+    });
+
+    const lookSelect = document.createElement("select");
+    lookSelect.className = "savedLinkGroupLook";
+    lookSelect.setAttribute("aria-label", "Look for this folder");
+    lookSelect.title = "Change look for all links in this folder";
+    populateStyleSelect(lookSelect, styleId);
+    lookSelect.addEventListener("mousedown", event => event.stopPropagation());
+    lookSelect.addEventListener("click", event => event.stopPropagation());
+    lookSelect.addEventListener("change", () => {
+        changeSavedLinkGroupLook(group, lookSelect.value);
+    });
 
     const deleteFolderBtn = createDeleteButton(() => {
-        const rowCount = linksForLook(styleId).length;
+        const currentStyleId = group.dataset.styleId;
+        const rowCount = linksForLook(currentStyleId).length;
         if (rowCount > 0) {
             const confirmed = window.confirm(
-                `Remove the "${getLookLabel(styleId)}" folder and its ${formatCount(rowCount, "link")} from this site?`
+                `Remove the "${getLookLabel(currentStyleId)}" folder and its ${formatCount(rowCount, "link")} from this site?`
             );
             if (!confirmed) return;
         }
-        replaceLinksForLook(styleId, []);
+        replaceLinksForLook(currentStyleId, []);
+        if (detailLinksByLook) detailLinksByLook.delete(currentStyleId);
         group.remove();
+        commitLookIndexToSite();
         validateSiteDetail();
         refreshSavedLinkGroupEmptyStates();
         scheduleDirtyUiUpdate();
@@ -1209,7 +1230,11 @@ function createSavedLinkGroup(styleId) {
     deleteFolderBtn.classList.add("savedLinkGroupDelete");
     deleteFolderBtn.setAttribute("aria-label", `Remove ${getLookLabel(styleId)} folder`);
     deleteFolderBtn.title = "Remove folder";
-    header.append(toggle, deleteFolderBtn);
+    header.append(toggle, lookSelect, count, deleteFolderBtn);
+    header.addEventListener("click", event => {
+        if (event.target.closest(".savedLinkGroupLook, .savedLinkGroupDelete")) return;
+        toggleSavedLinkGroup(group);
+    });
 
     group.append(header);
     groupsRoot.appendChild(group);
@@ -1350,6 +1375,112 @@ function renderSavedLinkGroups(links = [], folderIds = []) {
     refreshSavedLinkGroupEmptyStates();
 }
 
+function updateSavedLinkGroupLookUi(group) {
+    const styleId = group?.dataset.styleId;
+    if (!group || !styleId) return;
+
+    const select = group.querySelector(".savedLinkGroupLook");
+    if (select) populateStyleSelect(select, styleId);
+
+    const expanded = group.dataset.expanded === "true";
+    const toggle = group.querySelector(".savedLinkGroupToggle");
+    if (toggle) {
+        toggle.setAttribute("aria-label", expanded
+            ? `Hide links for ${getLookLabel(styleId)}`
+            : `Show links for ${getLookLabel(styleId)}`);
+    }
+
+    const search = group.querySelector(".savedLinkSearchInput");
+    if (search) search.setAttribute("aria-label", `Search ${getLookLabel(styleId)} links`);
+
+    const deleteBtn = group.querySelector(".savedLinkGroupDelete");
+    if (deleteBtn) {
+        deleteBtn.setAttribute("aria-label", `Remove ${getLookLabel(styleId)} folder`);
+    }
+}
+
+function changeSavedLinkGroupLook(group, nextStyleId) {
+    const prevStyleId = group?.dataset.styleId;
+    const lookSelect = group?.querySelector(".savedLinkGroupLook");
+    if (!group || !nextStyleId || !prevStyleId || nextStyleId === prevStyleId) return;
+
+    const revertSelect = () => {
+        if (lookSelect) lookSelect.value = prevStyleId;
+    };
+
+    flushSavedLinkGroupPage(group);
+    const destGroup = document.querySelector(
+        `.savedLinkGroup[data-style-id="${CSS.escape(nextStyleId)}"]`
+    );
+    const moving = linksForLook(prevStyleId).slice();
+    const count = moving.length;
+    const fromLabel = getLookLabel(prevStyleId);
+    const toLabel = getLookLabel(nextStyleId);
+
+    if (destGroup && destGroup !== group) {
+        const destCount = linksForLook(nextStyleId).length;
+        const confirmed = window.confirm(
+            count > 0
+                ? `Move ${formatCount(count, "link")} from "${fromLabel}" into "${toLabel}"? That look already has ${formatCount(destCount, "link")} on this site. Duplicate URLs will be kept in "${toLabel}" only.`
+                : `"${toLabel}" is already on this site. Remove the empty "${fromLabel}" folder?`
+        );
+        if (!confirmed) {
+            revertSelect();
+            return;
+        }
+        if (destGroup.dataset.expanded === "true") flushSavedLinkGroupPage(destGroup);
+        const destLinks = linksForLook(nextStyleId).slice();
+        const seen = new Set(destLinks.map(link => link.url));
+        const merged = destLinks.map(link => ({
+            url: link.url,
+            title: link.title,
+            style: nextStyleId
+        }));
+        for (const link of moving) {
+            if (seen.has(link.url)) continue;
+            seen.add(link.url);
+            merged.push({
+                url: link.url,
+                title: link.title,
+                style: nextStyleId
+            });
+        }
+        if (!detailLinksByLook) detailLinksByLook = new Map();
+        detailLinksByLook.delete(prevStyleId);
+        detailLinksByLook.set(nextStyleId, merged);
+        group.remove();
+        commitLookIndexToSite();
+        if (destGroup.dataset.expanded === "true") {
+            expandSavedLinkGroup(destGroup, Number(destGroup.dataset.page || "1") || 1, { skipFlush: true });
+        } else {
+            updateSavedLinkGroupMeta(destGroup);
+        }
+        refreshSavedLinkGroupEmptyStates();
+        scheduleDirtyUiUpdate();
+        validateSiteDetail();
+        return;
+    }
+
+    if (!detailLinksByLook) detailLinksByLook = new Map();
+    detailLinksByLook.delete(prevStyleId);
+    detailLinksByLook.set(nextStyleId, moving.map(link => ({
+        url: link.url,
+        title: link.title,
+        style: nextStyleId
+    })));
+    group.dataset.styleId = nextStyleId;
+    commitLookIndexToSite();
+    updateSavedLinkGroupLookUi(group);
+    if (group.dataset.expanded === "true") {
+        expandSavedLinkGroup(group, Number(group.dataset.page || "1") || 1, { skipFlush: true });
+    } else {
+        updateSavedLinkGroupMeta(group);
+    }
+    refreshSavedLinkGroupEmptyStates();
+    scheduleDirtyUiUpdate();
+    validateSiteDetail();
+}
+
 function syncSavedLinkGroupsToLooks() {
     const groupsRoot = document.querySelector("#savedLinkGroups");
     if (!groupsRoot) return;
@@ -1358,15 +1489,14 @@ function syncSavedLinkGroupsToLooks() {
 
     for (const group of Array.from(groupsRoot.querySelectorAll(".savedLinkGroup"))) {
         const styleId = group.dataset.styleId;
-        const title = group.querySelector(".savedLinkGroupTitle");
         const hasRows = linksForLook(styleId).length > 0;
         if (lookIds.has(styleId)) {
-            if (title) title.textContent = getLookLabel(styleId);
+            updateSavedLinkGroupLookUi(group);
             continue;
         }
         if (hasRows) {
-            if (title) title.textContent = getLookLabel(styleId);
-    } else {
+            updateSavedLinkGroupLookUi(group);
+        } else {
             group.remove();
         }
     }
