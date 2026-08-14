@@ -147,6 +147,14 @@ function stopPageProcessing() {
 		observer.disconnect();
 		observer = null;
 	}
+	if (mutationFrameId) {
+		cancelAnimationFrame(mutationFrameId);
+		mutationFrameId = 0;
+	}
+	pendingAddedNodes = [];
+	pendingAddedOffset = 0;
+	pendingObservedHrefs = new Set();
+	pendingObservedTextElements = new Set();
 	if (mutationDebounceTimer) {
 		clearTimeout(mutationDebounceTimer);
 		mutationDebounceTimer = null;
@@ -235,6 +243,10 @@ let pendingStatusHrefs = new Set(); // in-flight lookups; not yet successfully p
 let urlCacheGeneration = 0;
 let observer = null;
 let pendingObservedHrefs = new Set();
+let pendingObservedTextElements = new Set();
+let pendingAddedNodes = [];
+let pendingAddedOffset = 0;
+let mutationFrameId = 0;
 let mutationDebounceTimer = null;
 let originalBodyBorderTop = null;
 let visibilityListenersAttached = false;
@@ -270,7 +282,7 @@ function rememberPositiveStatus(href, status) {
 
 function reapplyStoredLinkStatuses(includeHidden = false) {
 	if (!searchSite || linkStatusMap.size === 0) return;
-	buildLinkMap(includeHidden);
+	buildLinkMap();
 	const statuses = {};
 	for (const [href, status] of linkStatusMap) {
 		if (status && status !== "none") statuses[href] = status;
@@ -579,6 +591,7 @@ function notifyRefreshBusyComplete(actionBusyGeneration) {
 }
 
 const mutationDebounceDelay = 200;
+const MUTATION_FRAME_BUDGET_MS = 8;
 
 function removeStatusClasses(classNames) {
 	const names = (classNames || []).filter(Boolean);
@@ -599,6 +612,13 @@ function invalidateUrlDependentCaches() {
 	softMissHrefs = new Set();
 	pendingStatusHrefs = new Set();
 	pendingObservedHrefs = new Set();
+	pendingObservedTextElements = new Set();
+	pendingAddedNodes = [];
+	pendingAddedOffset = 0;
+	if (mutationFrameId) {
+		cancelAnimationFrame(mutationFrameId);
+		mutationFrameId = 0;
+	}
 	lookupRetryHrefs = new Set();
 	lookupRetryAttempt = 0;
 	if (lookupRetryTimer) {
@@ -802,7 +822,7 @@ function handleRuntimeMessage(message) {
 
 	if (message.statusUpdates) {
 		if (!searchSite) return;
-		buildLinkMap(true);
+		buildLinkMap();
 		const classNames = managedClassNames.filter(Boolean);
 		for (const [href, status] of Object.entries(message.statusUpdates)) {
 			pendingStatusHrefs.delete(href);
@@ -840,14 +860,14 @@ function handleRuntimeMessage(message) {
 }
 
 // Build a map of normalizedHref -> [link elements], filtering invalid/hidden links
-function buildLinkMap(includeHidden = false) {
+function buildLinkMap() {
 	linkMap = new Map();
 	for (const link of document.links) {
-		collectLink(link, includeHidden);
+		collectLink(link);
 	}
 }
 
-function collectLink(link, includeHidden = false) {
+function collectLink(link) {
 	const href = link.getAttribute('href') || link.href || '';
 	if (!href) return null;
 	let normalized;
@@ -857,11 +877,6 @@ function collectLink(link, includeHidden = false) {
 
 	if (!/^https?:/.test(normalized)) return null;
 
-	if (!includeHidden) {
-		const style = window.getComputedStyle(link);
-		if (style.display === 'none' || style.visibility === 'hidden' || style.opacity === '0') return null;
-	}
-
 	if (!linkMap.has(normalized)) linkMap.set(normalized, []);
 	linkMap.get(normalized).push(link);
 	return normalized;
@@ -869,7 +884,7 @@ function collectLink(link, includeHidden = false) {
 
 function sendUniqueHrefs(options = {}) {
 	if (!searchSite) return; // skip if site not relevant
-	buildLinkMap(!!options.includeHidden);
+	buildLinkMap();
 	const allHrefs = Array.from(linkMap.keys());
 	for (const href of allHrefs) {
 		if (linkStatusMap.has(href)) {
@@ -936,7 +951,7 @@ function performAuthoritativeRefresh(options = {}) {
 	urlCacheGeneration += 1;
 	const refreshGeneration = urlCacheGeneration;
 	softMissHrefs = new Set();
-	buildLinkMap(true);
+	buildLinkMap();
 	const authoritativeLinkMap = linkMap;
 	const allHrefs = Array.from(authoritativeLinkMap.keys());
 
@@ -1251,52 +1266,97 @@ function applyTextRulesTo(elements, matchingRules, includeHidden = false) {
 }
 
 // MutationObserver: watch for newly added links and process incrementally
+function enqueueObservedAddedNode(node) {
+	if (!(node instanceof Element)) return;
+	pendingAddedNodes.push(node);
+}
+
+function compactPendingAddedNodes() {
+	if (pendingAddedOffset === 0) return;
+	if (pendingAddedOffset < 256) return;
+	pendingAddedNodes = pendingAddedNodes.slice(pendingAddedOffset);
+	pendingAddedOffset = 0;
+}
+
+function queueObservedTextElements(node) {
+	if (!classesForSearch.length) return;
+	for (const classGroup of classesForSearch) {
+		const requiredClasses = classGroup.split(/\s+/).filter(Boolean);
+		if (
+			requiredClasses.length &&
+			node.classList &&
+			requiredClasses.every(className => node.classList.contains(className))
+		) {
+			pendingObservedTextElements.add(node);
+		}
+		if (typeof node.getElementsByClassName !== "function") continue;
+		const found = node.getElementsByClassName(classGroup);
+		for (const el of found) pendingObservedTextElements.add(el);
+	}
+}
+
+function collectObservedNode(node, collectTextTargets) {
+	if (node instanceof HTMLAnchorElement) {
+		const norm = collectLink(node);
+		if (norm) pendingObservedHrefs.add(norm);
+	}
+	if (typeof node.querySelectorAll === "function") {
+		const links = node.querySelectorAll("a[href]");
+		for (const link of links) {
+			const norm = collectLink(link);
+			if (norm) pendingObservedHrefs.add(norm);
+		}
+	}
+	if (collectTextTargets) queueObservedTextElements(node);
+}
+
 function startMutationObserver() {
 	if (observer) return;
 	observer = new MutationObserver(mutations => {
-		for (const m of mutations) {
-			for (const node of m.addedNodes) {
-				if (node instanceof HTMLAnchorElement) {
-					const norm = collectLink(node);
-					if (norm) pendingObservedHrefs.add(norm);
-				}
-				if (node instanceof Element) {
-					const links = node.querySelectorAll ? node.querySelectorAll('a[href]') : [];
-					for (const link of links) {
-						const norm = collectLink(link);
-						if (norm) pendingObservedHrefs.add(norm);
-					}
-
-					// Collect newly added elements that match configured classes for text filtering
-					const matchingRules = getMatchingTextRules();
-					if (matchingRules.length && classesForSearch && classesForSearch.length) {
-						const elems = [];
-						for (const classGroup of classesForSearch) {
-							try {
-								const requiredClasses = classGroup.split(/\s+/).filter(Boolean);
-								if (
-									node.classList &&
-									requiredClasses.every(className => node.classList.contains(className))
-								) {
-									elems.push(node);
-								}
-								const found = node.getElementsByClassName
-									? node.getElementsByClassName(classGroup)
-									: [];
-								for (const f of found) elems.push(f);
-							} catch (e) { /* ignore DOM exceptions */ }
-						}
-
-						if (elems.length) {
-							applyTextRulesTo(elems, matchingRules);
-						}
-					}
-				}
+		for (const record of mutations) {
+			const nodes = record.addedNodes;
+			for (let i = 0; i < nodes.length; i++) {
+				enqueueObservedAddedNode(nodes[i]);
 			}
 		}
-		scheduleObservedHrefProcessing();
+		scheduleObservedMutationFrame();
 	});
-	observer.observe(document.documentElement || document.body, { childList: true, subtree: true });
+	observer.observe(document.documentElement || document.body, {
+		childList: true,
+		subtree: true
+	});
+}
+
+function scheduleObservedMutationFrame() {
+	if (mutationFrameId) return;
+	mutationFrameId = requestAnimationFrame(processObservedMutationFrame);
+}
+
+function processObservedMutationFrame() {
+	mutationFrameId = 0;
+	const collectTextTargets = classesForSearch.length > 0 &&
+		getMatchingTextRules().length > 0;
+	const started = performance.now();
+
+	while (pendingAddedOffset < pendingAddedNodes.length) {
+		if (performance.now() - started >= MUTATION_FRAME_BUDGET_MS) {
+			scheduleObservedMutationFrame();
+			break;
+		}
+		collectObservedNode(pendingAddedNodes[pendingAddedOffset], collectTextTargets);
+		pendingAddedOffset += 1;
+	}
+
+	if (pendingAddedOffset >= pendingAddedNodes.length) {
+		pendingAddedNodes = [];
+		pendingAddedOffset = 0;
+	} else {
+		compactPendingAddedNodes();
+	}
+
+	if (pendingObservedHrefs.size > 0 || pendingObservedTextElements.size > 0) {
+		scheduleObservedHrefProcessing();
+	}
 }
 
 function scheduleObservedHrefProcessing() {
@@ -1307,7 +1367,17 @@ function scheduleObservedHrefProcessing() {
 function processObservedHrefs() {
 	const hrefs = Array.from(pendingObservedHrefs);
 	pendingObservedHrefs = new Set();
+	const textElements = Array.from(pendingObservedTextElements);
+	pendingObservedTextElements = new Set();
 	mutationDebounceTimer = null;
+
+	if (textElements.length > 0) {
+		applyTextRulesTo(
+			textElements.filter(el => el.isConnected && !hasStatusClass(el)),
+			getMatchingTextRules(),
+			true
+		);
+	}
 
 	const hrefsToRequest = [];
 	for (const norm of hrefs) {
