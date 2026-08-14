@@ -1844,7 +1844,7 @@ function handleBookmarkChanged(id, changeInfo) {
 }
 
 function findMatchingRuleStyle(bookmark, rules, parentById) {
-	// First matching bookmark rule wins (table order in Bookmark Rules).
+	// First matching bookmark rule wins (table order in Folders).
 	for (let priority = 0; priority < rules.length; priority++) {
 		const rule = rules[priority];
 		if (!isBookmarkUnderFolder(bookmark, rule.folderId, parentById)) continue;

@@ -167,6 +167,21 @@ function refreshAllTableEmptyStates() {
     syncTableEmptyState("#textRuleBody", "#textRulesEmpty");
     syncTableEmptyState("#tableBody", "#searchPairsEmpty");
     syncTableEmptyState("#urlRuleBody", "#urlRulesEmpty");
+    syncAdvancedSiteRulesOpen();
+}
+
+function openAdvancedSiteRules() {
+    const panel = document.querySelector("#advancedSiteRules");
+    if (panel) panel.open = true;
+}
+
+function syncAdvancedSiteRulesOpen() {
+    const panel = document.querySelector("#advancedSiteRules");
+    if (!panel) return;
+    const hasRows =
+        document.querySelectorAll("#textRuleBody tr").length > 0 ||
+        document.querySelectorAll("#urlRuleBody tr").length > 0;
+    if (hasRows) panel.open = true;
 }
 
 function createPreviewButton(onClick) {
@@ -1546,8 +1561,11 @@ function createFieldError(errorId) {
     return error;
 }
 
-function showRowValidationError(tabId, selector, message, actionLabel) {
+function showRowValidationError(tabId, selector, message, actionLabel, {
+    openAdvanced = false
+} = {}) {
     activateOptionsTab(tabId);
+    if (openAdvanced) openAdvancedSiteRules();
     const firstInvalid = document.querySelector(selector);
     firstInvalid?.focus();
     showStatus(message, {
@@ -1557,6 +1575,7 @@ function showRowValidationError(tabId, selector, message, actionLabel) {
                 label: actionLabel,
                 onClick: () => {
                     activateOptionsTab(tabId);
+                    if (openAdvanced) openAdvancedSiteRules();
                     document.querySelector(selector)?.focus();
                 }
             }
@@ -1572,24 +1591,26 @@ function validateConfigurableRuleRows() {
 
     if (!textValid) {
         showRowValidationError(
-            "textRules",
+            "sites",
             "#textRuleBody .fieldInvalid",
             "Fix Text Rule errors before saving",
-            "Open Text Rules"
+            "Open Text Rules",
+            { openAdvanced: true }
         );
     } else if (!searchValid) {
         showRowValidationError(
-            "siteRules",
+            "sites",
             "#tableBody input.fieldInvalid",
             "Fix Search Pair errors before saving",
-            "Open Site Rules"
+            "Open Sites"
         );
     } else {
         showRowValidationError(
-            "siteRules",
+            "sites",
             "#urlRuleBody input.fieldInvalid",
             "Fix URL Parameter Rule errors before saving",
-            "Open Site Rules"
+            "Open URL Rules",
+            { openAdvanced: true }
         );
     }
     return false;
@@ -2312,8 +2333,8 @@ function importFromJson(jsonString) {
                     })
                 },
                 {
-                    label: "Open Site Rules",
-                    onClick: () => activateOptionsTab("siteRules")
+                    label: "Open Sites",
+                    onClick: () => activateOptionsTab("sites")
                 }
             ]
         });
@@ -2504,7 +2525,7 @@ function activateOptionsTab(tabId) {
         panel.hidden = !selected;
     }
 
-    if (tabId === "bookmarkRules" || tabId === "textRules" || tabId === "styleRules") {
+    if (tabId === "folders" || tabId === "sites" || tabId === "looks") {
         refreshAllStyleSelects();
     }
 
@@ -2562,10 +2583,24 @@ function setupOptionsTabs() {
     activateOptionsTab(initiallySelected.dataset.tab);
 }
 
+function setupTabJumps() {
+    document.addEventListener("click", event => {
+        const target = event.target instanceof Element ? event.target : null;
+        const jump = target?.closest("[data-open-tab]");
+        if (!jump) return;
+        const tabId = jump.getAttribute("data-open-tab");
+        if (!tabId) return;
+        event.preventDefault();
+        activateOptionsTab(tabId);
+        document.querySelector(`[role="tab"][data-tab="${tabId}"]`)?.focus();
+    });
+}
+
 function setupEventListeners() {
     try {
         setupOptionsTabs();
         setupStickyTabShadow();
+        setupTabJumps();
         setupFolderComboboxDismiss();
         setupDirtyTracking();
 
@@ -2592,8 +2627,18 @@ function setupEventListeners() {
         if (importFileInput) {
             importFileInput.addEventListener("change", handleImportFileChange);
         }
-        if (addUrlRuleBtn) addUrlRuleBtn.addEventListener("click", () => createUrlRuleRow());
-        if (addTextRuleBtn) addTextRuleBtn.addEventListener("click", () => createTextRuleRow());
+        if (addUrlRuleBtn) {
+            addUrlRuleBtn.addEventListener("click", () => {
+                openAdvancedSiteRules();
+                createUrlRuleRow();
+            });
+        }
+        if (addTextRuleBtn) {
+            addTextRuleBtn.addEventListener("click", () => {
+                openAdvancedSiteRules();
+                createTextRuleRow();
+            });
+        }
         if (addBookmarkRuleBtn) {
             addBookmarkRuleBtn.addEventListener("click", () => createBookmarkRuleRow());
         }

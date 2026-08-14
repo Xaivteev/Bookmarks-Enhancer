@@ -121,6 +121,99 @@
             margin: 0;
         }
 
+        .howItConnects {
+            margin: 0 0 1.25rem;
+            padding: 0.85rem 1rem;
+            background: #f9fafb;
+            border: 1px solid #e5e7eb;
+            border-radius: 0.375rem;
+        }
+
+        .howItConnectsFlow {
+            display: flex;
+            flex-wrap: wrap;
+            align-items: center;
+            gap: 0.35rem 0.5rem;
+            margin: 0 0 0.4rem;
+            font-weight: 600;
+        }
+
+        .howItConnectsArrow {
+            color: #9ca3af;
+            font-weight: 500;
+        }
+
+        .howItConnects .hint {
+            margin: 0;
+        }
+
+        .tabJump {
+            display: inline;
+            margin: 0;
+            padding: 0;
+            border: 0;
+            background: none;
+            color: #1d4ed8;
+            font: inherit;
+            font-weight: 600;
+            cursor: pointer;
+            text-decoration: underline;
+            text-underline-offset: 0.12em;
+        }
+
+        .tabJump:hover {
+            color: #1e40af;
+        }
+
+        .tabJump:focus-visible {
+            outline: 2px solid #1d4ed8;
+            outline-offset: 2px;
+            border-radius: 0.15rem;
+        }
+
+        .tabPanel h2 {
+            margin: 0 0 0.5rem;
+            font-size: 1rem;
+            font-weight: 600;
+        }
+
+        .tabPanel h3 {
+            margin: 1.25rem 0 0.5rem;
+            font-size: 1rem;
+            font-weight: 600;
+        }
+
+        .advancedSiteRules {
+            margin: 1.75rem 0 0;
+            padding: 0.75rem 0 0;
+            border-top: 1px solid #d1d5db;
+        }
+
+        .advancedSiteRules > summary {
+            cursor: pointer;
+            font-weight: 600;
+            font-size: 1rem;
+            padding: 0.25rem 0;
+        }
+
+        .advancedSiteRules > summary:focus-visible {
+            outline: 2px solid #1d4ed8;
+            outline-offset: 2px;
+            border-radius: 0.15rem;
+        }
+
+        .advancedSiteRulesHint {
+            display: block;
+            margin: 0.25rem 0 0.75rem;
+            color: #4b5563;
+            font-weight: 400;
+            font-size: 0.92em;
+        }
+
+        .advancedSiteRules h3:first-of-type {
+            margin-top: 0.5rem;
+        }
+
         .formControl {
             margin-bottom: 2em;
             width: 80%;
@@ -783,17 +876,14 @@
             <button type="button" role="tab" id="tabGeneral" aria-controls="panelGeneral" aria-selected="true" data-tab="general">
                 General
             </button>
-            <button type="button" role="tab" id="tabStyleRules" aria-controls="panelStyleRules" aria-selected="false" data-tab="styleRules">
-                Style Rules
+            <button type="button" role="tab" id="tabStyleRules" aria-controls="panelStyleRules" aria-selected="false" data-tab="looks">
+                Looks
             </button>
-            <button type="button" role="tab" id="tabBookmarkRules" aria-controls="panelBookmarkRules" aria-selected="false" data-tab="bookmarkRules">
-                Bookmark Rules
+            <button type="button" role="tab" id="tabBookmarkRules" aria-controls="panelBookmarkRules" aria-selected="false" data-tab="folders">
+                Folders
             </button>
-            <button type="button" role="tab" id="tabTextRules" aria-controls="panelTextRules" aria-selected="false" data-tab="textRules">
-                Text Rules
-            </button>
-            <button type="button" role="tab" id="tabSiteRules" aria-controls="panelSiteRules" aria-selected="false" data-tab="siteRules">
-                Site Rules
+            <button type="button" role="tab" id="tabSiteRules" aria-controls="panelSiteRules" aria-selected="false" data-tab="sites">
+                Sites
             </button>
         </div>
 
@@ -817,22 +907,41 @@
                 </div>
                 <ol>
                     <li>
-                        Open <strong>Bookmark Rules</strong> and map bookmark folders
-                        to styles (for example Blocked or Favorited).
+                        Open
+                        <button type="button" class="tabJump" data-open-tab="folders">Folders</button>
+                        and map bookmark folders to looks (for example Blocked or
+                        Favorited).
                     </li>
                     <li>
                         On a site, right-click and choose
-                        <strong>Select Target Classes</strong>, or add Search Pairs
-                        under <strong>Site Rules</strong>.
+                        <strong>Select Target Classes</strong>, or add the site under
+                        <button type="button" class="tabJump" data-open-tab="sites">Sites</button>.
                     </li>
                     <li>
-                        Save, then reload the page (or click the toolbar icon) to
-                        apply styles to matching bookmarks.
+                        Save — open tabs update on their own. If a page does not
+                        change, it still needs site classes; right-click and choose
+                        <strong>Select Target Classes</strong>.
                     </li>
                 </ol>
                 <p class="hint">
-                    Optional: use Text Rules to style elements by keywords, and URL
-                    Parameter Rules when bookmark links include extra query params.
+                    Optional: under Sites → Advanced, use Text Rules for keywords
+                    and URL Parameter Rules when bookmark links include extra query
+                    params.
+                </p>
+            </div>
+
+            <div class="howItConnects" aria-label="How settings connect">
+                <div class="howItConnectsFlow">
+                    <button type="button" class="tabJump" data-open-tab="folders">Folders</button>
+                    <span class="howItConnectsArrow" aria-hidden="true">→</span>
+                    <button type="button" class="tabJump" data-open-tab="looks">Looks</button>
+                    <span class="howItConnectsArrow" aria-hidden="true">→</span>
+                    <span>cards on a</span>
+                    <button type="button" class="tabJump" data-open-tab="sites">Site</button>
+                </div>
+                <p class="hint">
+                    A bookmark folder picks a look. Sites tell the extension which
+                    listing cards to restyle. Saving updates open tabs.
                 </p>
             </div>
 
@@ -860,8 +969,8 @@
                 <label for="onlyUseSites">Only Use Specified Sites</label>
             </div>
             <p class="settingHelp" id="onlyUseSitesHelp">
-                Only run on hostnames listed in Site Rules Search Pairs. When off,
-                every page is processed using all configured class groups.
+                Only run on hostnames listed under Sites. When off, every page is
+                processed using all configured class groups.
             </p>
 
             <div class="settingRow">
@@ -879,13 +988,13 @@
             class="tabPanel"
             role="tabpanel"
             aria-labelledby="tabStyleRules"
-            data-tab-panel="styleRules"
+            data-tab-panel="looks"
             hidden
         >
             <p class="hint">
-                Define named styles used by Bookmark Rules and Text Rules.
-                Choose a predefined look (Blocked / Favorited / Seen) or Custom CSS
-                declarations applied to matching elements.
+                Define named looks used by Folders and by Text Rules under Sites →
+                Advanced. Choose a predefined look (Blocked / Favorited / Seen) or
+                Custom CSS declarations applied to matching elements.
             </p>
 
             <div class="stylePreview" id="stylePreviewRoot">
@@ -921,7 +1030,7 @@
                 <thead>
                     <tr>
                         <th>Name</th>
-                        <th>Style</th>
+                        <th>Look</th>
                         <th>Custom CSS</th>
                         <th>Actions</th>
                     </tr>
@@ -930,9 +1039,9 @@
                 </tbody>
             </table>
             <p class="tableEmptyState" id="styleRulesEmpty" hidden>
-                No style rules yet. Add a style to use with Bookmark Rules and Text Rules.
+                No looks yet. Add a look to use with Folders and Text Rules.
             </p>
-            <button type="button" id="addStyleRuleBtn">Add Style Rule</button>
+            <button type="button" id="addStyleRuleBtn">Add Look</button>
         </section>
 
         <section
@@ -940,25 +1049,25 @@
             class="tabPanel"
             role="tabpanel"
             aria-labelledby="tabBookmarkRules"
-            data-tab-panel="bookmarkRules"
+            data-tab-panel="folders"
             hidden
         >
             <p class="hint">
-                Each rule maps a bookmark folder (including nested folders) to a style.
+                Each rule maps a bookmark folder (including nested folders) to a look.
                 Type in a folder field to search; folders are grouped by toolbar, menu,
                 and other. Lower numbers win when a bookmark matches more than one
                 folder — use the arrows to change order. The last row styles bookmarks
                 that are not under any folder rule. Choose None to leave them unstyled.
             </p>
             <p class="tableEmptyState" id="bookmarkRulesEmpty" hidden>
-                No folder rules yet. Add a rule to map a bookmark folder to a style.
+                No folder rules yet. Add a rule to map a bookmark folder to a look.
             </p>
             <table id="bookmarkRuleTable">
                 <thead>
                     <tr>
                         <th>Priority</th>
                         <th>Folder</th>
-                        <th>Style</th>
+                        <th>Look</th>
                         <th>Actions</th>
                     </tr>
                 </thead>
@@ -969,48 +1078,22 @@
         </section>
 
         <section
-            id="panelTextRules"
-            class="tabPanel"
-            role="tabpanel"
-            aria-labelledby="tabTextRules"
-            data-tab-panel="textRules"
-            hidden
-        >
-            <p class="hint">
-                Site is a hostname (example.com). Text is matched inside Search Pair
-                classes on that site. Completely blank rows are ignored when saving.
-            </p>
-            <table id="textRuleTable">
-                <thead>
-                    <tr>
-                        <th>Site</th>
-                        <th>Text</th>
-                        <th>Style</th>
-                        <th>Actions</th>
-                    </tr>
-                </thead>
-                <tbody id="textRuleBody">
-                </tbody>
-            </table>
-            <p class="tableEmptyState" id="textRulesEmpty" hidden>
-                No text rules yet. Add a rule to style matching text inside Search Pair classes.
-            </p>
-            <button type="button" id="addTextRuleBtn">Add Text Rule</button>
-        </section>
-
-        <section
             id="panelSiteRules"
             class="tabPanel"
             role="tabpanel"
             aria-labelledby="tabSiteRules"
-            data-tab-panel="siteRules"
+            data-tab-panel="sites"
             hidden
         >
-            <h3>Search Pairs</h3>
+            <p class="hint">
+                Tell the extension which listing cards to restyle. Right-click a page
+                and choose <strong>Select Target Classes</strong>, or add a hostname
+                and CSS classes here. Completely blank rows are ignored when saving.
+            </p>
+            <h2>Search Pairs</h2>
             <p class="hint">
                 Site is a hostname (example.com). Classes are CSS class names;
                 use spaces within a group and commas between groups.
-                Completely blank rows are ignored when saving.
             </p>
             <table id="searchTable">
                 <thead>
@@ -1030,29 +1113,58 @@
             </p>
             <button type="button" id="addRowBtn">Add Row</button>
 
-            <h3>URL Parameter Rules</h3>
-            <p class="hint">
-                Keep only the listed query parameters when matching bookmark URLs
-                for a site. Example: <code>id, jk</code> — use parameter names only,
-                separated by commas. Extra parameters in the bookmark URL are ignored.
-                Completely blank rows are ignored when saving.
-            </p>
-            <table id="urlRuleTable">
-                <thead>
-                    <tr>
-                        <th>Site</th>
-                        <th>Parameters To Keep</th>
-                        <th>Actions</th>
-                    </tr>
-                </thead>
-                <tbody id="urlRuleBody">
-                </tbody>
-            </table>
-            <p class="tableEmptyState" id="urlRulesEmpty" hidden>
-                No URL parameter rules yet. Add a rule when bookmark links include
-                extra query parameters you want to ignore.
-            </p>
-            <button type="button" id="addUrlRuleBtn">Add URL Rule</button>
+            <details class="advancedSiteRules" id="advancedSiteRules">
+                <summary>Advanced</summary>
+                <p class="advancedSiteRulesHint">
+                    Optional matching for keywords and extra query parameters.
+                </p>
+
+                <h3>Text Rules</h3>
+                <p class="hint">
+                    Site is a hostname (example.com). Text is matched inside Search Pair
+                    classes on that site. Completely blank rows are ignored when saving.
+                </p>
+                <table id="textRuleTable">
+                    <thead>
+                        <tr>
+                            <th>Site</th>
+                            <th>Text</th>
+                            <th>Look</th>
+                            <th>Actions</th>
+                        </tr>
+                    </thead>
+                    <tbody id="textRuleBody">
+                    </tbody>
+                </table>
+                <p class="tableEmptyState" id="textRulesEmpty" hidden>
+                    No text rules yet. Add a rule to style matching text inside Search Pair classes.
+                </p>
+                <button type="button" id="addTextRuleBtn">Add Text Rule</button>
+
+                <h3>URL Parameter Rules</h3>
+                <p class="hint">
+                    Keep only the listed query parameters when matching bookmark URLs
+                    for a site. Example: <code>id, jk</code> — use parameter names only,
+                    separated by commas. Extra parameters in the bookmark URL are ignored.
+                    Completely blank rows are ignored when saving.
+                </p>
+                <table id="urlRuleTable">
+                    <thead>
+                        <tr>
+                            <th>Site</th>
+                            <th>Parameters To Keep</th>
+                            <th>Actions</th>
+                        </tr>
+                    </thead>
+                    <tbody id="urlRuleBody">
+                    </tbody>
+                </table>
+                <p class="tableEmptyState" id="urlRulesEmpty" hidden>
+                    No URL parameter rules yet. Add a rule when bookmark links include
+                    extra query parameters you want to ignore.
+                </p>
+                <button type="button" id="addUrlRuleBtn">Add URL Rule</button>
+            </details>
         </section>
 
         <div class="actionsBar">
