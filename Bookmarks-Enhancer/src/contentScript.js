@@ -211,22 +211,25 @@ function reloadContentSettings() {
 
 function handleConfigRefresh(message) {
 	if (message.mode === "authoritative") {
-		performAuthoritativeRefresh({
+		return performAuthoritativeRefresh({
 			showActionBusy: !!message.showActionBusy,
 			actionBusyGeneration: message.actionBusyGeneration,
 			authoritativeLookup: true
 		});
-	} else if (message.mode === "rebuild") {
-		performAuthoritativeRefresh({
+	}
+	if (message.mode === "rebuild") {
+		return performAuthoritativeRefresh({
 			showActionBusy: !!message.showActionBusy,
 			actionBusyGeneration: message.actionBusyGeneration,
 			authoritativeLookup: false
 		});
-	} else if (message.mode === "requery") {
-		performRequeryRefresh();
-	} else {
-		sendUniqueHrefs();
 	}
+	if (message.mode === "requery") {
+		performRequeryRefresh();
+		return Promise.resolve();
+	}
+	sendUniqueHrefs();
+	return Promise.resolve();
 }
 
 // Caches for performance optimization
@@ -343,6 +346,16 @@ function countStyledAndHiddenElements() {
 	}
 
 	return { styled, hidden };
+}
+
+function getActionPopupPageState() {
+	const counts = countStyledAndHiddenElements();
+	return {
+		pageReady: settingsLoaded,
+		revealHidden: isRevealHidden(),
+		styled: counts.styled,
+		hidden: counts.hidden
+	};
 }
 
 function formatStylingSummary({ styled = 0, hidden = 0 } = {}) {
@@ -796,6 +809,10 @@ browser.runtime.onMessage.addListener(message => {
 		return Promise.resolve({ revealHidden: setRevealHidden(message.setRevealHidden) });
 	}
 
+	if (message && message.getActionPopupPageState) {
+		return Promise.resolve(getActionPopupPageState());
+	}
+
 	if (
 		message &&
 		(message.bookmarkIndexReady || message.statusUpdates || message.refresh)
@@ -806,7 +823,7 @@ browser.runtime.onMessage.addListener(message => {
 			enqueueRuntimeMessage(message);
 			return;
 		}
-		handleRuntimeMessage(message);
+		return handleRuntimeMessage(message);
 	}
 });
 
@@ -847,15 +864,17 @@ function handleRuntimeMessage(message) {
 	if (message.refresh) {
 		if (message.reloadConfig) {
 			const wasIdle = !observer;
-			reloadContentSettings().then(() => {
+			return reloadContentSettings().then(() => {
 				if (!searchSite) return;
-				if (wasIdle) initProcessing();
-				else handleConfigRefresh(message);
+				if (wasIdle) {
+					initProcessing();
+					return;
+				}
+				return handleConfigRefresh(message);
 			});
-			return;
 		}
-		if (!searchSite) return;
-		handleConfigRefresh(message);
+		if (!searchSite) return Promise.resolve();
+		return handleConfigRefresh(message);
 	}
 }
 
@@ -942,7 +961,7 @@ function performAuthoritativeRefresh(options = {}) {
 
 	if (!searchSite) {
 		if (showActionBusy) notifyRefreshBusyComplete(actionBusyGeneration);
-		return;
+		return Promise.resolve();
 	}
 
 	// Host pages sometimes remove our stylesheet; refresh must recreate it.
@@ -1004,14 +1023,14 @@ function performAuthoritativeRefresh(options = {}) {
 		stylingIndicatorUserDismissed = false;
 		showStylingResult(countStyledAndHiddenElements());
 		if (showActionBusy) notifyRefreshBusyComplete(actionBusyGeneration);
-		return;
+		return Promise.resolve();
 	}
 
 	beginStylingIndicator();
 	const payload = authoritativeLookup
 		? { hrefs: allHrefs, authoritative: true }
 		: { hrefs: allHrefs };
-	browser.runtime.sendMessage(payload)
+	return browser.runtime.sendMessage(payload)
 		.then(applyAuthoritativeResults)
 		.catch(onError)
 		.finally(finishBusy);

@@ -50,6 +50,7 @@
   },
   "action": {
     "default_icon": "icons/highlighter-48.png",
-    "default_title": "Refresh looks"
+    "default_title": "Bookmarks Enhancer",
+    "default_popup": "popup.html"
   }
 }

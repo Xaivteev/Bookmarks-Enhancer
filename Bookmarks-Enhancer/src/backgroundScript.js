@@ -1,6 +1,6 @@
 ﻿const CONTENT_SCRIPT_FILES = ["browser-polyfill.js", "utils.js", "contentScript.js", "lookShortcuts.js"];
 
-const DEFAULT_ACTION_TITLE = "Refresh looks";
+const DEFAULT_ACTION_TITLE = "Bookmarks Enhancer";
 const ACTION_BUSY_TIMEOUT_MS = 60000;
 const ACTION_BUSY_BADGE_TEXT = "…";
 const ACTION_BUSY_BADGE_COLOR = "#475569";
@@ -100,6 +100,89 @@ browser.runtime.onMessage.addListener((message, sender, sendResponse) => {
 		return true;
 	}
 
+	if (message && message.getActionPopupState) {
+		getActionPopupState()
+			.then(sendResponse)
+			.catch(error => {
+				onError(error);
+				sendResponse({
+					ok: false,
+					error: String(error && error.message ? error.message : error)
+				});
+			});
+		return true;
+	}
+
+	if (message && message.actionPopupRefreshTab) {
+		refreshTabStyling(message.tabId, "authoritative", { showActionBusy: true })
+			.then(() => sendResponse({ ok: true }))
+			.catch(error => {
+				onError(error);
+				sendResponse({
+					ok: false,
+					error: String(error && error.message ? error.message : error)
+				});
+			});
+		return true;
+	}
+
+	if (message && message.actionPopupSetRevealHidden) {
+		setRevealHiddenOnTab(message.tabId, !!message.enabled)
+			.then(revealed => sendResponse({ ok: true, revealHidden: revealed }))
+			.catch(error => {
+				onError(error);
+				sendResponse({
+					ok: false,
+					revealHidden: false,
+					error: String(error && error.message ? error.message : error)
+				});
+			});
+		return true;
+	}
+
+	if (message && message.actionPopupStartClassPicker) {
+		startClassPickerOnTab(message.tabId)
+			.then(() => sendResponse({ ok: true }))
+			.catch(error => {
+				onError(error);
+				sendResponse({
+					ok: false,
+					error: String(error && error.message ? error.message : error)
+				});
+			});
+		return true;
+	}
+
+	if (message && message.actionPopupOpenSettings) {
+		openOptionsForPage(message.url)
+			.then(() => sendResponse({ ok: true }))
+			.catch(error => {
+				onError(error);
+				sendResponse({
+					ok: false,
+					error: String(error && error.message ? error.message : error)
+				});
+			});
+		return true;
+	}
+
+	if (message && message.actionPopupSearchLinks) {
+		ensureSettingsReady()
+			.then(() => sendResponse(searchActionPopupLinks(message)))
+			.catch(error => {
+				onError(error);
+				sendResponse({
+					ok: false,
+					query: "",
+					matches: [],
+					total: 0,
+					truncated: false,
+					error: String(error && error.message ? error.message : error)
+				});
+			});
+		return true;
+	}
+
 	if (message && message.hrefs) {
 		const tabId = sender && sender.tab ? sender.tab.id : null;
 		const authoritative = !!(message.authoritative || message.mode === "authoritative");
@@ -114,22 +197,6 @@ browser.runtime.onMessage.addListener((message, sender, sendResponse) => {
 	}
 	return false;
 });
-
-browser.action.onClicked.addListener(() => {
-	sendRefreshToActiveTab("authoritative", { showActionBusy: true });
-});
-
-function sendRefreshToActiveTab(mode, options = {}) {
-	return browser.tabs.query({
-		currentWindow: true,
-		active: true
-	}).then(tabs => {
-		if (tabs.length > 0) {
-			return refreshTabStyling(tabs[0].id, mode, options);
-		}
-		return undefined;
-	}).catch(onError);
-}
 
 function sendTabMessage(tabId, payload) {
 	return browser.tabs.sendMessage(tabId, payload)
@@ -219,6 +286,22 @@ function toggleRevealHiddenOnTab(tabId) {
 	}
 
 	return sendTabMessage(tabId, { toggleRevealHidden: true })
+		.then(response => {
+			const revealed = !!(response && response.revealHidden);
+			return updateRevealHiddenMenuTitle(revealed).then(() => revealed);
+		})
+		.catch(error => {
+			onError(error);
+			return updateRevealHiddenMenuTitle(false).then(() => false);
+		});
+}
+
+function setRevealHiddenOnTab(tabId, enabled) {
+	if (tabId == null) {
+		return updateRevealHiddenMenuTitle(false).then(() => false);
+	}
+
+	return sendTabMessage(tabId, { setRevealHidden: !!enabled })
 		.then(response => {
 			const revealed = !!(response && response.revealHidden);
 			return updateRevealHiddenMenuTitle(revealed).then(() => revealed);
@@ -537,6 +620,146 @@ function addUrlToSiteList(url, title, styleId) {
 
 function getPageRunState(url) {
 	return getPageRunStateForUrl(url, sites);
+}
+
+function emptyActionPopupPageState() {
+	return {
+		pageReady: false,
+		styled: null,
+		hidden: null,
+		revealHidden: false
+	};
+}
+
+function collectActionPopupSiteState(url) {
+	if (!isValidHttpUrl(url)) {
+		return {
+			restricted: true,
+			host: "",
+			siteMatch: false,
+			classGroupCount: 0,
+			savedLinkCount: 0,
+			lookCount: 0
+		};
+	}
+
+	let host = "";
+	try {
+		host = normalizeSite(new URL(url).hostname) || "";
+	} catch {
+		return {
+			restricted: true,
+			host: "",
+			siteMatch: false,
+			classGroupCount: 0,
+			savedLinkCount: 0,
+			lookCount: 0
+		};
+	}
+
+	const siteConfig = host ? findMatchingSiteConfig(sites, host) : null;
+	return {
+		restricted: false,
+		host: siteConfig ? siteConfig.site : host,
+		siteMatch: !!siteConfig,
+		classGroupCount: siteConfig ? (siteConfig.classGroups || []).length : 0,
+		savedLinkCount: siteConfig ? (siteConfig.links || []).length : 0,
+		lookCount: siteConfig ? (siteConfig.linkFolders || []).length : 0
+	};
+}
+
+function getActionPopupState() {
+	return browser.tabs.query({ currentWindow: true, active: true }).then(tabs => {
+		const tab = tabs[0];
+		if (!tab) return { ok: false };
+
+		return ensureSettingsReady().then(() => {
+			const siteState = collectActionPopupSiteState(tab.url || "");
+			const base = {
+				ok: true,
+				tabId: tab.id,
+				url: tab.url || "",
+				...siteState,
+				...emptyActionPopupPageState()
+			};
+			if (tab.id == null || siteState.restricted) {
+				return base;
+			}
+
+			return sendTabMessage(tab.id, { getActionPopupPageState: true })
+				.then(pageState => ({
+					...base,
+					pageReady: !!(pageState && pageState.pageReady),
+					styled: typeof pageState?.styled === "number" ? pageState.styled : null,
+					hidden: typeof pageState?.hidden === "number" ? pageState.hidden : null,
+					revealHidden: !!(pageState && pageState.revealHidden)
+				}))
+				.catch(() => base);
+		});
+	});
+}
+
+const ACTION_POPUP_SEARCH_LIMIT = 40;
+
+function getStyleRuleName(styleId) {
+	const id = typeof styleId === "string" ? styleId.trim() : "";
+	const rule = (styleRules || []).find(entry => entry.id === id);
+	if (rule && rule.name) return rule.name;
+	return id;
+}
+
+function searchActionPopupLinks(options = {}) {
+	const query = String(options.query || "").trim().toLowerCase();
+	const searchTitles = options.searchTitles !== false;
+	const searchUrls = options.searchUrls !== false;
+	const allSites = !!options.allSites;
+	const host = normalizeSite(options.host) || String(options.host || "").trim();
+
+	if (!query) {
+		return { ok: true, query: "", matches: [], total: 0, truncated: false };
+	}
+	if (!searchTitles && !searchUrls) {
+		return { ok: true, query, matches: [], total: 0, truncated: false };
+	}
+
+	let siteList = [];
+	if (allSites) {
+		siteList = Array.isArray(sites) ? sites : [];
+	} else if (host) {
+		const match = findMatchingSiteConfig(sites, host);
+		siteList = match ? [match] : [];
+	}
+
+	const matches = [];
+	let total = 0;
+	for (const siteConfig of siteList) {
+		const site = siteConfig?.site || "";
+		for (const link of siteConfig.links || []) {
+			const title = typeof link?.title === "string" ? link.title : "";
+			const url = typeof link?.url === "string" ? link.url : "";
+			if (!title && !url) continue;
+			const titleHit = searchTitles && title.toLowerCase().includes(query);
+			const urlHit = searchUrls && url.toLowerCase().includes(query);
+			if (!titleHit && !urlHit) continue;
+			total += 1;
+			if (matches.length >= ACTION_POPUP_SEARCH_LIMIT) continue;
+			matches.push({
+				title,
+				url,
+				site,
+				look: getStyleRuleName(link.style),
+				styleId: typeof link.style === "string" ? link.style : ""
+			});
+		}
+	}
+
+	return {
+		ok: true,
+		query,
+		matches,
+		total,
+		truncated: total > matches.length
+	};
 }
 
 function getLookShortcutState(url) {

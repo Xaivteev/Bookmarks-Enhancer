@@ -1,0 +1,280 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Bookmarks Enhancer</title>
+    <style>
+        html {
+            min-width: 22rem;
+            max-width: 26rem;
+        }
+
+        body {
+            margin: 0;
+            padding: 0.9rem 1rem 1rem;
+            font: 14px/1.4 system-ui, sans-serif;
+            color: #1f2937;
+            background: #fff;
+        }
+
+        h1 {
+            margin: 0 0 0.65rem;
+            font-size: 1rem;
+            font-weight: 600;
+        }
+
+        .host {
+            margin: 0;
+            font-weight: 600;
+            word-break: break-word;
+        }
+
+        .host:empty {
+            display: none;
+        }
+
+        .status {
+            margin: 0.2rem 0 0;
+            color: #4b5563;
+        }
+
+        .counts {
+            margin: 0.45rem 0 0;
+            color: #1f2937;
+        }
+
+        .counts[hidden],
+        .toggle[hidden],
+        .error[hidden],
+        .searchStatus[hidden],
+        .searchResults[hidden] {
+            display: none;
+        }
+
+        .toggle {
+            display: flex;
+            align-items: center;
+            gap: 0.45rem;
+            margin: 0.85rem 0 0;
+            font-weight: 600;
+            cursor: pointer;
+        }
+
+        .toggle input {
+            margin: 0;
+        }
+
+        .search {
+            margin: 0.85rem 0 0;
+        }
+
+        .searchLabel {
+            display: block;
+            font-weight: 600;
+        }
+
+        #linkSearch {
+            box-sizing: border-box;
+            width: 100%;
+            height: 2rem;
+            margin-top: 0.3rem;
+            font: inherit;
+            padding: 0.25rem 0.5rem;
+        }
+
+        .searchToggles,
+        .searchScope {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 0.35rem 0.85rem;
+            margin: 0.45rem 0 0;
+            padding: 0;
+            border: 0;
+        }
+
+        .toggle.compact {
+            margin: 0;
+            font-weight: 500;
+        }
+
+        .visuallyHidden {
+            position: absolute;
+            width: 1px;
+            height: 1px;
+            padding: 0;
+            margin: -1px;
+            overflow: hidden;
+            clip: rect(0, 0, 0, 0);
+            white-space: nowrap;
+            border: 0;
+        }
+
+        .searchStatus {
+            margin: 0.45rem 0 0;
+            color: #4b5563;
+            font-size: 0.92em;
+        }
+
+        .searchResults {
+            list-style: none;
+            margin: 0.45rem 0 0;
+            padding: 0;
+            max-height: 16rem;
+            overflow: auto;
+            border: 1px solid #e5e7eb;
+            border-radius: 0.375rem;
+        }
+
+        .searchResult {
+            display: block;
+            width: 100%;
+            text-align: left;
+            padding: 0.5rem 0.6rem;
+            border: 0;
+            border-bottom: 1px solid #e5e7eb;
+            border-radius: 0;
+            background: #fff;
+        }
+
+        .searchResult:last-child {
+            border-bottom: 0;
+        }
+
+        .searchResultTitle {
+            font-weight: 600;
+            word-break: break-word;
+        }
+
+        .searchResultMeta,
+        .searchResultUrl {
+            margin-top: 0.1rem;
+            color: #6b7280;
+            font-size: 0.88em;
+            font-weight: 400;
+        }
+
+        .searchResultUrl {
+            word-break: break-all;
+        }
+
+        .actions {
+            display: flex;
+            flex-direction: column;
+            gap: 0.45rem;
+            margin-top: 0.9rem;
+        }
+
+        button {
+            font: inherit;
+            padding: 0.45rem 0.85rem;
+            border: 1px solid #d1d5db;
+            border-radius: 0.375rem;
+            background: #fff;
+            color: #1f2937;
+            cursor: pointer;
+        }
+
+        button:hover:not(:disabled) {
+            background: #f3f4f6;
+        }
+
+        button.primaryAction {
+            border-color: #1e40af;
+            background: #1d4ed8;
+            color: #fff;
+            font-weight: 600;
+        }
+
+        button.primaryAction:hover:not(:disabled) {
+            background: #1e40af;
+        }
+
+        button:disabled {
+            opacity: 0.65;
+            cursor: not-allowed;
+        }
+
+        button.is-loading {
+            position: relative;
+            padding-left: 1.75rem;
+            cursor: wait;
+        }
+
+        button.is-loading::before {
+            content: "";
+            position: absolute;
+            left: 0.55rem;
+            top: 50%;
+            width: 0.7rem;
+            height: 0.7rem;
+            margin-top: -0.35rem;
+            border: 2px solid currentColor;
+            border-right-color: transparent;
+            border-radius: 50%;
+            animation: popupSpin 0.7s linear infinite;
+        }
+
+        @keyframes popupSpin {
+            to { transform: rotate(360deg); }
+        }
+
+        .error {
+            margin: 0.7rem 0 0;
+            color: #b91c1c;
+        }
+    </style>
+</head>
+<body>
+    <main>
+        <h1>Bookmarks Enhancer</h1>
+        <p id="host" class="host"></p>
+        <p id="status" class="status" aria-live="polite">Loading…</p>
+        <p id="counts" class="counts" hidden></p>
+        <section class="search" aria-label="Search saved links">
+            <label class="searchLabel" for="linkSearch">Search saved links</label>
+            <input
+                type="search"
+                id="linkSearch"
+                placeholder="Search titles or URLs…"
+                autocomplete="off"
+            >
+            <div class="searchToggles">
+                <label class="toggle compact">
+                    <input type="checkbox" id="searchTitles" checked>
+                    Titles
+                </label>
+                <label class="toggle compact">
+                    <input type="checkbox" id="searchUrls" checked>
+                    URLs
+                </label>
+            </div>
+            <fieldset class="searchScope">
+                <legend class="visuallyHidden">Search scope</legend>
+                <label class="toggle compact">
+                    <input type="radio" name="searchScope" id="searchThisSite" value="site" checked>
+                    This site
+                </label>
+                <label class="toggle compact">
+                    <input type="radio" name="searchScope" id="searchAllSites" value="all">
+                    All sites
+                </label>
+            </fieldset>
+            <p id="searchStatus" class="searchStatus" hidden aria-live="polite"></p>
+            <ul id="searchResults" class="searchResults" hidden></ul>
+        </section>
+        <label id="revealRow" class="toggle" hidden>
+            <input type="checkbox" id="revealHidden">
+            Show hidden items
+        </label>
+        <div class="actions">
+            <button type="button" id="refreshBtn" disabled>Refresh this tab</button>
+            <button type="button" id="pickClassesBtn" disabled>Select target classes</button>
+            <button type="button" id="settingsBtn" class="primaryAction">Open settings</button>
+        </div>
+        <p id="error" class="error" hidden></p>
+    </main>
+    <script src="browser-polyfill.js"></script>
+    <script src="popup.js"></script>
+</body>
+</html>
