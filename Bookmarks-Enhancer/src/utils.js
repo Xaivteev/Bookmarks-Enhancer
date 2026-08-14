@@ -535,12 +535,13 @@ function upsertSiteLink(sites, url, title, styleId) {
 	const { sites: next, siteConfig } = ensureSiteConfig(sites, hostname);
 	if (!siteConfig) return next;
 
-	const normalizedUrl = normalizeHrefForSearch(url, sitesToUrlRules(next));
+	const rules = sitesToUrlRules(next);
+	const pageKey = hrefMatchKey(url, rules);
 	const existingIndex = siteConfig.links.findIndex(link =>
-		link.url === normalizedUrl || link.url === url
+		link?.url && hrefMatchKey(link.url, rules) === pageKey
 	);
 	const saved = {
-		url: normalizedUrl,
+		url: normalizeHrefForSearch(url, rules),
 		title: typeof title === "string" ? title : "",
 		style: typeof styleId === "string" && styleId.trim()
 			? styleId.trim()
@@ -573,9 +574,10 @@ function toggleSiteLookShortcut(sites, url, title, styleId) {
 	if (!siteConfig) return next;
 
 	const lookId = styleId.trim();
-	const normalizedUrl = normalizeHrefForSearch(url, sitesToUrlRules(next));
+	const rules = sitesToUrlRules(next);
+	const pageKey = hrefMatchKey(url, rules);
 	const existingIndex = siteConfig.links.findIndex(link =>
-		link.url === normalizedUrl || link.url === url
+		link?.url && hrefMatchKey(link.url, rules) === pageKey
 	);
 	const existing = existingIndex >= 0 ? siteConfig.links[existingIndex] : null;
 	if (existing && existing.style === lookId) {
@@ -584,7 +586,7 @@ function toggleSiteLookShortcut(sites, url, title, styleId) {
 	}
 
 	const saved = {
-		url: normalizedUrl,
+		url: normalizeHrefForSearch(url, rules),
 		title: typeof title === "string" ? title : "",
 		style: lookId
 	};
@@ -1326,4 +1328,40 @@ function normalizeHrefForSearch(href, explicitRules) {
 		}
 		return href;
 	}
+}
+
+function hrefMatchKey(href, explicitRules) {
+	const normalized = normalizeHrefForSearch(href, explicitRules);
+	try {
+		const url = new URL(normalized);
+		const host = normalizeSite(url.hostname);
+		if (!host) return normalized;
+		let path = url.pathname || "/";
+		if (path !== "/" && path.endsWith("/")) path = path.slice(0, -1);
+		return `${host}${path}${url.search}`;
+	} catch {
+		return normalized;
+	}
+}
+
+function getLinkStyleForHref(sites, href) {
+	if (!href || !isValidHttpUrl(href)) return "";
+	let hostname = "";
+	try {
+		hostname = new URL(href).hostname;
+	} catch {
+		return "";
+	}
+	const siteConfig = findMatchingSiteConfig(sites, hostname);
+	if (!siteConfig) return "";
+	const rules = sitesToUrlRules(sites);
+	const pageKey = hrefMatchKey(href, rules);
+	if (!pageKey) return "";
+	for (const link of siteConfig.links || []) {
+		if (!link?.url) continue;
+		if (hrefMatchKey(link.url, rules) === pageKey) {
+			return typeof link.style === "string" ? link.style : "";
+		}
+	}
+	return "";
 }

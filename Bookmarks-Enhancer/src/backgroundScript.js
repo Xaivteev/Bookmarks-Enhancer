@@ -224,9 +224,9 @@ function rebuildLinkLookup() {
 		const map = new Map();
 		for (const link of siteConfig.links || []) {
 			if (!link?.url) continue;
-			const normalized = normalizeHrefForSearch(link.url);
-			if (!normalized || map.has(normalized)) continue;
-			map.set(normalized, link.style);
+			const key = hrefMatchKey(link.url);
+			if (!key || map.has(key)) continue;
+			map.set(key, link.style);
 		}
 		linkLookupBySite.set(siteConfig.site, map);
 	}
@@ -710,7 +710,7 @@ function lookupLinkStyle(href) {
 
 	const siteConfig = findMatchingSiteConfig(sites, hostname);
 	if (!siteConfig) return null;
-	return linkLookupBySite.get(siteConfig.site)?.get(normalized) || null;
+	return linkLookupBySite.get(siteConfig.site)?.get(hrefMatchKey(href)) || null;
 }
 
 function searchhrefs(hrefs) {

@@ -34,8 +34,8 @@ const LOOK_SHORTCUTS_STYLE = `
 .bar {
 	display: flex;
 	align-items: center;
-	gap: 1px;
-	padding: 1px 3px;
+	gap: 0;
+	padding: 0 1px;
 	background: rgba(255, 255, 255, 0.58);
 	border: 1px solid rgba(255, 255, 255, 0.72);
 	border-radius: 999px;
@@ -50,8 +50,8 @@ button {
 	display: inline-flex;
 	align-items: center;
 	justify-content: center;
-	width: 20px;
-	height: 20px;
+	width: 22px;
+	height: 22px;
 	margin: 0;
 	padding: 0;
 	border: 0;
@@ -82,8 +82,8 @@ button:disabled {
 
 svg {
 	display: block;
-	width: 16px;
-	height: 16px;
+	width: 22px;
+	height: 22px;
 }
 `;
 
@@ -103,14 +103,7 @@ function currentSiteConfig() {
 
 function currentPageStyleId(siteConfig) {
 	if (!siteConfig) return "";
-	const normalized = normalizeHrefForSearch(
-		location.href,
-		sitesToUrlRules(shortcutSites)
-	);
-	const match = (siteConfig.links || []).find(link =>
-		link.url === normalized || link.url === location.href
-	);
-	return match?.style || "";
+	return getLinkStyleForHref(shortcutSites, location.href);
 }
 
 function shortcutLooks() {
