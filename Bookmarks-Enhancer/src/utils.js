@@ -1142,38 +1142,36 @@ function escapeSvgAttr(value) {
 
 function shortcutIconSvgMarkup(iconId, { active = false, color = DEFAULT_SHORTCUT_COLOR } = {}) {
 	const safeColor = escapeSvgAttr(normalizeShortcutColor(color) || DEFAULT_SHORTCUT_COLOR);
-	const stroke = active ? "#ffffff" : safeColor;
-	const fill = active ? safeColor : "none";
-	const shape = `fill="${fill}" stroke="${stroke}" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"`;
-	let inner = "";
+	const badge = active
+		? `<circle cx="12" cy="12" r="10" fill="${safeColor}" stroke="none"/>`
+		: `<circle cx="12" cy="12" r="10" fill="none" stroke="${safeColor}" stroke-width="1.5"/>`;
+	const glyphStroke = active ? "#ffffff" : safeColor;
+	const glyphFill = active ? safeColor : "none";
+	const shape = `fill="${glyphFill}" stroke="${glyphStroke}" stroke-width="1.85" stroke-linecap="round" stroke-linejoin="round"`;
+	let glyph = "";
 
 	switch (iconId) {
 		case "star":
-			inner = `<path ${shape} d="M12 3.1l2.4 4.86 5.36.78-3.88 3.78.92 5.35L12 15.24 7.2 17.87l.92-5.35-3.88-3.78 5.36-.78L12 3.1z"/>`;
+			glyph = `<path ${shape} d="M12 3.1l2.4 4.86 5.36.78-3.88 3.78.92 5.35L12 15.24 7.2 17.87l.92-5.35-3.88-3.78 5.36-.78L12 3.1z"/>`;
 			break;
 		case "x":
-			if (active) {
-				inner = `<circle cx="12" cy="12" r="9" fill="${safeColor}" stroke="none"/>` +
-					`<path fill="none" stroke="#ffffff" stroke-width="1.75" stroke-linecap="round" d="M8 8l8 8M16 8l-8 8"/>`;
-			} else {
-				inner = `<path fill="none" stroke="${safeColor}" stroke-width="1.75" stroke-linecap="round" d="M7 7l10 10M17 7L7 17"/>`;
-			}
+			glyph = `<path fill="none" stroke="${glyphStroke}" stroke-width="1.85" stroke-linecap="round" d="M8 8l8 8M16 8l-8 8"/>`;
 			break;
 		case "eye":
-			inner = `<path ${shape} d="M2.6 12s3.5-6.4 9.4-6.4S21.4 12 21.4 12s-3.5 6.4-9.4 6.4S2.6 12 2.6 12z"/>` +
-				`<circle cx="12" cy="12" r="2.35" fill="${active ? "#ffffff" : "none"}" stroke="${stroke}" stroke-width="1.75"/>`;
+			glyph = `<path ${shape} d="M2.6 12s3.5-6.4 9.4-6.4S21.4 12 21.4 12s-3.5 6.4-9.4 6.4S2.6 12 2.6 12z"/>` +
+				`<circle cx="12" cy="12" r="2.35" fill="${active ? "#ffffff" : "none"}" stroke="${glyphStroke}" stroke-width="1.85"/>`;
 			break;
 		case "bookmark":
-			inner = `<path ${shape} d="M7 4.4h10a1 1 0 0 1 1 1v14.4l-6-3.15-6 3.15V5.4a1 1 0 0 1 1-1z"/>`;
+			glyph = `<path ${shape} d="M7 4.4h10a1 1 0 0 1 1 1v14.4l-6-3.15-6 3.15V5.4a1 1 0 0 1 1-1z"/>`;
 			break;
 		case "heart":
-			inner = `<path ${shape} d="M12 19.15S5.45 14.8 3.3 11.2C1.75 8.6 2.95 5.55 5.7 4.75c1.55-.45 3.35.25 4.95 1.85 1.6-1.6 3.4-2.3 4.95-1.85 2.75.8 3.95 3.85 2.4 6.45C18.55 14.8 12 19.15 12 19.15z"/>`;
+			glyph = `<path ${shape} d="M12 19.15S5.45 14.8 3.3 11.2C1.75 8.6 2.95 5.55 5.7 4.75c1.55-.45 3.35.25 4.95 1.85 1.6-1.6 3.4-2.3 4.95-1.85 2.75.8 3.95 3.85 2.4 6.45C18.55 14.8 12 19.15 12 19.15z"/>`;
 			break;
 		default:
 			return "";
 	}
 
-	return `<svg viewBox="0 0 24 24" width="20" height="20" aria-hidden="true">${inner}</svg>`;
+	return `<svg viewBox="0 0 24 24" width="20" height="20" aria-hidden="true">${badge}<g transform="translate(12 12) scale(0.7) translate(-12 -12)">${glyph}</g></svg>`;
 }
 
 function resolveStyleRuleShortcut(rule) {

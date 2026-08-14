@@ -71,8 +71,9 @@ button:focus-visible {
 	outline-offset: 1px;
 }
 
-button[aria-pressed="true"] {
-	background: rgba(15, 23, 42, 0.1);
+button[aria-pressed="true"]:hover {
+	background: transparent;
+	filter: brightness(0.92);
 }
 
 button:disabled {
