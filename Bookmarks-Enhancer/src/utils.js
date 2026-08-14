@@ -371,6 +371,10 @@ function addLinkFolderId(folderIds, styleId) {
 	return next;
 }
 
+function normalizeKeepParams(value) {
+	return parseCommaSeparatedValues(value).join(", ");
+}
+
 function normalizeSiteConfig(siteConfig) {
 	if (!siteConfig || typeof siteConfig !== "object") return null;
 	const site = normalizeSite(siteConfig.site);
