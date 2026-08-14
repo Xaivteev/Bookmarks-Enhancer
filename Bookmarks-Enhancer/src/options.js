@@ -139,28 +139,7 @@ function siteMatchesSearch(siteConfig, query) {
     const host = (siteConfig?.site || "").toLowerCase();
     if (host.includes(query)) return true;
     const normalizedQuery = normalizeSite(query);
-    if (normalizedQuery && host.includes(normalizedQuery)) return true;
-
-    const lookIds = new Set();
-    for (const folderId of siteConfig?.linkFolders || []) {
-        if (folderId) lookIds.add(folderId);
-    }
-    for (const link of siteConfig?.links || []) {
-        if (link?.style) lookIds.add(link.style);
-        const title = (link?.title || "").toLowerCase();
-        if (title && title.includes(query)) return true;
-        const url = (link?.url || "").toLowerCase();
-        if (url && url.includes(query)) return true;
-    }
-    for (const rule of siteConfig?.textRules || []) {
-        if (rule?.style) lookIds.add(rule.style);
-        const text = (rule?.text || "").toLowerCase();
-        if (text && text.includes(query)) return true;
-    }
-    for (const styleId of lookIds) {
-        if (getLookLabel(styleId).toLowerCase().includes(query)) return true;
-    }
-    return false;
+    return !!normalizedQuery && host.includes(normalizedQuery);
 }
 
 function createPreviewButton(onClick) {
