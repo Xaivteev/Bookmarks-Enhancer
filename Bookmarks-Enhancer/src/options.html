@@ -952,11 +952,23 @@
             flex-wrap: wrap;
             gap: 0.5rem;
             align-items: center;
-            margin: 0.75rem 0 1rem;
+            margin: 0.75rem 0 0.5rem;
         }
 
         .siteListToolbar input {
             flex: 1 1 14rem;
+            box-sizing: border-box;
+            height: 2rem;
+            font: inherit;
+            padding: 0.25rem 0.5rem;
+        }
+
+        .siteListSearch {
+            margin: 0 0 1rem;
+        }
+
+        .siteListSearch input {
+            width: 100%;
             box-sizing: border-box;
             height: 2rem;
             font: inherit;
@@ -1383,10 +1395,22 @@
                     <button type="button" id="addSiteBtn">Add website</button>
                 </div>
                 <p class="fieldError" id="addSiteError" hidden></p>
+                <div class="siteListSearch">
+                    <input
+                        type="search"
+                        id="searchSitesInput"
+                        placeholder="Search websites…"
+                        aria-label="Search websites"
+                        autocomplete="off"
+                    >
+                </div>
                 <ul class="siteList" id="siteList"></ul>
                 <p class="tableEmptyState" id="sitesEmpty" hidden>
                     No websites yet. Add a hostname, or use Select Target Classes
                     from the page context menu.
+                </p>
+                <p class="tableEmptyState" id="sitesSearchEmpty" hidden>
+                    No websites match that search.
                 </p>
             </div>
 

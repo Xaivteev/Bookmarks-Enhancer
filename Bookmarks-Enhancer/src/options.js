@@ -81,10 +81,29 @@ function refreshAllTableEmptyStates() {
 
 function refreshSitesEmptyState() {
     const empty = document.querySelector("#sitesEmpty");
+    const searchEmpty = document.querySelector("#sitesSearchEmpty");
     const list = document.querySelector("#siteList");
     if (!empty || !list) return;
-    empty.hidden = sitesDraft.length > 0;
-    list.hidden = sitesDraft.length === 0;
+    const hasSites = sitesDraft.length > 0;
+    const visibleCount = list.children.length;
+    const query = getSiteSearchQuery();
+    empty.hidden = hasSites;
+    if (searchEmpty) {
+        searchEmpty.hidden = !hasSites || !query || visibleCount > 0;
+    }
+    list.hidden = visibleCount === 0;
+}
+
+function getSiteSearchQuery() {
+    return (document.querySelector("#searchSitesInput")?.value || "").trim().toLowerCase();
+}
+
+function siteMatchesSearch(siteConfig, query) {
+    if (!query) return true;
+    const host = (siteConfig?.site || "").toLowerCase();
+    if (host.includes(query)) return true;
+    const normalizedQuery = normalizeSite(query);
+    return !!normalizedQuery && host.includes(normalizedQuery);
 }
 
 function createPreviewButton(onClick) {
@@ -556,7 +575,10 @@ function renderSiteList() {
     if (!list) return;
     list.replaceChildren();
 
+    const query = getSiteSearchQuery();
     sitesDraft.forEach((siteConfig, index) => {
+        if (!siteMatchesSearch(siteConfig, query)) return;
+
         const item = document.createElement("li");
         item.className = "siteListItem";
 
@@ -2219,6 +2241,8 @@ function setupEventListeners() {
                 addSiteFromInput();
             }
         });
+        document.querySelector("#searchSitesInput")?.addEventListener("input", renderSiteList);
+        document.querySelector("#searchSitesInput")?.addEventListener("search", renderSiteList);
         document.querySelector("#siteDetailBack")?.addEventListener("click", closeSiteDetail);
         document.querySelector("#siteDetailHost")?.addEventListener("input", () => validateSiteDetail());
         document.querySelector("#siteDetailHost")?.addEventListener("blur", () => validateSiteDetail());
