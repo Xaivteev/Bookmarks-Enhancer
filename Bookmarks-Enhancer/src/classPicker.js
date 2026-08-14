@@ -63,12 +63,17 @@ function startClassPicker() {
 		countElement: null,
 		warningElement: null,
 		saveButton: null,
-		previouslyFocusedElement: document.activeElement
+		previouslyFocusedElement: document.activeElement,
+		dragging: false,
+		dragOffsetX: 0,
+		dragOffsetY: 0,
+		position: null
 	};
 
 	attachClassPickerPageListeners();
 	injectClassPickerStyles();
 	createClassPickerPanel();
+	window.addEventListener("resize", clampClassPickerHostToViewport);
 	document.addEventListener("pointermove", handleClassPickerPointerMove, true);
 }
 
@@ -79,6 +84,7 @@ function stopClassPicker() {
 	if (!classPickerState) return;
 
 	document.removeEventListener("pointermove", handleClassPickerPointerMove, true);
+	window.removeEventListener("resize", clampClassPickerHostToViewport);
 	detachClassPickerPageListeners();
 	clearClassPickerHighlights();
 	if (classPickerState.host) {
@@ -151,6 +157,7 @@ function applyClassPickerHostStyles(host) {
 	for (const [property, value] of hostStyles) {
 		host.style.setProperty(property, value, "important");
 	}
+	applyClassPickerHostPosition(host);
 }
 
 function isFirefoxBrowser() {
@@ -229,9 +236,41 @@ function createClassPickerPanel() {
 			font: 14px/1.4 system-ui, -apple-system, sans-serif;
 		}
 		h2 {
-			margin: 0 0 8px;
+			margin: 0;
 			font-size: 17px;
 		}
+		.panelHeader {
+			display: flex;
+			align-items: center;
+			gap: 8px;
+			margin: -4px -4px 10px;
+			padding: 6px 4px;
+			cursor: grab;
+			user-select: none;
+			touch-action: none;
+		}
+		.panelHeader.is-dragging {
+			cursor: grabbing;
+		}
+		.dragGrip {
+			position: relative;
+			flex: 0 0 auto;
+			width: 10px;
+			height: 14px;
+		}
+		.dragGrip::before,
+		.dragGrip::after {
+			content: "";
+			position: absolute;
+			top: 1px;
+			width: 2px;
+			height: 2px;
+			border-radius: 50%;
+			background: #94a3b8;
+			box-shadow: 0 4px 0 #94a3b8, 0 8px 0 #94a3b8;
+		}
+		.dragGrip::before { left: 1px; }
+		.dragGrip::after { left: 5px; }
 		p {
 			margin: 6px 0;
 		}
@@ -313,15 +352,14 @@ function renderClassPickerInstructions() {
 	panel.setAttribute("role", "dialog");
 	panel.setAttribute("aria-label", "Select target classes");
 
-	const heading = document.createElement("h2");
-	heading.textContent = "Select target classes";
+	const heading = createClassPickerHeader("Select target classes");
 
 	const instructions = document.createElement("p");
 	instructions.textContent = "Hover over the page and click the element you want the extension to affect.";
 
 	const help = document.createElement("p");
 	help.className = "muted";
-	help.textContent = "Press Escape to cancel. Page clicks are blocked while selecting.";
+	help.textContent = "Drag the header to move this panel. Press Escape to cancel. Page clicks are blocked while selecting.";
 
 	const actions = document.createElement("div");
 	actions.className = "actions";
@@ -341,6 +379,124 @@ function replaceClassPickerPanel(panel) {
 	const existingPanel = classPickerState.shadow.querySelector(".panel");
 	existingPanel?.remove();
 	classPickerState.shadow.appendChild(panel);
+	attachClassPickerDrag(panel);
+	clampClassPickerHostToViewport();
+}
+
+function createClassPickerHeader(title) {
+	const header = document.createElement("div");
+	header.className = "panelHeader";
+	header.setAttribute("data-drag-handle", "");
+	header.setAttribute("aria-label", "Drag to move panel");
+
+	const grip = document.createElement("span");
+	grip.className = "dragGrip";
+	grip.setAttribute("aria-hidden", "true");
+
+	const heading = document.createElement("h2");
+	heading.textContent = title;
+
+	header.append(grip, heading);
+	return header;
+}
+
+const CLASS_PICKER_VIEWPORT_MARGIN = 8;
+
+function applyClassPickerHostPosition(host) {
+	if (!host) return;
+	const position = classPickerState?.position;
+	if (!position) {
+		host.style.setProperty("top", "16px", "important");
+		host.style.setProperty("right", "16px", "important");
+		host.style.setProperty("left", "auto", "important");
+		host.style.setProperty("bottom", "auto", "important");
+		return;
+	}
+
+	host.style.setProperty("top", `${position.top}px`, "important");
+	host.style.setProperty("left", `${position.left}px`, "important");
+	host.style.setProperty("right", "auto", "important");
+	host.style.setProperty("bottom", "auto", "important");
+}
+
+function clampClassPickerHostToViewport() {
+	if (!classPickerState?.host || !classPickerState.position) return;
+
+	const host = classPickerState.host;
+	const width = host.offsetWidth;
+	const height = host.offsetHeight;
+	const margin = CLASS_PICKER_VIEWPORT_MARGIN;
+	const maxLeft = Math.max(margin, window.innerWidth - width - margin);
+	const maxTop = Math.max(margin, window.innerHeight - height - margin);
+	classPickerState.position = {
+		left: Math.min(Math.max(margin, classPickerState.position.left), maxLeft),
+		top: Math.min(Math.max(margin, classPickerState.position.top), maxTop)
+	};
+	applyClassPickerHostPosition(host);
+}
+
+function attachClassPickerDrag(panel) {
+	const handle = panel.querySelector("[data-drag-handle]");
+	if (!handle) return;
+
+	handle.addEventListener("pointerdown", event => {
+		if (event.button != null && event.button !== 0) return;
+		event.preventDefault();
+		event.stopPropagation();
+		beginClassPickerDrag(event, handle);
+	});
+}
+
+function beginClassPickerDrag(event, handle) {
+	const host = classPickerState?.host;
+	if (!host) return;
+
+	const rect = host.getBoundingClientRect();
+	classPickerState.dragging = true;
+	classPickerState.dragOffsetX = event.clientX - rect.left;
+	classPickerState.dragOffsetY = event.clientY - rect.top;
+	classPickerState.position = { left: rect.left, top: rect.top };
+	applyClassPickerHostPosition(host);
+	handle.classList.add("is-dragging");
+
+	try {
+		handle.setPointerCapture(event.pointerId);
+	} catch {
+		// Pointer capture is optional; window listeners still move the panel.
+	}
+
+	const onMove = moveEvent => {
+		if (!classPickerState?.dragging) return;
+		moveClassPickerHost(moveEvent.clientX, moveEvent.clientY);
+	};
+	const onUp = upEvent => {
+		if (classPickerState) {
+			classPickerState.dragging = false;
+		}
+		handle.classList.remove("is-dragging");
+		handle.removeEventListener("pointermove", onMove);
+		handle.removeEventListener("pointerup", onUp);
+		handle.removeEventListener("pointercancel", onUp);
+		try {
+			handle.releasePointerCapture(upEvent.pointerId);
+		} catch {
+			// Capture may already have been released.
+		}
+	};
+
+	handle.addEventListener("pointermove", onMove);
+	handle.addEventListener("pointerup", onUp);
+	handle.addEventListener("pointercancel", onUp);
+}
+
+function moveClassPickerHost(clientX, clientY) {
+	if (!classPickerState?.host) return;
+
+	classPickerState.position = {
+		left: clientX - classPickerState.dragOffsetX,
+		top: clientY - classPickerState.dragOffsetY
+	};
+	clampClassPickerHostToViewport();
 }
 
 function createClassPickerButton(label, onClick, className = "") {
@@ -353,7 +509,7 @@ function createClassPickerButton(label, onClick, className = "") {
 }
 
 function handleClassPickerPointerMove(event) {
-	if (!classPickerState?.active || classPickerState.frozen) return;
+	if (!classPickerState?.active || classPickerState.frozen || classPickerState.dragging) return;
 	if (isClassPickerUiTarget(event.target)) return;
 
 	const element = event.target instanceof Element ? event.target : null;
@@ -504,8 +660,7 @@ function renderClassPickerSelection(availableClasses) {
 	panel.setAttribute("role", "dialog");
 	panel.setAttribute("aria-label", "Confirm target classes");
 
-	const heading = document.createElement("h2");
-	heading.textContent = "Confirm target classes";
+	const heading = createClassPickerHeader("Confirm target classes");
 
 	const site = document.createElement("p");
 	site.append("Site: ");
