@@ -56,12 +56,24 @@ browser.runtime.onMessage.addListener((message, sender, sendResponse) => {
 		return false;
 	}
 
+	if (message && message.getLookShortcutState) {
+		const url = message.url || (sender && sender.tab && sender.tab.url) || "";
+		ensureSettingsReady()
+			.then(() => sendResponse(getLookShortcutState(url)))
+			.catch(error => {
+				onError(error);
+				sendResponse({ ok: false, styleId: "", url });
+			});
+		return true;
+	}
+
 	if (message && message.toggleLookShortcut) {
 		const styleId = typeof message.styleId === "string" ? message.styleId : "";
 		const url = message.url || (sender && sender.tab && sender.tab.url) || "";
 		const title = message.title || (sender && sender.tab && sender.tab.title) || "";
+		const tabId = sender && sender.tab ? sender.tab.id : null;
 		ensureSettingsReady()
-			.then(() => toggleLookShortcut(url, title, styleId))
+			.then(() => toggleLookShortcut(url, title, styleId, tabId))
 			.then(sendResponse)
 			.catch(error => {
 				onError(error);
@@ -214,6 +226,13 @@ const urlNormalizationCache = createUrlNormalizationCache();
 
 let settingsReady = null;
 let settingsLoadGeneration = 0;
+let pendingIgnoredSiteWrites = 0;
+let persistSiteLinksTimer = null;
+
+function lookupEntryStyle(entry) {
+	if (!entry) return null;
+	return typeof entry === "string" ? entry : (entry.style || null);
+}
 
 function rebuildLinkLookup() {
 	urlRules = sitesToUrlRules(sites);
@@ -226,18 +245,38 @@ function rebuildLinkLookup() {
 			if (!link?.url) continue;
 			const key = hrefMatchKey(link.url);
 			if (!key || map.has(key)) continue;
-			map.set(key, link.style);
+			map.set(key, link);
 		}
 		linkLookupBySite.set(siteConfig.site, map);
 	}
 }
 
-function applyLoadedSites(nextSites, nextStyleRules) {
-	sites = normalizeSites(nextSites);
+function applyLoadedSites(nextSites, nextStyleRules, { rebuild = true } = {}) {
+	sites = Array.isArray(nextSites) ? nextSites : [];
 	styleRules = Array.isArray(nextStyleRules)
 		? nextStyleRules
 		: DEFAULT_STYLE_RULES.map(rule => ({ ...rule }));
-	rebuildLinkLookup();
+	if (rebuild) rebuildLinkLookup();
+}
+
+function maybeSplitStoredSiteLinks(result, loadedSites) {
+	const hasSplit = result &&
+		result[STORAGE_KEYS.siteLinks] &&
+		typeof result[STORAGE_KEYS.siteLinks] === "object" &&
+		!Array.isArray(result[STORAGE_KEYS.siteLinks]);
+	if (hasSplit && !sitesHaveEmbeddedLinks(result.sites)) {
+		return Promise.resolve(loadedSites);
+	}
+	pendingIgnoredSiteWrites += 1;
+	return browser.storage.local.set(buildSitesStorageWrites(loadedSites))
+		.catch(error => {
+			pendingIgnoredSiteWrites = Math.max(0, pendingIgnoredSiteWrites - 1);
+			throw error;
+		})
+		.then(() => {
+			scheduleConfigTabsRefresh();
+			return loadedSites;
+		});
 }
 
 function loadSettings() {
@@ -245,6 +284,7 @@ function loadSettings() {
 		styleRules = migrateStyleRulesFromStorage(result);
 		return purgeLegacyStorage(result).then(migratedSites => {
 			applyLoadedSites(migratedSites, styleRules);
+			return maybeSplitStoredSiteLinks(result, migratedSites);
 		});
 	});
 }
@@ -436,55 +476,186 @@ browser.tabs.query({ currentWindow: true, active: true })
 	})
 	.catch(() => {});
 
-function persistSites(nextSites) {
-	const normalized = normalizeSites(nextSites);
-	return browser.storage.local.set({
-		[STORAGE_KEYS.sites]: normalized
-	}).then(() => {
-		applyLoadedSites(normalized, styleRules);
-		return normalized;
+function persistSites(nextSites, { includeLinks = true, rebuild = includeLinks } = {}) {
+	sites = Array.isArray(nextSites) ? nextSites : sites;
+	if (rebuild) rebuildLinkLookup();
+	else urlRules = sitesToUrlRules(sites);
+
+	pendingIgnoredSiteWrites += 1;
+	const writes = includeLinks
+		? buildSitesStorageWrites(sites)
+		: { [STORAGE_KEYS.sites]: sites.map(siteConfigToStorageMeta).filter(Boolean) };
+	return browser.storage.local.set(writes).then(() => sites).catch(error => {
+		pendingIgnoredSiteWrites = Math.max(0, pendingIgnoredSiteWrites - 1);
+		throw error;
 	});
 }
 
+function schedulePersistSiteLinks() {
+	if (persistSiteLinksTimer) clearTimeout(persistSiteLinksTimer);
+	persistSiteLinksTimer = setTimeout(() => {
+		persistSiteLinksTimer = null;
+		pendingIgnoredSiteWrites += 1;
+		browser.storage.local.set({
+			[STORAGE_KEYS.siteLinks]: siteLinksByHostFromSites(sites)
+		}).catch(error => {
+			pendingIgnoredSiteWrites = Math.max(0, pendingIgnoredSiteWrites - 1);
+			onError(error);
+		});
+	}, 40);
+}
+
 function addSelectionAsTextRule(selection, site, styleId) {
-	return browser.storage.local.get(null).then(result => {
-		const existing = migrateSitesFromStorage(result);
-		const next = addTextRuleToSites(existing, site, selection, styleId);
-		return persistSites(next);
+	const next = addTextRuleToSites(sites, site, selection, styleId);
+	return persistSites(next, { includeLinks: false }).then(saved => {
+		scheduleConfigTabsRefresh();
+		return saved;
 	});
 }
 
 function addUrlToSiteList(url, title, styleId) {
-	return browser.storage.local.get(null).then(result => {
-		const existing = migrateSitesFromStorage(result);
-		const next = upsertSiteLink(existing, url, title, styleId);
-		return persistSites(next);
-	});
+	const result = applySavedLinkToMemory(url, title, styleId, { toggleOff: false });
+	if (!result.ok) return Promise.resolve(sites);
+	notifyTabsHrefStatus(url, result.styleId);
+	return persistSites(sites, { rebuild: false });
 }
 
-function toggleLookShortcut(url, title, styleId) {
-	if (!isValidHttpUrl(url) || !styleId) {
-		return Promise.resolve({ ok: false });
+function getLookShortcutState(url) {
+	if (!isValidHttpUrl(url)) {
+		return { ok: false, url, styleId: "", site: "" };
 	}
-	if (!styleRules.some(rule => rule.id === styleId && rule.shortcutIcon)) {
-		return Promise.resolve({ ok: false });
+	let hostname = "";
+	try {
+		hostname = new URL(url).hostname;
+	} catch {
+		return { ok: false, url, styleId: "", site: "" };
+	}
+	const siteConfig = findMatchingSiteConfig(sites, hostname);
+	return {
+		ok: !!siteConfig,
+		url,
+		styleId: lookupLinkStyle(url) || "",
+		site: siteConfig ? siteConfig.site : ""
+	};
+}
+
+function applySavedLinkToMemory(url, title, styleId, { toggleOff = false } = {}) {
+	if (!isValidHttpUrl(url) || !styleId) {
+		return { ok: false, styleId: "" };
 	}
 
 	let hostname = "";
 	try {
 		hostname = new URL(url).hostname;
 	} catch {
-		return Promise.resolve({ ok: false });
+		return { ok: false, styleId: "" };
 	}
 
-	return browser.storage.local.get(null).then(result => {
-		const existing = migrateSitesFromStorage(result);
-		if (!findMatchingSiteConfig(existing, hostname)) {
-			return { ok: false };
+	let siteConfig = findMatchingSiteConfig(sites, hostname);
+	if (!siteConfig) {
+		if (toggleOff) return { ok: false, styleId: "" };
+		const ensured = ensureSiteConfig(sites, hostname);
+		sites = ensured.sites;
+		siteConfig = ensured.siteConfig;
+		if (!siteConfig) return { ok: false, styleId: "" };
+	}
+	if (!Array.isArray(siteConfig.links)) siteConfig.links = [];
+
+	const pageKey = hrefMatchKey(url);
+	if (!pageKey) return { ok: false, styleId: "" };
+
+	let map = linkLookupBySite.get(siteConfig.site);
+	if (!map) {
+		map = new Map();
+		linkLookupBySite.set(siteConfig.site, map);
+	}
+
+	const existing = map.get(pageKey);
+	if (toggleOff && existing && lookupEntryStyle(existing) === styleId) {
+		const idx = siteConfig.links.indexOf(existing);
+		if (idx >= 0) siteConfig.links.splice(idx, 1);
+		map.delete(pageKey);
+		return { ok: true, styleId: "" };
+	}
+
+	const savedTitle = normalizeSavedLinkTitle(title);
+	if (existing && typeof existing === "object") {
+		existing.style = styleId;
+		if (savedTitle) existing.title = savedTitle;
+		siteConfig.linkFolders = addLinkFolderId(siteConfig.linkFolders, styleId);
+		map.set(pageKey, existing);
+		return { ok: true, styleId };
+	}
+
+	const saved = {
+		url: normalizeHrefForSearch(url),
+		title: savedTitle,
+		style: styleId
+	};
+	siteConfig.links.push(saved);
+	siteConfig.linkFolders = addLinkFolderId(siteConfig.linkFolders, styleId);
+	map.set(pageKey, saved);
+	return { ok: true, styleId };
+}
+
+function toggleLookShortcut(url, title, styleId, senderTabId) {
+	if (!isValidHttpUrl(url) || !styleId) {
+		return { ok: false };
+	}
+	if (!styleRules.some(rule => rule.id === styleId && rule.shortcutIcon)) {
+		return { ok: false };
+	}
+
+	let hostname = "";
+	try {
+		hostname = new URL(url).hostname;
+	} catch {
+		return { ok: false };
+	}
+
+	if (!findMatchingSiteConfig(sites, hostname)) {
+		return { ok: false };
+	}
+
+	const result = applySavedLinkToMemory(url, title, styleId, { toggleOff: true });
+	if (result.ok) {
+		notifyTabsHrefStatus(url, result.styleId, senderTabId);
+		schedulePersistSiteLinks();
+	}
+	return result;
+}
+
+function notifyTabsHrefStatus(url, styleId, senderTabId) {
+	let hostname = "";
+	try {
+		hostname = new URL(url).hostname;
+	} catch {
+		return;
+	}
+	const normalized = normalizeHrefForSearch(url);
+	const status = styleId || "none";
+	browser.tabs.query({}).then(tabs => {
+		for (const tab of tabs) {
+			if (!tab?.id || !tab.url) continue;
+			let tabHost = "";
+			try {
+				tabHost = new URL(tab.url).hostname;
+			} catch {
+				continue;
+			}
+			if (!hostnameMatchesSite(tabHost, hostname) &&
+				!hostnameMatchesSite(hostname, tabHost)) {
+				continue;
+			}
+			const payload = {
+				statusUpdates: { [normalized]: status }
+			};
+			if (senderTabId && tab.id === senderTabId) {
+				payload.lookShortcutState = { url, styleId: styleId || "" };
+			}
+			browser.tabs.sendMessage(tab.id, payload).catch(() => {});
 		}
-		const next = toggleSiteLookShortcut(existing, url, title, styleId);
-		return persistSites(next).then(() => ({ ok: true }));
-	});
+	}).catch(() => {});
 }
 
 function throwIfScriptInjectionFailed(results, label) {
@@ -632,7 +803,11 @@ function handleContextMenuClick(info, tab) {
 function notifyAllTabsRefresh(mode = "optimistic") {
 	return browser.tabs.query({}).then(tabs => {
 		for (const t of tabs) {
-			browser.tabs.sendMessage(t.id, { refresh: true, mode }).catch(() => {});
+			browser.tabs.sendMessage(t.id, {
+				refresh: true,
+				mode,
+				reloadConfig: true
+			}).catch(() => {});
 		}
 	}).catch(() => {});
 }
@@ -657,12 +832,27 @@ browser.storage.onChanged.addListener((changes, areaName) => {
 	let shouldRefreshTabs = false;
 	let shouldRefreshMenus = false;
 
-	if (changes[STORAGE_KEYS.sites]) {
-		sites = migrateSitesFromStorage({
-			sites: changes[STORAGE_KEYS.sites].newValue
-		});
-		rebuildLinkLookup();
-		shouldRefreshTabs = true;
+	if (changes[STORAGE_KEYS.sites] || changes[STORAGE_KEYS.siteLinks]) {
+		if (pendingIgnoredSiteWrites > 0) {
+			pendingIgnoredSiteWrites -= 1;
+		} else {
+			const nextMeta = changes[STORAGE_KEYS.sites]
+				? changes[STORAGE_KEYS.sites].newValue
+				: sites.map(siteConfigToStorageMeta);
+			const nextLinks = changes[STORAGE_KEYS.siteLinks]
+				? changes[STORAGE_KEYS.siteLinks].newValue
+				: siteLinksByHostFromSites(sites);
+			applyLoadedSites(
+				loadSitesFromStorageResult({
+					sites: nextMeta,
+					[STORAGE_KEYS.siteLinks]: nextLinks
+				}, { preserveLinks: true }),
+				styleRules
+			);
+			if (changes[STORAGE_KEYS.sites]) {
+				shouldRefreshTabs = true;
+			}
+		}
 	}
 
 	if (changes[STORAGE_KEYS.styleRules]) {
@@ -710,7 +900,9 @@ function lookupLinkStyle(href) {
 
 	const siteConfig = findMatchingSiteConfig(sites, hostname);
 	if (!siteConfig) return null;
-	return linkLookupBySite.get(siteConfig.site)?.get(hrefMatchKey(href)) || null;
+	return lookupEntryStyle(
+		linkLookupBySite.get(siteConfig.site)?.get(hrefMatchKey(href))
+	);
 }
 
 function searchhrefs(hrefs) {

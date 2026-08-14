@@ -89,8 +89,10 @@ svg {
 
 let shortcutSites = [];
 let shortcutStyleRules = [];
-let pendingShortcutToggles = new Set();
+let cachedPageStyleId = "";
+let cachedPageUrl = "";
 let lastOverlayKey = "";
+let styleStateRequestSeq = 0;
 
 function isHttpPage() {
 	return location.protocol === "http:" || location.protocol === "https:";
@@ -101,9 +103,9 @@ function currentSiteConfig() {
 	return findMatchingSiteConfig(shortcutSites, location.hostname);
 }
 
-function currentPageStyleId(siteConfig) {
-	if (!siteConfig) return "";
-	return getLinkStyleForHref(shortcutSites, location.href);
+function currentPageStyleId() {
+	if (cachedPageUrl !== location.href) return "";
+	return cachedPageStyleId;
 }
 
 function shortcutLooks() {
@@ -115,7 +117,7 @@ function overlayStateKey(siteConfig) {
 	const looks = shortcutLooks().map(rule =>
 		`${rule.id}:${rule.shortcutIcon}:${rule.shortcutColor}`
 	).join(",");
-	return `${siteConfig.site}|${currentPageStyleId(siteConfig)}|${looks}|${location.href}`;
+	return `${siteConfig.site}|${currentPageStyleId()}|${looks}|${location.href}`;
 }
 
 function isFirefoxBrowser() {
@@ -265,7 +267,7 @@ function renderLookShortcuts() {
 
 	const key = overlayStateKey(siteConfig);
 	let host = document.getElementById(LOOK_SHORTCUTS_HOST_ID);
-	if (host && key === lastOverlayKey && pendingShortcutToggles.size === 0) {
+	if (host && key === lastOverlayKey) {
 		pinLookShortcutHost(host);
 		return;
 	}
@@ -287,7 +289,7 @@ function renderLookShortcuts() {
 	}
 
 	const bar = host.shadowRoot.querySelector(".bar");
-	const activeStyleId = currentPageStyleId(siteConfig);
+	const activeStyleId = currentPageStyleId();
 	bar.replaceChildren();
 
 	for (const rule of looks) {
@@ -301,7 +303,6 @@ function renderLookShortcuts() {
 			active ? `Remove page from ${rule.name}` : `Add page to ${rule.name}`
 		);
 		button.title = rule.name;
-		button.disabled = pendingShortcutToggles.has(rule.id);
 		button.innerHTML = shortcutIconSvgMarkup(rule.shortcutIcon, {
 			active,
 			color: rule.shortcutColor
@@ -313,20 +314,75 @@ function renderLookShortcuts() {
 	lastOverlayKey = key;
 }
 
+function applyLookShortcutState(state, href = location.href) {
+	if (!state || (state.url && state.url !== href)) return;
+	cachedPageUrl = href;
+	cachedPageStyleId = typeof state.styleId === "string" ? state.styleId : "";
+	renderLookShortcuts();
+}
+
+function refreshLookShortcutState() {
+	if (!isHttpPage() || !currentSiteConfig()) {
+		cachedPageUrl = location.href;
+		cachedPageStyleId = "";
+		renderLookShortcuts();
+		return;
+	}
+
+	const href = location.href;
+	const requestSeq = ++styleStateRequestSeq;
+	browser.runtime.sendMessage({
+		getLookShortcutState: true,
+		url: href
+	}).then(state => {
+		if (requestSeq !== styleStateRequestSeq) return;
+		applyLookShortcutState(state, href);
+	}).catch(() => {
+		if (requestSeq !== styleStateRequestSeq) return;
+		renderLookShortcuts();
+	});
+}
+
 function toggleLookShortcut(styleId) {
-	if (!styleId || pendingShortcutToggles.has(styleId)) return;
-	pendingShortcutToggles.add(styleId);
+	if (!styleId) return;
+	const href = location.href;
+	const previous = currentPageStyleId();
+	cachedPageUrl = href;
+	cachedPageStyleId = previous === styleId ? "" : styleId;
 	renderLookShortcuts();
 
 	browser.runtime.sendMessage({
 		toggleLookShortcut: true,
 		styleId,
-		url: location.href,
+		url: href,
 		title: document.title || ""
-	}).catch(() => {}).finally(() => {
-		pendingShortcutToggles.delete(styleId);
+	}).then(result => {
+		if (location.href !== href) return;
+		if (!result || result.ok === false) {
+			cachedPageStyleId = previous;
+			renderLookShortcuts();
+			return;
+		}
+		if (typeof result.styleId === "string") {
+			cachedPageStyleId = result.styleId;
+			renderLookShortcuts();
+		}
+	}).catch(() => {
+		if (location.href !== href) return;
+		cachedPageStyleId = previous;
 		renderLookShortcuts();
 	});
+}
+
+function sitesMetaFromStorage(result) {
+	const raw = Array.isArray(result?.[STORAGE_KEYS.sites]) ? result[STORAGE_KEYS.sites] : [];
+	return raw.map(siteConfig => ({
+		site: siteConfig?.site || "",
+		classGroups: siteConfig?.classGroups || [],
+		keepParams: siteConfig?.keepParams || "",
+		textRules: siteConfig?.textRules || [],
+		linkFolders: siteConfig?.linkFolders || []
+	})).filter(siteConfig => siteConfig.site);
 }
 
 function loadLookShortcutSettings() {
@@ -334,48 +390,42 @@ function loadLookShortcutSettings() {
 		STORAGE_KEYS.sites,
 		STORAGE_KEYS.styleRules
 	]).then(result => {
-		shortcutSites = migrateSitesFromStorage(result);
+		shortcutSites = sitesMetaFromStorage(result);
 		shortcutStyleRules = migrateStyleRulesFromStorage(result);
 		renderLookShortcuts();
+		refreshLookShortcutState();
 	}).catch(() => {});
 }
 
-browser.storage.onChanged.addListener((changes, areaName) => {
-	if (areaName !== "local") return;
-	let changed = false;
-	if (changes[STORAGE_KEYS.sites]) {
-		shortcutSites = migrateSitesFromStorage({
-			sites: changes[STORAGE_KEYS.sites].newValue
-		});
-		changed = true;
-	}
-	if (changes[STORAGE_KEYS.styleRules]) {
-		shortcutStyleRules = migrateStyleRulesFromStorage({
-			styleRules: changes[STORAGE_KEYS.styleRules].newValue
-		});
-		changed = true;
-	}
-	if (changed) renderLookShortcuts();
-});
-
 browser.runtime.onMessage.addListener(message => {
-	if (message && message.refresh) renderLookShortcuts();
+	if (!message) return;
+	if (message.lookShortcutState) {
+		applyLookShortcutState(message.lookShortcutState);
+		return;
+	}
+	if (message.refresh && message.reloadConfig) {
+		loadLookShortcutSettings();
+		return;
+	}
+	if (message.refresh || message.statusUpdates) {
+		refreshLookShortcutState();
+	}
 });
 
-window.addEventListener("popstate", renderLookShortcuts);
-window.addEventListener("hashchange", renderLookShortcuts);
+window.addEventListener("popstate", refreshLookShortcutState);
+window.addEventListener("hashchange", refreshLookShortcutState);
 
 try {
 	const originalPushState = history.pushState;
 	history.pushState = function patchedPushState(...args) {
 		const result = originalPushState.apply(this, args);
-		renderLookShortcuts();
+		refreshLookShortcutState();
 		return result;
 	};
 	const originalReplaceState = history.replaceState;
 	history.replaceState = function patchedReplaceState(...args) {
 		const result = originalReplaceState.apply(this, args);
-		renderLookShortcuts();
+		refreshLookShortcutState();
 		return result;
 	};
 } catch {

@@ -90,14 +90,23 @@ function updateClassesForSearch() {
 }
 
 function applySitesConfig(item) {
-	loadedSites = migrateSitesFromStorage(item);
+	const raw = Array.isArray(item?.[STORAGE_KEYS.sites])
+		? item[STORAGE_KEYS.sites]
+		: (Array.isArray(item?.sites) ? item.sites : []);
+	loadedSites = raw.map(siteConfig => ({
+		site: siteConfig?.site || "",
+		classGroups: Array.isArray(siteConfig?.classGroups) ? siteConfig.classGroups : [],
+		keepParams: typeof siteConfig?.keepParams === "string" ? siteConfig.keepParams : "",
+		textRules: Array.isArray(siteConfig?.textRules) ? siteConfig.textRules : [],
+		linkFolders: Array.isArray(siteConfig?.linkFolders) ? siteConfig.linkFolders : []
+	})).filter(siteConfig => siteConfig.site);
 	searchPairs = sitesToSearchPairs(loadedSites);
 	urlRules = sitesToUrlRules(loadedSites);
 	preparedTextRules = preprocessTextRules(sitesToTextRules(loadedSites));
 	updateClassesForSearch();
 }
 
-function onGot(item) {
+function applyLoadedSettings(item) {
 	preparedStyleRules = migrateStyleRulesFromStorage(item);
 	refreshManagedClassNames();
 	enableTopBorder = !!item[STORAGE_KEYS.enableTopBorder];
@@ -106,60 +115,28 @@ function onGot(item) {
 	enableToastNotifications = item[STORAGE_KEYS.enableToastNotifications] !== false;
 	applySitesConfig(item);
 	settingsLoaded = true;
+}
+
+function onGot(item) {
+	applyLoadedSettings(item);
 	try { initProcessing(); } catch (e) { /* initProcessing may be defined later */ }
 	flushPendingRuntimeMessages();
 }
 
-// Listen for storage changes and update settings dynamically
-browser.storage.onChanged.addListener((changes, areaName) => {
-	if (areaName !== "local") return;
-
-	let needsRefresh = false;
-
-	if (changes[STORAGE_KEYS.sites]) {
-		applySitesConfig({
-			sites: changes[STORAGE_KEYS.sites].newValue
-		});
-		invalidateUrlDependentCaches();
-		invalidateTextFilterCache();
-		needsRefresh = true;
-	}
-
-	if (changes[STORAGE_KEYS.styleRules]) {
-		removeStatusClasses(managedClassNames);
-		preparedStyleRules = migrateStyleRulesFromStorage({
-			styleRules: changes[STORAGE_KEYS.styleRules].newValue
-		});
-		refreshManagedClassNames();
-		injectBookmarkStyles();
-		preparedTextRules = preprocessTextRules(sitesToTextRules(loadedSites));
-		invalidateTextFilterCache();
-		invalidateUrlDependentCaches();
-		needsRefresh = true;
-	}
-
-	if (changes[STORAGE_KEYS.enableTopBorder]) {
-		enableTopBorder = !!changes[STORAGE_KEYS.enableTopBorder].newValue;
+function reloadContentSettings() {
+	return browser.storage.local.get([
+		STORAGE_KEYS.sites,
+		STORAGE_KEYS.styleRules,
+		STORAGE_KEYS.enableTopBorder,
+		STORAGE_KEYS.enableDeepSearch,
+		STORAGE_KEYS.onlyUseSites,
+		STORAGE_KEYS.enableToastNotifications
+	]).then(item => {
+		const previousClassNames = managedClassNames.slice();
+		applyLoadedSettings(item);
 		if (!enableTopBorder) {
 			clearExtensionTopBorder();
 		}
-	}
-
-	if (changes[STORAGE_KEYS.enableDeepSearch]) {
-		enableDeepSearch = !!changes[STORAGE_KEYS.enableDeepSearch].newValue;
-		invalidateUrlDependentCaches();
-		needsRefresh = true;
-	}
-
-	if (changes[STORAGE_KEYS.onlyUseSites]) {
-		onlyUseSites = !!changes[STORAGE_KEYS.onlyUseSites].newValue;
-		updateClassesForSearch();
-		needsRefresh = true;
-	}
-
-	if (changes[STORAGE_KEYS.enableToastNotifications]) {
-		enableToastNotifications =
-			changes[STORAGE_KEYS.enableToastNotifications].newValue !== false;
 		if (!enableToastNotifications) {
 			stylingIndicatorDepth = 0;
 			if (stylingIndicatorShowTimer) {
@@ -168,28 +145,31 @@ browser.storage.onChanged.addListener((changes, areaName) => {
 			}
 			hideStylingIndicator();
 		}
-	}
+		removeStatusClasses(previousClassNames);
+		injectBookmarkStyles();
+		invalidateUrlDependentCaches();
+		invalidateTextFilterCache();
+	}).catch(onError);
+}
 
-	if (needsRefresh && (changes[STORAGE_KEYS.sites] || changes[STORAGE_KEYS.onlyUseSites])) {
-		updateClassesForSearch();
+function handleConfigRefresh(message) {
+	if (message.mode === "authoritative") {
+		performAuthoritativeRefresh({
+			showActionBusy: !!message.showActionBusy,
+			actionBusyGeneration: message.actionBusyGeneration,
+			authoritativeLookup: true
+		});
+	} else if (message.mode === "rebuild") {
+		performAuthoritativeRefresh({
+			showActionBusy: !!message.showActionBusy,
+			actionBusyGeneration: message.actionBusyGeneration,
+			authoritativeLookup: false
+		});
+	} else if (message.mode === "requery") {
+		performRequeryRefresh();
+	} else {
+		sendUniqueHrefs();
 	}
-
-	if (needsRefresh && searchSite) {
-		scheduleLocalAuthoritativeRefresh();
-	}
-});
-
-let localAuthoritativeRefreshTimer = null;
-function scheduleLocalAuthoritativeRefresh() {
-	if (localAuthoritativeRefreshTimer) {
-		clearTimeout(localAuthoritativeRefreshTimer);
-	}
-	localAuthoritativeRefreshTimer = setTimeout(() => {
-		localAuthoritativeRefreshTimer = null;
-		if (searchSite) {
-			performAuthoritativeRefresh();
-		}
-	}, 100);
 }
 
 // Caches for performance optimization
@@ -796,24 +776,12 @@ function handleRuntimeMessage(message) {
 	}
 
 	if (message.refresh) {
-		if (message.mode === "authoritative") {
-			performAuthoritativeRefresh({
-				showActionBusy: !!message.showActionBusy,
-				actionBusyGeneration: message.actionBusyGeneration,
-				authoritativeLookup: true
-			});
-		} else if (message.mode === "rebuild") {
-			// Background already wiped caches and rebuilt the index once.
-			performAuthoritativeRefresh({
-				showActionBusy: !!message.showActionBusy,
-				actionBusyGeneration: message.actionBusyGeneration,
-				authoritativeLookup: false
-			});
-		} else if (message.mode === "requery") {
-			performRequeryRefresh();
-		} else {
-			sendUniqueHrefs();
+		const runRefresh = () => handleConfigRefresh(message);
+		if (message.reloadConfig) {
+			reloadContentSettings().then(runRefresh);
+			return;
 		}
+		runRefresh();
 	}
 }
 

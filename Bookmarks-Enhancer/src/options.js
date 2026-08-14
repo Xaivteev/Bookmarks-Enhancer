@@ -3,6 +3,7 @@ const STYLE_RULE_STORAGE_KEY = STORAGE_KEYS.styleRules;
 let cachedStyleRules = DEFAULT_STYLE_RULES.map(rule => ({ ...rule }));
 let sitesDraft = [];
 let selectedSiteIndex = -1;
+let detailLinksByLook = null;
 let sitesReady = false;
 let suppressOptionsStorageReload = false;
 let optionsStorageReloadTimer = null;
@@ -444,7 +445,7 @@ function loadStyleRuleRows(rules) {
     cachedStyleRules = Array.isArray(rules)
         ? normalizeStyleRules(rules)
         : DEFAULT_STYLE_RULES.map(rule => ({ ...rule }));
-    cachedStyleRules.forEach(rule => createStyleRuleRow(rule));
+        cachedStyleRules.forEach(rule => createStyleRuleRow(rule));
     refreshAllStyleSelects();
     refreshAllTableEmptyStates();
 }
@@ -529,9 +530,7 @@ function collectSavedLinksFromDetail() {
     for (const group of document.querySelectorAll(".savedLinkGroup")) {
         flushSavedLinkGroupPage(group);
     }
-    const folderIds = new Set(collectLinkFoldersFromDetail());
-    const links = sitesDraft[selectedSiteIndex]?.links || [];
-    return links.filter(link => folderIds.has(link.style || "blocked"));
+    return sitesDraft[selectedSiteIndex]?.links || [];
 }
 
 function collectTextRulesFromDetail() {
@@ -541,25 +540,30 @@ function collectTextRulesFromDetail() {
     })).filter(rule => rule.text);
 }
 
+function bumpLinksRevision(site) {
+    if (!site) return;
+    site.linksRevision = (site.linksRevision || 0) + 1;
+}
+
 function flushSiteDetailToDraft() {
     if (!isSiteDetailOpen() || !sitesDraft[selectedSiteIndex]) return;
     const hostInput = document.querySelector("#siteDetailHost");
     const keepParamsInput = document.querySelector("#siteKeepParams");
     const current = sitesDraft[selectedSiteIndex];
     const nextHost = normalizeSite(hostInput?.value || current.site) || current.site;
-    sitesDraft[selectedSiteIndex] = normalizeSiteConfig({
-        site: nextHost,
-        classGroups: collectClassGroupsFromDetail(),
-        keepParams: keepParamsInput?.value || "",
-        textRules: collectTextRulesFromDetail(),
-        links: collectSavedLinksFromDetail(),
-        linkFolders: collectLinkFoldersFromDetail()
-    }) || current;
+    for (const group of document.querySelectorAll(".savedLinkGroup")) {
+        flushSavedLinkGroupPage(group);
+    }
+    current.site = nextHost;
+    current.classGroups = collectClassGroupsFromDetail();
+    current.keepParams = keepParamsInput?.value || "";
+    current.textRules = collectTextRulesFromDetail();
+    current.linkFolders = collectLinkFoldersFromDetail();
 }
 
 function collectSitesFromUi() {
     flushSiteDetailToDraft();
-    return normalizeSites(sitesDraft);
+    return sitesDraft;
 }
 
 function clearDetailTables() {
@@ -624,6 +628,7 @@ function openSiteDetail(index) {
 
     selectedSiteIndex = index;
     const siteConfig = sitesDraft[index];
+    rebuildDetailLinksIndex();
     const listView = document.querySelector("#siteListView");
     const detailView = document.querySelector("#siteDetailView");
     if (listView) listView.hidden = true;
@@ -649,6 +654,7 @@ function openSiteDetail(index) {
 
 function closeSiteDetail() {
     flushSiteDetailToDraft();
+    detailLinksByLook = null;
     showSiteListView();
     scheduleDirtyUiUpdate();
 }
@@ -662,6 +668,7 @@ function deleteSite(index) {
     if (!confirmed) return;
     if (selectedSiteIndex === index) {
         selectedSiteIndex = -1;
+        detailLinksByLook = null;
         showSiteListView();
     } else if (selectedSiteIndex > index) {
         selectedSiteIndex -= 1;
@@ -694,7 +701,7 @@ function addSiteFromInput() {
     setFieldError(input, errorEl, "");
     if (input) input.value = "";
     sitesDraft.push(createEmptySiteConfig(hostname));
-    sitesDraft = normalizeSites(sitesDraft);
+    sitesDraft.sort((a, b) => a.site.localeCompare(b.site));
     const index = sitesDraft.findIndex(siteConfig => siteConfig.site === hostname);
     openSiteDetail(index);
     scheduleDirtyUiUpdate();
@@ -915,7 +922,38 @@ function getLookLabel(styleId) {
     return styleId ? `Missing look (${styleId})` : "Look";
 }
 
+function rebuildDetailLinksIndex() {
+    detailLinksByLook = new Map();
+    const site = sitesDraft[selectedSiteIndex];
+    if (!site) return;
+    for (const link of site.links || []) {
+        const id = link.style || "blocked";
+        if (!detailLinksByLook.has(id)) detailLinksByLook.set(id, []);
+        detailLinksByLook.get(id).push(link);
+    }
+}
+
+function flattenDetailLinksToSite() {
+    const site = sitesDraft[selectedSiteIndex];
+    if (!site || !detailLinksByLook) return;
+    const merged = [];
+    const seen = new Set();
+    for (const styleId of site.linkFolders || []) {
+        const lookLinks = detailLinksByLook.get(styleId) || [];
+        merged.push(...lookLinks);
+        seen.add(styleId);
+    }
+    for (const [styleId, lookLinks] of detailLinksByLook) {
+        if (seen.has(styleId)) continue;
+        merged.push(...lookLinks);
+    }
+    site.links = merged;
+}
+
 function linksForLook(styleId) {
+    if (detailLinksByLook && styleId) {
+        return detailLinksByLook.get(styleId) || [];
+    }
     const site = sitesDraft[selectedSiteIndex];
     if (!site || !styleId) return [];
     return (site.links || []).filter(link => (link.style || "blocked") === styleId);
@@ -924,12 +962,15 @@ function linksForLook(styleId) {
 function replaceLinksForLook(styleId, lookLinks) {
     const site = sitesDraft[selectedSiteIndex];
     if (!site || !styleId) return;
-    const others = (site.links || []).filter(link => (link.style || "blocked") !== styleId);
-    site.links = others.concat((lookLinks || []).map(link => ({
+    const nextLook = (lookLinks || []).map(link => ({
         url: typeof link.url === "string" ? link.url : "",
         title: typeof link.title === "string" ? link.title : "",
         style: styleId
-    })));
+    }));
+    if (!detailLinksByLook) detailLinksByLook = new Map();
+    detailLinksByLook.set(styleId, nextLook);
+    flattenDetailLinksToSite();
+    bumpLinksRevision(site);
 }
 
 function collectVisibleSavedLinkRows(group) {
@@ -969,13 +1010,19 @@ function flushSavedLinkGroupPage(group) {
         if (!Number.isInteger(row.lookIndex) || row.lookIndex < 0 || row.lookIndex >= all.length) {
             continue;
         }
-        all[row.lookIndex] = {
-            url: row.url,
-            title: row.title,
-            style: styleId
-        };
+        const current = all[row.lookIndex];
+        if (current) {
+            current.url = row.url;
+            current.title = row.title;
+            current.style = styleId;
+        } else {
+            all[row.lookIndex] = {
+                url: row.url,
+                title: row.title,
+                style: styleId
+            };
+        }
     }
-    replaceLinksForLook(styleId, all);
 }
 
 function refreshSavedLinkGroupEmptyStates() {
@@ -1284,7 +1331,7 @@ function renderSavedLinkGroups(links = [], folderIds = []) {
     if (!groupsRoot) return;
     groupsRoot.replaceChildren();
 
-    for (const styleId of normalizeLinkFolderIds(folderIds, links)) {
+    for (const styleId of normalizeLinkFolderIds(folderIds, [])) {
         createSavedLinkGroup(styleId);
     }
 
@@ -1307,7 +1354,7 @@ function syncSavedLinkGroupsToLooks() {
         }
         if (hasRows) {
             if (title) title.textContent = getLookLabel(styleId);
-        } else {
+    } else {
             group.remove();
         }
     }
@@ -1651,20 +1698,54 @@ function buildOptionsPayload() {
             onlyUseSites: document.querySelector("#onlyUseSites").checked,
             enableToastNotifications: document.querySelector("#enableToastNotifications").checked,
             [STYLE_RULE_STORAGE_KEY]: styleRules,
-            [STORAGE_KEYS.sites]: sites
+            ...buildSitesStorageWrites(sites)
         }
     };
+}
+
+function collectVisibleSavedLinkSnapshot() {
+    const rows = [];
+    for (const group of document.querySelectorAll(".savedLinkGroup[data-expanded='true']")) {
+        for (const row of group.querySelectorAll("tbody tr")) {
+            rows.push({
+                look: group.dataset.styleId,
+                i: row.dataset.lookIndex,
+                url: row.querySelector(".savedLinkUrl")?.value || "",
+                title: row.querySelector(".savedLinkTitle")?.value || ""
+            });
+        }
+    }
+    return rows;
 }
 
 function getFormSnapshot() {
     if (!sitesReady) return null;
     try {
         return JSON.stringify({
-            payload: buildExportPayload(),
-            rows: {
-                styles: document.querySelectorAll("#styleRuleBody tr").length,
-                sites: sitesDraft.length
-            }
+            general: {
+                enableTopBorder: document.querySelector("#enableTopBorder").checked,
+                enableDeepSearch: document.querySelector("#enableDeepSearch").checked,
+                onlyUseSites: document.querySelector("#onlyUseSites").checked,
+                enableToastNotifications: document.querySelector("#enableToastNotifications").checked
+            },
+            styleRules: collectStyleRules(),
+            siteDetail: isSiteDetailOpen() ? {
+                host: document.querySelector("#siteDetailHost")?.value || "",
+                keepParams: document.querySelector("#siteKeepParams")?.value || "",
+                classGroups: collectClassGroupsFromDetail(),
+                textRules: collectTextRulesFromDetail(),
+                linkFolders: collectLinkFoldersFromDetail()
+            } : null,
+            sites: sitesDraft.map(siteConfig => ({
+                site: siteConfig.site,
+                classGroups: siteConfig.classGroups,
+                keepParams: siteConfig.keepParams,
+                textRules: siteConfig.textRules,
+                linkFolders: siteConfig.linkFolders,
+                linkCount: (siteConfig.links || []).length,
+                linksRevision: siteConfig.linksRevision || 0
+            })),
+            visibleLinks: collectVisibleSavedLinkSnapshot()
         });
     } catch (err) {
         console.error("Could not snapshot options form:", err);
@@ -1953,11 +2034,12 @@ function applyLoadedConfiguration(sites, styleRules, general = {}) {
     }
 
     loadStyleRuleRows(styleRules);
-    sitesDraft = normalizeSites(sites);
+    sitesDraft = normalizeSites(sites, { preserveLinks: true });
     selectedSiteIndex = -1;
+    detailLinksByLook = null;
     showSiteListView();
     setSitesReady(true);
-    refreshAllTableEmptyStates();
+            refreshAllTableEmptyStates();
     loadLegacyImportFolders();
 }
 

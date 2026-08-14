@@ -1,5 +1,8 @@
 const STORAGE_KEYS = {
 	sites: "sites",
+	// Per-host saved links, kept out of `sites` so content scripts never
+	// deserialize tens of thousands of URLs on settings changes.
+	siteLinks: "siteLinksByHost",
 	styleRules: "styleRules",
 	enableTopBorder: "enableTopBorder",
 	enableDeepSearch: "enableDeepSearch",
@@ -26,7 +29,8 @@ const CONFIG_REFRESH_STORAGE_KEYS = [
 	STORAGE_KEYS.styleRules,
 	STORAGE_KEYS.enableTopBorder,
 	STORAGE_KEYS.enableDeepSearch,
-	STORAGE_KEYS.onlyUseSites
+	STORAGE_KEYS.onlyUseSites,
+	STORAGE_KEYS.enableToastNotifications
 ];
 
 const SHORTCUT_ICON_IDS = ["star", "x", "eye", "bookmark", "heart"];
@@ -199,12 +203,14 @@ function purgeLegacyStorage(result) {
 	const legacyKeys = listPresentLegacyStorageKeys(result);
 	const needsSites = !Array.isArray(result?.sites);
 	const needsStyles = !Array.isArray(result?.styleRules);
-	const sites = migrateSitesFromStorage(result);
+	const sites = needsSites
+		? migrateSitesFromStorage(result)
+		: loadSitesFromStorageResult(result, { preserveLinks: true });
 	const defaultStyles = () => DEFAULT_STYLE_RULES.map(rule => ({ ...rule }));
 
 	const persistConfig = merged => {
 		const writes = {};
-		if (needsSites) writes[STORAGE_KEYS.sites] = merged;
+		if (needsSites) Object.assign(writes, buildSitesStorageWrites(merged));
 		if (needsStyles) writes[STORAGE_KEYS.styleRules] = defaultStyles();
 		if (Object.keys(writes).length === 0) return Promise.resolve(merged);
 		return browser.storage.local.set(writes).then(() => merged);
@@ -386,10 +392,71 @@ function normalizeKeepParams(value) {
 	return parseCommaSeparatedValues(value).join(", ");
 }
 
-function normalizeSiteConfig(siteConfig) {
+function siteConfigToStorageMeta(siteConfig) {
+	if (!siteConfig || typeof siteConfig !== "object") return null;
+	const site = normalizeSite(siteConfig.site) || siteConfig.site;
+	if (!site) return null;
+	return {
+		site,
+		classGroups: Array.isArray(siteConfig.classGroups) ? siteConfig.classGroups : [],
+		keepParams: typeof siteConfig.keepParams === "string" ? siteConfig.keepParams : "",
+		textRules: Array.isArray(siteConfig.textRules) ? siteConfig.textRules : [],
+		linkFolders: Array.isArray(siteConfig.linkFolders) ? siteConfig.linkFolders : []
+	};
+}
+
+function siteLinksByHostFromSites(sites) {
+	const byHost = {};
+	for (const siteConfig of sites || []) {
+		if (!siteConfig?.site) continue;
+		byHost[siteConfig.site] = Array.isArray(siteConfig.links) ? siteConfig.links : [];
+	}
+	return byHost;
+}
+
+function mergeSiteLinksIntoSites(sites, siteLinksByHost) {
+	const hasSplit = siteLinksByHost &&
+		typeof siteLinksByHost === "object" &&
+		!Array.isArray(siteLinksByHost);
+	return (Array.isArray(sites) ? sites : []).map(siteConfig => {
+		if (!siteConfig || typeof siteConfig !== "object") return siteConfig;
+		if (!hasSplit) return siteConfig;
+		const host = siteConfig.site;
+		return {
+			...siteConfig,
+			links: host && Array.isArray(siteLinksByHost[host])
+				? siteLinksByHost[host]
+				: []
+		};
+	});
+}
+
+function sitesHaveEmbeddedLinks(sites) {
+	return (Array.isArray(sites) ? sites : []).some(
+		siteConfig => Array.isArray(siteConfig?.links) && siteConfig.links.length > 0
+	);
+}
+
+function buildSitesStorageWrites(sites) {
+	return {
+		[STORAGE_KEYS.sites]: (sites || []).map(siteConfigToStorageMeta).filter(Boolean),
+		[STORAGE_KEYS.siteLinks]: siteLinksByHostFromSites(sites)
+	};
+}
+
+function loadSitesFromStorageResult(result, options = {}) {
+	const merged = mergeSiteLinksIntoSites(
+		result?.sites,
+		result?.[STORAGE_KEYS.siteLinks]
+	);
+	return normalizeSites(merged, options);
+}
+
+function normalizeSiteConfig(siteConfig, options = {}) {
 	if (!siteConfig || typeof siteConfig !== "object") return null;
 	const site = normalizeSite(siteConfig.site);
 	if (!site) return null;
+	const preserveLinks = options.preserveLinks === true;
 
 	const textSeen = new Set();
 	const textRules = [];
@@ -402,15 +469,24 @@ function normalizeSiteConfig(siteConfig) {
 		textRules.push(normalized);
 	}
 
-	const linkSeen = new Set();
-	const links = [];
-	for (const link of siteConfig.links || []) {
-		const normalized = normalizeSavedLink(link);
-		if (!normalized) continue;
-		if (linkSeen.has(normalized.url)) continue;
-		linkSeen.add(normalized.url);
-		links.push(normalized);
+	let links;
+	if (preserveLinks) {
+		links = Array.isArray(siteConfig.links) ? siteConfig.links : [];
+	} else {
+		const linkSeen = new Set();
+		links = [];
+		for (const link of siteConfig.links || []) {
+			const normalized = normalizeSavedLink(link);
+			if (!normalized) continue;
+			if (linkSeen.has(normalized.url)) continue;
+			linkSeen.add(normalized.url);
+			links.push(normalized);
+		}
 	}
+
+	const folderLinks = preserveLinks && (siteConfig.linkFolders || []).length
+		? []
+		: links;
 
 	return {
 		site,
@@ -418,16 +494,16 @@ function normalizeSiteConfig(siteConfig) {
 		keepParams: normalizeKeepParams(siteConfig.keepParams),
 		textRules,
 		links,
-		linkFolders: normalizeLinkFolderIds(siteConfig.linkFolders, links)
+		linkFolders: normalizeLinkFolderIds(siteConfig.linkFolders, folderLinks)
 	};
 }
 
-function normalizeSites(sites) {
+function normalizeSites(sites, options = {}) {
 	if (!Array.isArray(sites)) return [];
 
 	const bySite = new Map();
 	for (const raw of sites) {
-		const siteConfig = normalizeSiteConfig(raw);
+		const siteConfig = normalizeSiteConfig(raw, options);
 		if (!siteConfig) continue;
 
 		const existing = bySite.get(siteConfig.site);
@@ -512,7 +588,7 @@ function sitesToTextRules(sites) {
 
 function ensureSiteConfig(sites, site) {
 	const hostname = normalizeSite(site);
-	const next = normalizeSites(sites);
+	const next = Array.isArray(sites) ? sites.slice() : [];
 	if (!hostname) return { sites: next, siteConfig: null };
 
 	let siteConfig = next.find(entry => entry.site === hostname);
@@ -545,14 +621,14 @@ function upsertSiteLink(sites, url, title, styleId) {
 
 	const { sites: next, siteConfig } = ensureSiteConfig(sites, hostname);
 	if (!siteConfig) return next;
+	if (!Array.isArray(siteConfig.links)) siteConfig.links = [];
 
-	const rules = sitesToUrlRules(next);
-	const pageKey = hrefMatchKey(url, rules);
+	const pageKey = hrefMatchKey(url);
 	const existingIndex = siteConfig.links.findIndex(link =>
-		link?.url && hrefMatchKey(link.url, rules) === pageKey
+		link?.url && hrefMatchKey(link.url) === pageKey
 	);
 	const saved = {
-		url: normalizeHrefForSearch(url, rules),
+		url: normalizeHrefForSearch(url),
 		title: normalizeSavedLinkTitle(title),
 		style: typeof styleId === "string" && styleId.trim()
 			? styleId.trim()
@@ -580,15 +656,15 @@ function toggleSiteLookShortcut(sites, url, title, styleId) {
 		return sites;
 	}
 
-	const next = normalizeSites(sites);
+	const next = Array.isArray(sites) ? sites : [];
 	const siteConfig = findMatchingSiteConfig(next, hostname);
 	if (!siteConfig) return next;
+	if (!Array.isArray(siteConfig.links)) siteConfig.links = [];
 
 	const lookId = styleId.trim();
-	const rules = sitesToUrlRules(next);
-	const pageKey = hrefMatchKey(url, rules);
+	const pageKey = hrefMatchKey(url);
 	const existingIndex = siteConfig.links.findIndex(link =>
-		link?.url && hrefMatchKey(link.url, rules) === pageKey
+		link?.url && hrefMatchKey(link.url) === pageKey
 	);
 	const existing = existingIndex >= 0 ? siteConfig.links[existingIndex] : null;
 	if (existing && existing.style === lookId) {
@@ -597,7 +673,7 @@ function toggleSiteLookShortcut(sites, url, title, styleId) {
 	}
 
 	const saved = {
-		url: normalizeHrefForSearch(url, rules),
+		url: normalizeHrefForSearch(url),
 		title: normalizeSavedLinkTitle(title),
 		style: lookId
 	};
@@ -630,7 +706,7 @@ function addTextRuleToSites(sites, site, text, styleId) {
 
 function migrateSitesFromStorage(result) {
 	if (Array.isArray(result?.sites)) {
-		return normalizeSites(result.sites);
+		return loadSitesFromStorageResult(result);
 	}
 
 	const bySite = new Map();
@@ -672,7 +748,7 @@ function migrateSitesFromStorage(result) {
 }
 
 function mergeBookmarkLinksBySiteIntoSites(sites, linksBySite) {
-	let next = normalizeSites(sites);
+	let next = Array.isArray(sites) ? sites.slice() : [];
 	const existingHosts = new Set(next.map(siteConfig => siteConfig.site));
 	let sitesCreated = 0;
 	let linksAdded = 0;
@@ -687,6 +763,7 @@ function mergeBookmarkLinksBySiteIntoSites(sites, linksBySite) {
 			sitesCreated += 1;
 			existingHosts.add(hostname);
 		}
+		if (!Array.isArray(siteConfig.links)) siteConfig.links = [];
 
 		const seen = new Set(siteConfig.links.map(link => link.url));
 		for (const link of links || []) {
@@ -704,7 +781,7 @@ function mergeBookmarkLinksBySiteIntoSites(sites, linksBySite) {
 	}
 
 	return {
-		sites: normalizeSites(next),
+		sites: next,
 		sitesCreated,
 		sitesTouched: (linksBySite && linksBySite.size) || 0,
 		linksAdded,
@@ -1365,12 +1442,11 @@ function getLinkStyleForHref(sites, href) {
 	}
 	const siteConfig = findMatchingSiteConfig(sites, hostname);
 	if (!siteConfig) return "";
-	const rules = sitesToUrlRules(sites);
-	const pageKey = hrefMatchKey(href, rules);
+	const pageKey = hrefMatchKey(href);
 	if (!pageKey) return "";
 	for (const link of siteConfig.links || []) {
 		if (!link?.url) continue;
-		if (hrefMatchKey(link.url, rules) === pageKey) {
+		if (hrefMatchKey(link.url) === pageKey) {
 			return typeof link.style === "string" ? link.style : "";
 		}
 	}
