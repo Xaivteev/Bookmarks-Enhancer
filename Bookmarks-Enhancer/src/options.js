@@ -7,6 +7,7 @@ let detailLinksByLook = null;
 let sitesReady = false;
 let suppressOptionsStorageReload = false;
 let optionsStorageReloadTimer = null;
+let optionsStorageWriteReleaseTimer = null;
 let previewStyleId = "";
 let suppressDirtyTracking = false;
 let savedFormSnapshot = null;
@@ -23,6 +24,37 @@ const DIRTY_CLICK_SELECTOR = [
     ".rowDeleteBtn",
     ".siteListOpen"
 ].join(", ");
+
+function beginOptionsStorageWrite() {
+    suppressOptionsStorageReload = true;
+    if (optionsStorageReloadTimer) {
+        clearTimeout(optionsStorageReloadTimer);
+        optionsStorageReloadTimer = null;
+    }
+    if (optionsStorageWriteReleaseTimer) {
+        clearTimeout(optionsStorageWriteReleaseTimer);
+        optionsStorageWriteReleaseTimer = null;
+    }
+}
+
+function endOptionsStorageWrite() {
+    if (optionsStorageReloadTimer) {
+        clearTimeout(optionsStorageReloadTimer);
+        optionsStorageReloadTimer = null;
+    }
+    if (optionsStorageWriteReleaseTimer) {
+        clearTimeout(optionsStorageWriteReleaseTimer);
+    }
+    // Firefox can deliver storage.onChanged after set()/remove() resolve.
+    optionsStorageWriteReleaseTimer = setTimeout(() => {
+        optionsStorageWriteReleaseTimer = null;
+        if (optionsStorageReloadTimer) {
+            clearTimeout(optionsStorageReloadTimer);
+            optionsStorageReloadTimer = null;
+        }
+        suppressOptionsStorageReload = false;
+    }, 300);
+}
 
 function applyGettingStartedVisibility(hidden) {
     const panel = document.querySelector("#gettingStarted");
@@ -2099,7 +2131,7 @@ function persistOptionsFromForm({
         );
     }
 
-    suppressOptionsStorageReload = true;
+    beginOptionsStorageWrite();
     suppressDirtyTracking = true;
     const openHost = isSiteDetailOpen() ? sitesDraft[selectedSiteIndex]?.site : "";
     return browser.storage.local.set(payload)
@@ -2116,9 +2148,9 @@ function persistOptionsFromForm({
             }
         })
         .then(() => {
-            suppressOptionsStorageReload = false;
             suppressDirtyTracking = false;
             captureSavedFormSnapshot();
+            endOptionsStorageWrite();
             const warnings = [];
             if (dangling.length > 0) {
                 warnings.push(`${dangling.length} missing style reference(s)`);
@@ -2133,8 +2165,8 @@ function persistOptionsFromForm({
             }
         })
         .catch(error => {
-            suppressOptionsStorageReload = false;
             suppressDirtyTracking = false;
+            endOptionsStorageWrite();
             throw error;
         })
         .finally(() => {
@@ -2180,7 +2212,7 @@ function applyLoadedConfiguration(sites, styleRules, general = {}) {
 }
 
 function restoreOptions() {
-    suppressOptionsStorageReload = true;
+    beginOptionsStorageWrite();
     suppressDirtyTracking = true;
     setSitesReady(false);
 
@@ -2200,9 +2232,9 @@ function restoreOptions() {
         console.error(error);
     })
     .finally(() => {
-        suppressOptionsStorageReload = false;
         suppressDirtyTracking = false;
-            captureSavedFormSnapshot();
+        captureSavedFormSnapshot();
+        endOptionsStorageWrite();
     });
 }
 
