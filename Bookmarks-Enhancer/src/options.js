@@ -2160,7 +2160,8 @@ function persistOptionsFromForm({
     successMessage = "Options saved",
     setBusy = true,
     busyLabel = "Saving…",
-    busyButton = null
+    busyButton = null,
+    replaceSavedLinks = false
 } = {}) {
     if (!sitesReady) {
         showStatus("Settings are still loading — try saving again", true);
@@ -2172,18 +2173,23 @@ function persistOptionsFromForm({
     }
 
     const { styleRules, sites: formSites, payload: formPayload } = buildOptionsPayload();
-
-    return browser.storage.local.get([STORAGE_KEYS.sites, STORAGE_KEYS.siteLinks])
-        .then(result => {
-            const sites = mergeSitesLinksFromStorage(
+    const sitesPromise = replaceSavedLinks
+        ? Promise.resolve(formSites)
+        : browser.storage.local.get([STORAGE_KEYS.sites, STORAGE_KEYS.siteLinks])
+            .then(result => mergeSitesLinksFromStorage(
                 formSites,
                 loadedLinksByHost,
                 loadSitesFromStorageResult(result, { preserveLinks: true })
-            );
-            const payload = {
-                ...formPayload,
-                ...buildSitesStorageWrites(sites)
-            };
+            ));
+
+    return sitesPromise
+        .then(sites => {
+            const payload = replaceSavedLinks
+                ? formPayload
+                : {
+                    ...formPayload,
+                    ...buildSitesStorageWrites(sites)
+                };
             const dangling = findDanglingStyleReferences(styleRules, sites);
             const collisions = findStyleRuleClassNameCollisions(styleRules);
 
@@ -2570,7 +2576,7 @@ function importFromJson(jsonString) {
 
     const styleRules = migrateStyleRulesFromStorage(data);
     const loadSites = Array.isArray(data.sites)
-        ? Promise.resolve(normalizeSites(data.sites))
+        ? Promise.resolve(loadSitesFromStorageResult(data))
         : importBookmarkFolderLinksIntoSites(data, migrateSitesFromStorage(data));
 
     return loadSites.then(sites => {
@@ -2582,7 +2588,8 @@ function importFromJson(jsonString) {
         setSitesReady(true);
         return persistOptionsFromForm({
             successMessage: "Imported and saved configuration",
-            setBusy: false
+            setBusy: false,
+            replaceSavedLinks: true
         });
     }).catch(err => {
         console.error("Import failed:", err);
@@ -2592,7 +2599,8 @@ function importFromJson(jsonString) {
                 {
                     label: "Retry save",
                     onClick: () => persistOptionsFromForm({
-                        successMessage: "Imported and saved configuration"
+                        successMessage: "Imported and saved configuration",
+                        replaceSavedLinks: true
                     })
                 },
                 {
