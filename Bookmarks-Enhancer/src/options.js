@@ -17,6 +17,8 @@ let suppressDirtyTracking = false;
 let savedFormSnapshot = null;
 let dirtyUiSyncTimer = null;
 const OPTIONS_DOC_TITLE = "Bookmarks Enhancer Options";
+const SITES_PAGE_SIZE = 10;
+let sitesListPage = 1;
 const DIRTY_CLICK_SELECTOR = [
     "#addSiteBtn",
     "#addClassGroupBtn",
@@ -223,13 +225,14 @@ function populateStyleSelect(select, selectedId = "blocked", { includeNone = fal
 function refreshAllStyleSelects() {
     cachedStyleRules = normalizeStyleRules(collectStyleRules());
     for (const select of document.querySelectorAll(
-        ".textRuleStyle, .savedLinkMove, .savedLinkGroupLook, #legacyImportLook"
+        ".textRuleStyle, .savedLinkMove, .savedLinkGroupLook, .importBookmarkLook"
     )) {
         populateStyleSelect(select, select.value);
     }
-    const legacyLook = document.querySelector("#legacyImportLook");
-    if (legacyLook && !legacyLook.value && legacyLook.options.length > 0) {
-        legacyLook.selectedIndex = 0;
+    for (const look of document.querySelectorAll(".importBookmarkLook")) {
+        if (!look.value && look.options.length > 0) {
+            look.selectedIndex = 0;
+        }
     }
     updateStylePreview();
     syncSavedLinkGroupsToLooks();
@@ -629,17 +632,55 @@ function compareSitesForList(a, b) {
     return (a.site || "").localeCompare(b.site || "");
 }
 
+function getFilteredSitesForList() {
+    const query = getSiteSearchQuery();
+    return sitesDraft
+        .map((siteConfig, index) => ({ siteConfig, index }))
+        .filter(({ siteConfig }) => siteMatchesSearch(siteConfig, query))
+        .sort((a, b) => compareSitesForList(a.siteConfig, b.siteConfig));
+}
+
+function getSitesPageCount(filteredCount) {
+    return Math.max(1, Math.ceil(filteredCount / SITES_PAGE_SIZE));
+}
+
+function clampSitesListPage(filteredCount) {
+    const totalPages = getSitesPageCount(filteredCount);
+    if (sitesListPage > totalPages) sitesListPage = totalPages;
+    if (sitesListPage < 1) sitesListPage = 1;
+    return totalPages;
+}
+
+function renderSiteListPagination(filteredCount) {
+    const nav = document.querySelector("#siteListPagination");
+    const prevBtn = document.querySelector("#siteListPrevPage");
+    const nextBtn = document.querySelector("#siteListNextPage");
+    const label = document.querySelector("#siteListPageLabel");
+    if (!nav) return;
+
+    const totalPages = clampSitesListPage(filteredCount);
+    nav.hidden = filteredCount <= SITES_PAGE_SIZE;
+    if (prevBtn) prevBtn.disabled = sitesListPage <= 1;
+    if (nextBtn) nextBtn.disabled = sitesListPage >= totalPages;
+    if (label) label.textContent = `Page ${sitesListPage} of ${totalPages}`;
+}
+
+function changeSitesListPage(delta) {
+    const filteredCount = getFilteredSitesForList().length;
+    const totalPages = clampSitesListPage(filteredCount);
+    sitesListPage = Math.min(totalPages, Math.max(1, sitesListPage + delta));
+    renderSiteList();
+}
+
 function renderSiteList() {
     const list = document.querySelector("#siteList");
     if (!list) return;
     list.replaceChildren();
 
-    const query = getSiteSearchQuery();
-    sitesDraft
-        .map((siteConfig, index) => ({ siteConfig, index }))
-        .filter(({ siteConfig }) => siteMatchesSearch(siteConfig, query))
-        .sort((a, b) => compareSitesForList(a.siteConfig, b.siteConfig))
-        .forEach(({ siteConfig, index }) => {
+    const filtered = getFilteredSitesForList();
+    clampSitesListPage(filtered.length);
+    const start = (sitesListPage - 1) * SITES_PAGE_SIZE;
+    filtered.slice(start, start + SITES_PAGE_SIZE).forEach(({ siteConfig, index }) => {
         const item = document.createElement("li");
         item.className = "siteListItem";
 
@@ -667,6 +708,7 @@ function renderSiteList() {
         list.appendChild(item);
     });
 
+    renderSiteListPagination(filtered.length);
     refreshSitesEmptyState();
 }
 
@@ -704,6 +746,10 @@ function openSiteDetail(index, options = {}) {
     const keepParamsInput = document.querySelector("#siteKeepParams");
     if (hostInput) hostInput.value = siteConfig.site || "";
     if (keepParamsInput) keepParamsInput.value = siteConfig.keepParams || "";
+    const siteImportHostLabel = document.querySelector("#siteImportHostLabel");
+    if (siteImportHostLabel) {
+        siteImportHostLabel.textContent = siteConfig.site || "this website";
+    }
     setFieldError(hostInput, document.querySelector("#siteDetailHostError"), "");
     setFieldError(keepParamsInput, document.querySelector("#siteKeepParamsError"), "");
 
@@ -813,8 +859,7 @@ function flattenBookmarkFolders(nodes, path = "", group = null) {
     return folders;
 }
 
-function populateLegacyImportFolderSelect(folders) {
-    const select = document.querySelector("#legacyImportFolder");
+function populateImportFolderSelect(select, folders) {
     if (!select) return;
     const previous = select.value;
     select.replaceChildren();
@@ -858,28 +903,73 @@ function populateLegacyImportFolderSelect(folders) {
     }
 }
 
+function populateAllImportFolderSelects(folders) {
+    for (const select of document.querySelectorAll(".importBookmarkFolder")) {
+        populateImportFolderSelect(select, folders);
+    }
+}
+
 function loadLegacyImportFolders() {
-    const select = document.querySelector("#legacyImportFolder");
-    if (!select) return Promise.resolve();
+    const selects = document.querySelectorAll(".importBookmarkFolder");
+    if (selects.length === 0) return Promise.resolve();
     if (!browser.bookmarks || typeof browser.bookmarks.getTree !== "function") {
-        populateLegacyImportFolderSelect([]);
+        populateAllImportFolderSelects([]);
         return Promise.resolve();
     }
 
     return browser.bookmarks.getTree()
         .then(tree => {
-            populateLegacyImportFolderSelect(flattenBookmarkFolders(tree));
+            populateAllImportFolderSelects(flattenBookmarkFolders(tree));
         })
         .catch(error => {
             console.error("Could not load bookmark folders:", error);
-            populateLegacyImportFolderSelect([]);
+            populateAllImportFolderSelects([]);
         });
 }
 
-function importLegacyBookmarkFolder() {
-    const folderSelect = document.querySelector("#legacyImportFolder");
-    const lookSelect = document.querySelector("#legacyImportLook");
-    const errorEl = document.querySelector("#legacyImportError");
+function showBookmarkImportStatus(result, siteHost) {
+    if (result.sitesTouched === 0) {
+        const message = siteHost
+            ? `No http(s) bookmarks for ${siteHost} in that folder`
+            : "No http(s) bookmarks found in that folder";
+        showStatus(message, true);
+        return;
+    }
+
+    if (siteHost) {
+        if (result.linksAdded === 0) {
+            showStatus(
+                `${formatCount(result.linksSkipped, "duplicate")} skipped. Save to apply.`
+            );
+            return;
+        }
+        const parts = [`Added ${formatCount(result.linksAdded, "link")} for ${siteHost}`];
+        if (result.linksSkipped > 0) {
+            parts.push(`${formatCount(result.linksSkipped, "duplicate")} skipped`);
+        }
+        showStatus(`${parts.join(". ")}. Save to apply.`);
+        return;
+    }
+
+    const parts = [
+        `Added ${formatCount(result.linksAdded, "link")} across ${formatCount(result.sitesTouched, "site")}`
+    ];
+    if (result.sitesCreated > 0) {
+        parts.push(`${formatCount(result.sitesCreated, "new site")}`);
+    }
+    if (result.linksSkipped > 0) {
+        parts.push(`${formatCount(result.linksSkipped, "duplicate")} skipped`);
+    }
+    showStatus(`${parts.join(". ")}. Save to apply.`);
+}
+
+function importBookmarkFolderFromForm({
+    folderSelect,
+    lookSelect,
+    errorEl,
+    button,
+    hostFilter = ""
+}) {
     const folderId = folderSelect?.value || "";
     const styleId = lookSelect?.value || "";
 
@@ -898,20 +988,21 @@ function importLegacyBookmarkFolder() {
 
     flushSiteDetailToDraft();
     const openHost = isSiteDetailOpen() ? sitesDraft[selectedSiteIndex]?.site : "";
-    const button = document.querySelector("#legacyImportBtn");
+    const siteHost = hostFilter ? normalizeSite(hostFilter) || openHost : "";
+    const originalLabel = button?.textContent || "Import folder";
     if (button) {
         button.disabled = true;
         button.textContent = "Importing…";
     }
 
-    importBookmarkFolderIntoSites(sitesDraft, folderId, styleId)
+    importBookmarkFolderIntoSites(sitesDraft, folderId, styleId, siteHost)
         .then(result => {
             sitesDraft = result.sites;
             try {
                 if (openHost) {
                     const index = sitesDraft.findIndex(siteConfig => siteConfig.site === openHost);
                     if (index >= 0) {
-                        openSiteDetail(index);
+                        openSiteDetail(index, siteHost ? { siteTab: "links" } : undefined);
                     } else {
                         showSiteListView();
                     }
@@ -923,21 +1014,7 @@ function importLegacyBookmarkFolder() {
                 console.error("Bookmark folder import UI update failed:", uiError);
             }
 
-            if (result.sitesTouched === 0) {
-                showStatus("No http(s) bookmarks found in that folder", true);
-                return;
-            }
-
-            const parts = [
-                `Added ${formatCount(result.linksAdded, "link")} across ${formatCount(result.sitesTouched, "site")}`
-            ];
-            if (result.sitesCreated > 0) {
-                parts.push(`${formatCount(result.sitesCreated, "new site")}`);
-            }
-            if (result.linksSkipped > 0) {
-                parts.push(`${formatCount(result.linksSkipped, "duplicate")} skipped`);
-            }
-            showStatus(`${parts.join(". ")}. Save to apply.`);
+            showBookmarkImportStatus(result, siteHost);
         })
         .catch(error => {
             console.error("Bookmark folder import failed:", error);
@@ -947,9 +1024,35 @@ function importLegacyBookmarkFolder() {
         .finally(() => {
             if (button) {
                 button.disabled = false;
-                button.textContent = "Import folder";
+                button.textContent = originalLabel;
             }
         });
+}
+
+function importLegacyBookmarkFolder() {
+    importBookmarkFolderFromForm({
+        folderSelect: document.querySelector("#legacyImportFolder"),
+        lookSelect: document.querySelector("#legacyImportLook"),
+        errorEl: document.querySelector("#legacyImportError"),
+        button: document.querySelector("#legacyImportBtn")
+    });
+}
+
+function importSiteBookmarkFolder() {
+    if (!isSiteDetailOpen()) return;
+    flushSiteDetailToDraft();
+    const host = sitesDraft[selectedSiteIndex]?.site || "";
+    if (!host) {
+        showStatus("Enter a website hostname before importing bookmarks", true);
+        return;
+    }
+    importBookmarkFolderFromForm({
+        folderSelect: document.querySelector("#siteImportFolder"),
+        lookSelect: document.querySelector("#siteImportLook"),
+        errorEl: document.querySelector("#siteImportError"),
+        button: document.querySelector("#siteImportBtn"),
+        hostFilter: host
+    });
 }
 
 let classGroupFieldIdSeq = 0;
@@ -2978,7 +3081,7 @@ function activateOptionsTab(tabId, options = {}) {
     if (tabId === "sites" || tabId === "looks" || tabId === "general") {
         refreshAllStyleSelects();
     }
-    if (tabId === "general") {
+    if (tabId === "sites") {
         loadLegacyImportFolders();
     }
 
@@ -3069,8 +3172,14 @@ function setupEventListeners() {
                 addSiteFromInput();
             }
         });
-        document.querySelector("#searchSitesInput")?.addEventListener("input", renderSiteList);
-        document.querySelector("#searchSitesInput")?.addEventListener("search", renderSiteList);
+        const resetSitesListPageAndRender = () => {
+            sitesListPage = 1;
+            renderSiteList();
+        };
+        document.querySelector("#searchSitesInput")?.addEventListener("input", resetSitesListPageAndRender);
+        document.querySelector("#searchSitesInput")?.addEventListener("search", resetSitesListPageAndRender);
+        document.querySelector("#siteListPrevPage")?.addEventListener("click", () => changeSitesListPage(-1));
+        document.querySelector("#siteListNextPage")?.addEventListener("click", () => changeSitesListPage(1));
         document.querySelector("#siteDetailBack")?.addEventListener("click", closeSiteDetail);
         document.querySelector("#siteDetailHost")?.addEventListener("input", () => validateSiteDetail());
         document.querySelector("#siteDetailHost")?.addEventListener("blur", () => {
@@ -3082,6 +3191,7 @@ function setupEventListeners() {
         document.querySelector("#addClassGroupBtn")?.addEventListener("click", () => createClassGroupRow());
         document.querySelector("#addLinkFolderBtn")?.addEventListener("click", addLinkFolderFromSelect);
         document.querySelector("#legacyImportBtn")?.addEventListener("click", importLegacyBookmarkFolder);
+        document.querySelector("#siteImportBtn")?.addEventListener("click", importSiteBookmarkFolder);
         document.querySelector("#addTextRuleBtn")?.addEventListener("click", () => createTextRuleRow());
         document.querySelector("#addStyleRuleBtn")?.addEventListener("click", () => {
                 createStyleRuleRow();

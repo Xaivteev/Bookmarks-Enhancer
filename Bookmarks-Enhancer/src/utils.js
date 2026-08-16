@@ -923,7 +923,7 @@ function mergeBookmarkLinksBySiteIntoSites(sites, linksBySite) {
 	};
 }
 
-function importBookmarkFolderIntoSites(sites, folderId, styleId) {
+function importBookmarkFolderIntoSites(sites, folderId, styleId, hostFilter) {
 	const style = typeof styleId === "string" ? styleId.trim() : "";
 	if (!folderId || !style) {
 		return Promise.resolve({
@@ -938,9 +938,18 @@ function importBookmarkFolderIntoSites(sites, folderId, styleId) {
 		return Promise.reject(new Error("Bookmark folders are not available"));
 	}
 
+	const host = hostFilter ? normalizeSite(hostFilter) : "";
+
 	return loadBookmarkSubtree(folderId).then(tree => {
 		const linksBySite = new Map();
 		collectBookmarkUrlsFromTree(tree, style, linksBySite);
+		if (host) {
+			const links = linksBySite.get(host) || [];
+			linksBySite.clear();
+			if (links.length > 0) {
+				linksBySite.set(host, links);
+			}
+		}
 		return mergeBookmarkLinksBySiteIntoSites(sites, linksBySite);
 	});
 }

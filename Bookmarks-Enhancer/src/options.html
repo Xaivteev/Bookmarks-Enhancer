@@ -986,9 +986,41 @@
             list-style: none;
             margin: 0;
             padding: 0;
+            max-height: min(38.5rem, calc(100vh - 16rem));
             border: 1px solid #d1d5db;
             border-radius: 0.375rem;
-            overflow: hidden;
+            overflow-x: hidden;
+            overflow-y: auto;
+        }
+
+        .siteListPagination {
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            gap: 0.75rem;
+            margin: 0.65rem 0 0;
+        }
+
+        .siteListPagination[hidden] {
+            display: none;
+        }
+
+        .siteListPagination button {
+            font: inherit;
+            padding: 0.25rem 0.65rem;
+            cursor: pointer;
+        }
+
+        .siteListPagination button:disabled {
+            opacity: 0.45;
+            cursor: not-allowed;
+        }
+
+        .siteListPageLabel {
+            color: #4b5563;
+            font-size: 0.92em;
+            min-width: 7.5rem;
+            text-align: center;
         }
 
         .siteListItem {
@@ -1404,29 +1436,6 @@
                 Show a brief on-page summary after looks are applied, including
                 how many elements were styled and how many were hidden.
             </p>
-
-            <section class="legacyImport" aria-labelledby="legacyImportHeading">
-                <h2 id="legacyImportHeading">Import from bookmarks</h2>
-                <p class="hint">
-                    Choose a bookmark folder and a look. Each website found in that
-                    folder (including nested folders) is added under Sites, and its
-                    links are saved under that look. Save afterwards to apply.
-                </p>
-                <div class="legacyImportFields">
-                    <label for="legacyImportFolder">Bookmark folder</label>
-                    <select id="legacyImportFolder" aria-describedby="legacyImportFolderHelp">
-                        <option value="">Loading folders…</option>
-                    </select>
-                    <p class="settingHelp" id="legacyImportFolderHelp">
-                        Includes the selected folder and all folders inside it.
-                    </p>
-
-                    <label for="legacyImportLook">Look</label>
-                    <select id="legacyImportLook"></select>
-                </div>
-                <button type="button" id="legacyImportBtn">Import folder</button>
-                <p class="fieldError" id="legacyImportError" hidden></p>
-            </section>
         </section>
 
         <section
@@ -1530,6 +1539,11 @@
                     >
                 </div>
                 <ul class="siteList" id="siteList"></ul>
+                <nav class="siteListPagination" id="siteListPagination" hidden aria-label="Sites pages">
+                    <button type="button" id="siteListPrevPage">Previous</button>
+                    <span class="siteListPageLabel" id="siteListPageLabel" aria-live="polite">Page 1 of 1</span>
+                    <button type="button" id="siteListNextPage">Next</button>
+                </nav>
                 <p class="tableEmptyState" id="sitesEmpty" hidden>
                     No websites yet. Add a hostname, or use Select Target Classes
                     from the page context menu.
@@ -1537,6 +1551,33 @@
                 <p class="tableEmptyState" id="sitesSearchEmpty" hidden>
                     No websites match that search.
                 </p>
+
+                <section class="legacyImport" aria-labelledby="legacyImportHeading">
+                    <h2 id="legacyImportHeading">Import from bookmarks</h2>
+                    <p class="hint">
+                        Choose a bookmark folder and a look. Each website found in that
+                        folder (including nested folders) is added under Sites, and its
+                        links are saved under that look. Save afterwards to apply.
+                    </p>
+                    <div class="legacyImportFields">
+                        <label for="legacyImportFolder">Bookmark folder</label>
+                        <select
+                            id="legacyImportFolder"
+                            class="importBookmarkFolder"
+                            aria-describedby="legacyImportFolderHelp"
+                        >
+                            <option value="">Loading folders…</option>
+                        </select>
+                        <p class="settingHelp" id="legacyImportFolderHelp">
+                            Includes the selected folder and all folders inside it.
+                        </p>
+
+                        <label for="legacyImportLook">Look</label>
+                        <select id="legacyImportLook" class="importBookmarkLook"></select>
+                    </div>
+                    <button type="button" id="legacyImportBtn">Import folder</button>
+                    <p class="fieldError" id="legacyImportError" hidden></p>
+                </section>
             </div>
 
             <div id="siteDetailView" hidden>
@@ -1650,6 +1691,33 @@
                         <select id="addLinkFolderSelect" aria-label="Look to add"></select>
                         <button type="button" id="addLinkFolderBtn">Add look</button>
                     </div>
+
+                    <section class="legacyImport" aria-labelledby="siteImportHeading">
+                        <h2 id="siteImportHeading">Import from bookmarks</h2>
+                        <p class="hint">
+                            Choose a bookmark folder and a look. Only http(s) bookmarks for
+                            <strong id="siteImportHostLabel">this website</strong>
+                            are imported, including nested folders. Save afterwards to apply.
+                        </p>
+                        <div class="legacyImportFields">
+                            <label for="siteImportFolder">Bookmark folder</label>
+                            <select
+                                id="siteImportFolder"
+                                class="importBookmarkFolder"
+                                aria-describedby="siteImportFolderHelp"
+                            >
+                                <option value="">Loading folders…</option>
+                            </select>
+                            <p class="settingHelp" id="siteImportFolderHelp">
+                                Includes the selected folder and all folders inside it.
+                            </p>
+
+                            <label for="siteImportLook">Look</label>
+                            <select id="siteImportLook" class="importBookmarkLook"></select>
+                        </div>
+                        <button type="button" id="siteImportBtn">Import folder</button>
+                        <p class="fieldError" id="siteImportError" hidden></p>
+                    </section>
                 </section>
 
                 <section
