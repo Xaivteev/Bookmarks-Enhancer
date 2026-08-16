@@ -217,6 +217,12 @@
             margin: 0.25rem 0 0;
         }
 
+        .bookmarkExport {
+            margin: 1.5rem 0 0;
+            padding: 0.75rem 0 0;
+            border-top: 1px solid #d1d5db;
+        }
+
         .advancedSiteRules {
             margin: 1.75rem 0 0;
             padding: 0.75rem 0 0;
@@ -1578,6 +1584,16 @@
                     <button type="button" id="legacyImportBtn">Import folder</button>
                     <p class="fieldError" id="legacyImportError" hidden></p>
                 </section>
+
+                <section class="bookmarkExport" aria-labelledby="legacyExportHeading">
+                    <h2 id="legacyExportHeading">Export to bookmarks</h2>
+                    <p class="hint">
+                        Download an HTML bookmarks file you can import in Chrome or
+                        Firefox. It uses a Bookmarks Enhancer folder, then a folder
+                        per site, then a folder per look, then the saved links.
+                    </p>
+                    <button type="button" id="legacyExportBookmarksBtn">Export bookmarks</button>
+                </section>
             </div>
 
             <div id="siteDetailView" hidden>
@@ -1717,6 +1733,17 @@
                         </div>
                         <button type="button" id="siteImportBtn">Import folder</button>
                         <p class="fieldError" id="siteImportError" hidden></p>
+                    </section>
+
+                    <section class="bookmarkExport" aria-labelledby="siteExportHeading">
+                        <h2 id="siteExportHeading">Export to bookmarks</h2>
+                        <p class="hint">
+                            Download an HTML bookmarks file for
+                            <strong id="siteExportHostLabel">this website</strong>
+                            that Chrome or Firefox can import. Structure is this site,
+                            then a folder per look, then the saved links.
+                        </p>
+                        <button type="button" id="siteExportBookmarksBtn">Export bookmarks</button>
                     </section>
                 </section>
 

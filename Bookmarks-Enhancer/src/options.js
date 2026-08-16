@@ -746,9 +746,10 @@ function openSiteDetail(index, options = {}) {
     const keepParamsInput = document.querySelector("#siteKeepParams");
     if (hostInput) hostInput.value = siteConfig.site || "";
     if (keepParamsInput) keepParamsInput.value = siteConfig.keepParams || "";
-    const siteImportHostLabel = document.querySelector("#siteImportHostLabel");
-    if (siteImportHostLabel) {
-        siteImportHostLabel.textContent = siteConfig.site || "this website";
+    const hostLabel = siteConfig.site || "this website";
+    for (const selector of ["#siteImportHostLabel", "#siteExportHostLabel"]) {
+        const label = document.querySelector(selector);
+        if (label) label.textContent = hostLabel;
     }
     setFieldError(hostInput, document.querySelector("#siteDetailHostError"), "");
     setFieldError(keepParamsInput, document.querySelector("#siteKeepParamsError"), "");
@@ -1052,6 +1053,61 @@ function importSiteBookmarkFolder() {
         errorEl: document.querySelector("#siteImportError"),
         button: document.querySelector("#siteImportBtn"),
         hostFilter: host
+    });
+}
+
+function downloadTextFile(filename, text, mimeType) {
+    const blob = new Blob([text], { type: mimeType });
+    const url = URL.createObjectURL(blob);
+    const anchor = document.createElement("a");
+    anchor.href = url;
+    anchor.download = filename;
+    document.body.appendChild(anchor);
+    anchor.click();
+    anchor.remove();
+    URL.revokeObjectURL(url);
+}
+
+function bookmarkExportFilename(host) {
+    const date = new Date().toISOString().slice(0, 10);
+    if (!host) return `bookmarks-enhancer-bookmarks-${date}.html`;
+    const safe = String(host).replace(/[^a-z0-9.-]+/gi, "_").replace(/^_+|_+$/g, "") || "site";
+    return `bookmarks-enhancer-${safe}-${date}.html`;
+}
+
+function exportBookmarksHtmlFile(sites, { rootFolderName, filename, emptyMessage }) {
+    const list = Array.isArray(sites) ? sites.filter(siteConfig => siteConfig?.site) : [];
+    if (list.length === 0) {
+        showStatus(emptyMessage, true);
+        return;
+    }
+    const html = buildNetscapeBookmarkHtml(list, getAvailableStyleRules(), { rootFolderName });
+    downloadTextFile(filename, html, "text/html;charset=utf-8");
+    showStatus(`Exported ${formatCount(countBookmarkExportLinks(list), "bookmark")}`);
+}
+
+function exportAllSitesBookmarks() {
+    flushSiteDetailToDraft();
+    flattenDetailLinksToSite();
+    exportBookmarksHtmlFile(sitesDraft, {
+        rootFolderName: BOOKMARK_EXPORT_ROOT_FOLDER,
+        filename: bookmarkExportFilename(),
+        emptyMessage: "No websites to export"
+    });
+}
+
+function exportCurrentSiteBookmarks() {
+    if (!isSiteDetailOpen()) return;
+    flushSiteDetailToDraft();
+    flattenDetailLinksToSite();
+    const site = sitesDraft[selectedSiteIndex];
+    if (!site?.site) {
+        showStatus("Enter a website hostname before exporting bookmarks", true);
+        return;
+    }
+    exportBookmarksHtmlFile([site], {
+        filename: bookmarkExportFilename(site.site),
+        emptyMessage: `No saved links for ${site.site} to export`
     });
 }
 
@@ -3192,6 +3248,8 @@ function setupEventListeners() {
         document.querySelector("#addLinkFolderBtn")?.addEventListener("click", addLinkFolderFromSelect);
         document.querySelector("#legacyImportBtn")?.addEventListener("click", importLegacyBookmarkFolder);
         document.querySelector("#siteImportBtn")?.addEventListener("click", importSiteBookmarkFolder);
+        document.querySelector("#legacyExportBookmarksBtn")?.addEventListener("click", exportAllSitesBookmarks);
+        document.querySelector("#siteExportBookmarksBtn")?.addEventListener("click", exportCurrentSiteBookmarks);
         document.querySelector("#addTextRuleBtn")?.addEventListener("click", () => createTextRuleRow());
         document.querySelector("#addStyleRuleBtn")?.addEventListener("click", () => {
                 createStyleRuleRow();

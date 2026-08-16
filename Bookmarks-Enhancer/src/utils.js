@@ -80,6 +80,8 @@ const DEFAULT_STYLE_RULES = [
 	}
 ];
 
+const BOOKMARK_EXPORT_ROOT_FOLDER = "Bookmarks Enhancer";
+
 const UNMATCHED_BOOKMARK_RULE_ID = "__unmatched__";
 
 function isUnmatchedBookmarkRule(rule) {
@@ -952,6 +954,103 @@ function importBookmarkFolderIntoSites(sites, folderId, styleId, hostFilter) {
 		}
 		return mergeBookmarkLinksBySiteIntoSites(sites, linksBySite);
 	});
+}
+
+function escapeBookmarkHtml(value) {
+	return String(value ?? "")
+		.replace(/&/g, "&amp;")
+		.replace(/</g, "&lt;")
+		.replace(/>/g, "&gt;")
+		.replace(/"/g, "&quot;");
+}
+
+function lookNameForBookmarkExport(styleId, styleRules) {
+	const id = typeof styleId === "string" && styleId.trim() ? styleId.trim() : "blocked";
+	const rule = (styleRules || []).find(entry => entry.id === id);
+	return (rule?.name || "").trim() || id;
+}
+
+function groupSiteLinksByLook(siteConfig) {
+	const groups = new Map();
+	for (const id of siteConfig?.linkFolders || []) {
+		const styleId = typeof id === "string" ? id.trim() : "";
+		if (!styleId || groups.has(styleId)) continue;
+		groups.set(styleId, []);
+	}
+	for (const link of siteConfig?.links || []) {
+		const saved = normalizeSavedLink(link);
+		if (!saved) continue;
+		if (!groups.has(saved.style)) groups.set(saved.style, []);
+		groups.get(saved.style).push(saved);
+	}
+	return groups;
+}
+
+function renderBookmarkFolderHtml(name, inner, indent, addDate) {
+	const pad = "    ".repeat(indent);
+	const heading = `<DT><H3 ADD_DATE="${addDate}">${escapeBookmarkHtml(name)}</H3>`;
+	return `${pad}${heading}\n${pad}<DL><p>\n${inner || ""}${pad}</DL><p>\n`;
+}
+
+function renderBookmarkLinkHtml(link, indent, addDate) {
+	const pad = "    ".repeat(indent);
+	const title = link.title || link.url;
+	return `${pad}<DT><A HREF="${escapeBookmarkHtml(link.url)}" ADD_DATE="${addDate}">${escapeBookmarkHtml(title)}</A>\n`;
+}
+
+function renderSiteBookmarkFolderHtml(siteConfig, styleRules, indent, addDate) {
+	const host = siteConfig?.site || "";
+	if (!host) return "";
+	const groups = groupSiteLinksByLook(siteConfig);
+	let inner = "";
+	for (const [styleId, links] of groups) {
+		const lookInner = links
+			.map(link => renderBookmarkLinkHtml(link, indent + 2, addDate))
+			.join("");
+		inner += renderBookmarkFolderHtml(
+			lookNameForBookmarkExport(styleId, styleRules),
+			lookInner,
+			indent + 1,
+			addDate
+		);
+	}
+	return renderBookmarkFolderHtml(host, inner, indent, addDate);
+}
+
+function countBookmarkExportLinks(sites) {
+	let count = 0;
+	for (const siteConfig of sites || []) {
+		for (const link of siteConfig?.links || []) {
+			if (normalizeSavedLink(link)) count += 1;
+		}
+	}
+	return count;
+}
+
+function buildNetscapeBookmarkHtml(sites, styleRules, options = {}) {
+	const addDate = String(Math.floor(Date.now() / 1000));
+	const list = (Array.isArray(sites) ? sites : [])
+		.filter(siteConfig => siteConfig?.site)
+		.sort((a, b) => (a.site || "").localeCompare(b.site || ""));
+	const indent = options.rootFolderName ? 1 : 0;
+	let inner = list
+		.map(siteConfig => renderSiteBookmarkFolderHtml(siteConfig, styleRules, indent, addDate))
+		.join("");
+	if (options.rootFolderName) {
+		inner = renderBookmarkFolderHtml(options.rootFolderName, inner, 0, addDate);
+	}
+	return [
+		"<!DOCTYPE NETSCAPE-Bookmark-file-1>",
+		"<!-- This is an automatically generated file.",
+		"     It will be processed by the browser as such. -->",
+		'<META HTTP-EQUIV="Content-Type" CONTENT="text/html; charset=UTF-8">',
+		"<TITLE>Bookmarks</TITLE>",
+		"<H1>Bookmarks</H1>",
+		"<DL><p>",
+		inner.replace(/\n$/, ""),
+		"</DL><p>",
+		""
+	].join("\n");
 }
 
 function asBookmarkNodeArray(tree) {
