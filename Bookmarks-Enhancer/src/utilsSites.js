@@ -364,6 +364,145 @@ function siteLinksByHostFromSites(sites) {
 	return byHost;
 }
 
+function siteLinkHostsFromStorageResult(result) {
+	const hosts = new Set();
+	if (!result || typeof result !== "object") return hosts;
+	for (const key of Object.keys(result)) {
+		const host = hostFromSiteLinksStorageKey(key);
+		if (host) hosts.add(host);
+	}
+	const blob = result[STORAGE_KEYS.siteLinks];
+	if (blob && typeof blob === "object" && !Array.isArray(blob)) {
+		for (const host of Object.keys(blob)) {
+			if (host) hosts.add(host);
+		}
+	}
+	return hosts;
+}
+
+function siteLinksByHostFromStorageResult(result) {
+	if (!result || typeof result !== "object") return null;
+	const byHost = {};
+	let found = false;
+
+	for (const [key, value] of Object.entries(result)) {
+		const host = hostFromSiteLinksStorageKey(key);
+		if (!host) continue;
+		found = true;
+		byHost[host] = Array.isArray(value) ? value : [];
+	}
+
+	const blob = result[STORAGE_KEYS.siteLinks];
+	if (blob && typeof blob === "object" && !Array.isArray(blob)) {
+		found = true;
+		for (const [host, links] of Object.entries(blob)) {
+			if (!host || Object.prototype.hasOwnProperty.call(byHost, host)) continue;
+			byHost[host] = Array.isArray(links) ? links : [];
+		}
+	}
+
+	return found ? byHost : null;
+}
+
+function storageResultFromSitesAndLinks(sitesMeta, linksByHost) {
+	const result = { sites: sitesMeta };
+	for (const [host, links] of Object.entries(linksByHost || {})) {
+		if (!host) continue;
+		const key = siteLinksStorageKey(host);
+		if (key) result[key] = Array.isArray(links) ? links : [];
+	}
+	return result;
+}
+
+function mergeSiteLinksIntoSites(sites, siteLinksByHost) {
+	const hasSplit = siteLinksByHost &&
+		typeof siteLinksByHost === "object" &&
+		!Array.isArray(siteLinksByHost);
+	return (Array.isArray(sites) ? sites : []).map(siteConfig => {
+		if (!siteConfig || typeof siteConfig !== "object") return siteConfig;
+		if (!hasSplit) return siteConfig;
+		const host = siteConfig.site;
+		return {
+			...siteConfig,
+			links: host && Array.isArray(siteLinksByHost[host])
+				? siteLinksByHost[host]
+				: []
+		};
+	});
+}
+
+function sitesHaveEmbeddedLinks(sites) {
+	return (Array.isArray(sites) ? sites : []).some(
+		siteConfig => Array.isArray(siteConfig?.links) && siteConfig.links.length > 0
+	);
+}
+
+function buildSitesStoragePlan(sites, { previousHosts = [] } = {}) {
+	const writes = {
+		[STORAGE_KEYS.sites]: (sites || []).map(siteConfigToStorageMeta).filter(Boolean)
+	};
+	const keepHosts = new Set();
+	for (const siteConfig of sites || []) {
+		const host = siteConfig?.site;
+		if (!host) continue;
+		keepHosts.add(host);
+		writes[siteLinksStorageKey(host)] = Array.isArray(siteConfig.links)
+			? siteConfig.links
+			: [];
+	}
+
+	const removeKeys = [STORAGE_KEYS.siteLinks];
+	for (const host of previousHosts || []) {
+		if (!host || keepHosts.has(host)) continue;
+		removeKeys.push(siteLinksStorageKey(host));
+	}
+
+	return { writes, removeKeys };
+}
+
+function buildSitesStorageWrites(sites, { previousHosts = [] } = {}) {
+	return buildSitesStoragePlan(sites, { previousHosts }).writes;
+}
+
+function buildHostLinksStorageWrite(host, links) {
+	const key = siteLinksStorageKey(host);
+	if (!key) return {};
+	return { [key]: Array.isArray(links) ? links : [] };
+}
+
+function siteLinkStorageKeysForSites(sites) {
+	return (sites || [])
+		.map(siteConfig => siteConfig?.site && siteLinksStorageKey(siteConfig.site))
+		.filter(Boolean);
+}
+
+function getStoredSitesAndLinks() {
+	return browser.storage.local.get([STORAGE_KEYS.sites, STORAGE_KEYS.siteLinks])
+		.then(meta => {
+			const extra = siteLinkStorageKeysForSites(meta.sites);
+			if (extra.length === 0) return meta;
+			return browser.storage.local.get(extra).then(links => Object.assign({}, meta, links));
+		});
+}
+
+function persistSitesStoragePlan(plan) {
+	const writes = plan?.writes || {};
+	const removeKeys = Array.from(new Set(plan?.removeKeys || [])).filter(Boolean);
+	const setPromise = Object.keys(writes).length > 0
+		? browser.storage.local.set(writes)
+		: Promise.resolve();
+	if (removeKeys.length === 0) return setPromise;
+	return setPromise.then(() => browser.storage.local.remove(removeKeys));
+}
+
+function loadSitesFromStorageResult(result, options = {}) {
+	const merged = mergeSiteLinksIntoSites(
+		result?.sites,
+		siteLinksByHostFromStorageResult(result)
+	);
+	return normalizeSites(merged, options);
+}
+
 function savedLinkKey(link) {
 	return typeof link?.url === "string" ? link.url.trim() : "";
 }
@@ -494,44 +633,6 @@ function mergeSitesLinksFromStorage(draftSites, baseLinksByHost, storageSites) {
 	}
 
 	return merged;
-}
-
-function mergeSiteLinksIntoSites(sites, siteLinksByHost) {
-	const hasSplit = siteLinksByHost &&
-		typeof siteLinksByHost === "object" &&
-		!Array.isArray(siteLinksByHost);
-	return (Array.isArray(sites) ? sites : []).map(siteConfig => {
-		if (!siteConfig || typeof siteConfig !== "object") return siteConfig;
-		if (!hasSplit) return siteConfig;
-		const host = siteConfig.site;
-		return {
-			...siteConfig,
-			links: host && Array.isArray(siteLinksByHost[host])
-				? siteLinksByHost[host]
-				: []
-		};
-	});
-}
-
-function sitesHaveEmbeddedLinks(sites) {
-	return (Array.isArray(sites) ? sites : []).some(
-		siteConfig => Array.isArray(siteConfig?.links) && siteConfig.links.length > 0
-	);
-}
-
-function buildSitesStorageWrites(sites) {
-	return {
-		[STORAGE_KEYS.sites]: (sites || []).map(siteConfigToStorageMeta).filter(Boolean),
-		[STORAGE_KEYS.siteLinks]: siteLinksByHostFromSites(sites)
-	};
-}
-
-function loadSitesFromStorageResult(result, options = {}) {
-	const merged = mergeSiteLinksIntoSites(
-		result?.sites,
-		result?.[STORAGE_KEYS.siteLinks]
-	);
-	return normalizeSites(merged, options);
 }
 
 function normalizeSiteConfig(siteConfig, options = {}) {

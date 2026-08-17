@@ -2693,9 +2693,15 @@ function isLinksOnlyStorageChange(changes) {
     if (!changes) return false;
     const keys = Object.keys(changes);
     if (keys.length === 0) return false;
+    const hasLinkKey = keys.some(key =>
+        key === STORAGE_KEYS.siteLinks || isSiteLinksStorageKey(key)
+    );
+    if (!hasLinkKey) return false;
     return keys.every(key =>
-        key === STORAGE_KEYS.siteLinks || key === STORAGE_KEYS.sites
-    ) && Object.prototype.hasOwnProperty.call(changes, STORAGE_KEYS.siteLinks);
+        key === STORAGE_KEYS.siteLinks ||
+        key === STORAGE_KEYS.sites ||
+        isSiteLinksStorageKey(key)
+    );
 }
 
 function applyRemoteSavedLinkMerge(storageResult) {
@@ -2847,9 +2853,14 @@ function persistOptionsFromForm({
     }
 
     const { styleRules, sites: formSites, payload: formPayload } = buildOptionsPayload();
+    const previousHosts = Object.keys(loadedLinksByHost);
     const sitesPromise = replaceSavedLinks
-        ? Promise.resolve(formSites)
-        : browser.storage.local.get([STORAGE_KEYS.sites, STORAGE_KEYS.siteLinks])
+        ? getStoredSitesAndLinks().then(result => {
+            previousHosts.length = 0;
+            previousHosts.push(...siteLinkHostsFromStorageResult(result));
+            return formSites;
+        })
+        : getStoredSitesAndLinks()
             .then(result => mergeSitesLinksFromStorage(
                 formSites,
                 loadedLinksByHost,
@@ -2858,12 +2869,14 @@ function persistOptionsFromForm({
 
     return sitesPromise
         .then(sites => {
-            const payload = replaceSavedLinks
-                ? formPayload
-                : {
-                    ...formPayload,
-                    ...buildSitesStorageWrites(sites)
-                };
+            const plan = buildSitesStoragePlan(sites, { previousHosts });
+            const payload = {
+                enableTopBorder: formPayload.enableTopBorder,
+                enableDeepSearch: formPayload.enableDeepSearch,
+                enableToastNotifications: formPayload.enableToastNotifications,
+                [STYLE_RULE_STORAGE_KEY]: styleRules,
+                ...plan.writes
+            };
             const dangling = findDanglingStyleReferences(styleRules, sites);
             const collisions = findStyleRuleClassNameCollisions(styleRules);
 
@@ -2899,9 +2912,10 @@ function persistOptionsFromForm({
 
             beginOptionsStorageWrite();
             suppressDirtyTracking = true;
-            return browser.storage.local.set(payload)
-                .then(() => browser.storage.local.remove(Object.values(LEGACY_STORAGE_KEYS)))
-                .then(() => ({ styleRules, sites, payload, dangling, collisions }));
+            return persistSitesStoragePlan({
+                writes: payload,
+                removeKeys: [...plan.removeKeys, ...Object.values(LEGACY_STORAGE_KEYS)]
+            }).then(() => ({ styleRules, sites, payload, dangling, collisions }));
         })
         .then(saved => {
             if (!saved) return;
@@ -3034,10 +3048,7 @@ function scheduleOptionsStorageReload(changes) {
         optionsStorageReloadTimer = null;
         if (suppressOptionsStorageReload) return;
         const linksOnly = isLinksOnlyStorageChange(changes);
-        const mergeRemoteLinks = () => browser.storage.local.get([
-            STORAGE_KEYS.sites,
-            STORAGE_KEYS.siteLinks
-        ]).then(result => {
+        const mergeRemoteLinks = () => getStoredSitesAndLinks().then(result => {
             applyRemoteSavedLinkMerge(result);
             return result;
         });
@@ -3100,6 +3111,7 @@ function initSaveLoadEvents() {
         const relevant = Object.keys(changes).some(key =>
             CONFIG_REFRESH_STORAGE_KEYS.includes(key) ||
             key === STORAGE_KEYS.siteLinks ||
+            isSiteLinksStorageKey(key) ||
             Object.values(LEGACY_STORAGE_KEYS).includes(key) ||
             key === STORAGE_KEYS.enableToastNotifications
         );
@@ -3128,7 +3140,7 @@ function exportToFile() {
 
     beginActionBarBusy(document.querySelector("#exportBtn"), "Backing up…");
 
-    browser.storage.local.get([STORAGE_KEYS.sites, STORAGE_KEYS.siteLinks])
+    browser.storage.local.get(null)
         .then(result => {
             const sites = mergeSitesLinksFromStorage(
                 collectSitesFromUi(),

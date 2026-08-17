@@ -7,6 +7,7 @@ const STORAGE_KEYS = {
 	sites: "sites",
 	// Per-host saved links, kept out of `sites` so content scripts never
 	// deserialize tens of thousands of URLs on settings changes.
+	// Legacy blob of all hosts' links. Migrated to per-host `siteLinks:` keys.
 	siteLinks: "siteLinksByHost",
 	styleRules: "styleRules",
 	enableTopBorder: "enableTopBorder",
@@ -32,6 +33,23 @@ const LEGACY_STORAGE_KEYS = {
 	favoritedFolderId: "favoritedFolderId",
 	onlyUseSites: "onlyUseSites"
 };
+
+const SITE_LINKS_KEY_PREFIX = "siteLinks:";
+
+function siteLinksStorageKey(host) {
+	if (typeof host !== "string" || !host) return "";
+	return SITE_LINKS_KEY_PREFIX + host;
+}
+
+function isSiteLinksStorageKey(key) {
+	return typeof key === "string" &&
+		key.startsWith(SITE_LINKS_KEY_PREFIX) &&
+		key.length > SITE_LINKS_KEY_PREFIX.length;
+}
+
+function hostFromSiteLinksStorageKey(key) {
+	return isSiteLinksStorageKey(key) ? key.slice(SITE_LINKS_KEY_PREFIX.length) : "";
+}
 
 const CONFIG_REFRESH_STORAGE_KEYS = [
 	STORAGE_KEYS.sites,

@@ -327,6 +327,7 @@ let settingsReady = null;
 let settingsLoadGeneration = 0;
 let pendingIgnoredSiteWrites = 0;
 let persistSiteLinksTimer = null;
+let persistSiteLinksHosts = new Set();
 
 function lookupEntryStyle(entry) {
 	if (!entry) return null;
@@ -369,15 +370,20 @@ function applyLoadedSites(nextSites, nextStyleRules, { rebuild = true } = {}) {
 }
 
 function maybeSplitStoredSiteLinks(result, loadedSites) {
-	const hasSplit = result &&
+	const hasBlob = result &&
 		result[STORAGE_KEYS.siteLinks] &&
 		typeof result[STORAGE_KEYS.siteLinks] === "object" &&
 		!Array.isArray(result[STORAGE_KEYS.siteLinks]);
-	if (hasSplit && !sitesHaveEmbeddedLinks(result.sites)) {
+	const embedded = sitesHaveEmbeddedLinks(result.sites);
+	if (!hasBlob && !embedded) {
 		return Promise.resolve(loadedSites);
 	}
+
 	pendingIgnoredSiteWrites += 1;
-	return browser.storage.local.set(buildSitesStorageWrites(loadedSites))
+	const previousHosts = [...siteLinkHostsFromStorageResult(result)];
+	const plan = buildSitesStoragePlan(loadedSites, { previousHosts });
+	if (plan.removeKeys.some(Boolean)) pendingIgnoredSiteWrites += 1;
+	return persistSitesStoragePlan(plan)
 		.catch(error => {
 			pendingIgnoredSiteWrites = Math.max(0, pendingIgnoredSiteWrites - 1);
 			throw error;
@@ -586,6 +592,7 @@ browser.tabs.query({ currentWindow: true, active: true })
 	.catch(() => {});
 
 function persistSites(nextSites, { includeLinks = true, rebuild = includeLinks } = {}) {
+	const previousHosts = [...siteHostIndex.keys()];
 	sites = Array.isArray(nextSites) ? nextSites : sites;
 	if (rebuild) rebuildLinkLookup();
 	else {
@@ -594,23 +601,41 @@ function persistSites(nextSites, { includeLinks = true, rebuild = includeLinks }
 	}
 
 	pendingIgnoredSiteWrites += 1;
-	const writes = includeLinks
-		? buildSitesStorageWrites(sites)
-		: { [STORAGE_KEYS.sites]: sites.map(siteConfigToStorageMeta).filter(Boolean) };
-	return browser.storage.local.set(writes).then(() => sites).catch(error => {
+	const persist = includeLinks
+		? (() => {
+			const plan = buildSitesStoragePlan(sites, { previousHosts });
+			if (plan.removeKeys.some(Boolean)) pendingIgnoredSiteWrites += 1;
+			return persistSitesStoragePlan(plan);
+		})()
+		: browser.storage.local.set({
+			[STORAGE_KEYS.sites]: sites.map(siteConfigToStorageMeta).filter(Boolean)
+		});
+	return persist.then(() => sites).catch(error => {
 		pendingIgnoredSiteWrites = Math.max(0, pendingIgnoredSiteWrites - 1);
 		throw error;
 	});
 }
 
-function schedulePersistSiteLinks() {
+function schedulePersistSiteLinks(host) {
+	if (host) persistSiteLinksHosts.add(host);
 	if (persistSiteLinksTimer) clearTimeout(persistSiteLinksTimer);
 	persistSiteLinksTimer = setTimeout(() => {
 		persistSiteLinksTimer = null;
+		const hosts = Array.from(persistSiteLinksHosts);
+		persistSiteLinksHosts.clear();
+		if (hosts.length === 0) return;
+
+		const writes = {};
+		for (const nextHost of hosts) {
+			Object.assign(writes, buildHostLinksStorageWrite(
+				nextHost,
+				sites.find(site => site.site === nextHost)?.links
+			));
+		}
+		if (Object.keys(writes).length === 0) return;
+
 		pendingIgnoredSiteWrites += 1;
-		browser.storage.local.set({
-			[STORAGE_KEYS.siteLinks]: siteLinksByHostFromSites(sites)
-		}).catch(error => {
+		browser.storage.local.set(writes).catch(error => {
 			pendingIgnoredSiteWrites = Math.max(0, pendingIgnoredSiteWrites - 1);
 			onError(error);
 		});
@@ -629,7 +654,24 @@ function addUrlToSiteList(url, title, styleId) {
 	const result = applySavedLinkToMemory(url, title, styleId, { toggleOff: false });
 	if (!result.ok) return Promise.resolve(sites);
 	notifyTabsHrefStatus(url, result.styleId);
-	return persistSites(sites, { rebuild: false });
+	let host = "";
+	try {
+		host = matchingSiteConfig(new URL(url).hostname)?.site || "";
+	} catch {
+		host = "";
+	}
+	if (!host) return persistSites(sites, { rebuild: false });
+	pendingIgnoredSiteWrites += 1;
+	return browser.storage.local.set({
+		[STORAGE_KEYS.sites]: sites.map(siteConfigToStorageMeta).filter(Boolean),
+		...buildHostLinksStorageWrite(
+			host,
+			sites.find(site => site.site === host)?.links
+		)
+	}).then(() => sites).catch(error => {
+		pendingIgnoredSiteWrites = Math.max(0, pendingIgnoredSiteWrites - 1);
+		throw error;
+	});
 }
 
 function getPageRunState(url) {
@@ -885,14 +927,15 @@ function toggleLookShortcut(url, title, styleId, senderTabId) {
 		return { ok: false };
 	}
 
-	if (!matchingSiteConfig(hostname)) {
+	const siteConfig = matchingSiteConfig(hostname);
+	if (!siteConfig) {
 		return { ok: false };
 	}
 
 	const result = applySavedLinkToMemory(url, title, styleId, { toggleOff: true });
 	if (result.ok) {
 		notifyTabsHrefStatus(url, result.styleId, senderTabId);
-		schedulePersistSiteLinks();
+		schedulePersistSiteLinks(siteConfig.site);
 	}
 	return result;
 }
@@ -1137,27 +1180,45 @@ function scheduleConfigTabsRefresh() {
 
 const CONFIG_REFRESH_STORAGE_KEY_SET = new Set(CONFIG_REFRESH_STORAGE_KEYS);
 
+function storageChangeHasSiteData(changes) {
+	return Object.keys(changes || {}).some(key =>
+		key === STORAGE_KEYS.sites ||
+		key === STORAGE_KEYS.siteLinks ||
+		isSiteLinksStorageKey(key)
+	);
+}
+
 browser.storage.onChanged.addListener((changes, areaName) => {
 	if (areaName !== "local") return;
 
 	let shouldRefreshTabs = false;
 	let shouldRefreshMenus = false;
 
-	if (changes[STORAGE_KEYS.sites] || changes[STORAGE_KEYS.siteLinks]) {
+	if (storageChangeHasSiteData(changes)) {
 		if (pendingIgnoredSiteWrites > 0) {
 			pendingIgnoredSiteWrites -= 1;
 		} else {
 			const nextMeta = changes[STORAGE_KEYS.sites]
 				? changes[STORAGE_KEYS.sites].newValue
 				: sites.map(siteConfigToStorageMeta);
-			const nextLinks = changes[STORAGE_KEYS.siteLinks]
-				? changes[STORAGE_KEYS.siteLinks].newValue
-				: siteLinksByHostFromSites(sites);
+			const nextLinks = siteLinksByHostFromSites(sites);
+			if (changes[STORAGE_KEYS.siteLinks] &&
+				changes[STORAGE_KEYS.siteLinks].newValue &&
+				typeof changes[STORAGE_KEYS.siteLinks].newValue === "object" &&
+				!Array.isArray(changes[STORAGE_KEYS.siteLinks].newValue)
+			) {
+				Object.assign(nextLinks, changes[STORAGE_KEYS.siteLinks].newValue);
+			}
+			for (const [key, change] of Object.entries(changes)) {
+				const host = hostFromSiteLinksStorageKey(key);
+				if (!host) continue;
+				nextLinks[host] = Array.isArray(change.newValue) ? change.newValue : [];
+			}
 			applyLoadedSites(
-				loadSitesFromStorageResult({
-					sites: nextMeta,
-					[STORAGE_KEYS.siteLinks]: nextLinks
-				}, { preserveLinks: true }),
+				loadSitesFromStorageResult(
+					storageResultFromSitesAndLinks(nextMeta, nextLinks),
+					{ preserveLinks: true }
+				),
 				styleRules
 			);
 			if (changes[STORAGE_KEYS.sites]) {
