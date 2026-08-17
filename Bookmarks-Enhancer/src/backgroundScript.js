@@ -428,7 +428,7 @@ function createStaticContextMenus() {
 	const menuDefinitions = [
 		{
 			id: "selectTargetClasses",
-			title: "Select Target Classes",
+			title: "Select target classes",
 			contexts: ["page", "action"]
 		},
 		{

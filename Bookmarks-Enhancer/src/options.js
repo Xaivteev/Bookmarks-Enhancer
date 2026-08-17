@@ -3298,7 +3298,7 @@ function importFromJson(jsonString) {
                     })
                 },
                 {
-                    label: "Open Sites",
+                    label: "Open sites",
                     onClick: () => activateOptionsTab("sites")
                 }
             ]

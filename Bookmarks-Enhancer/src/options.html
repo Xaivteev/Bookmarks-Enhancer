@@ -6,12 +6,97 @@
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <title>Bookmarks Enhancer Options</title>
     <style>
+        html {
+            color-scheme: light dark;
+        }
+
+        :root {
+            --bg: #fff;
+            --bg-muted: #f9fafb;
+            --bg-subtle: #f3f4f6;
+            --bg-hover: #f8fafc;
+            --bg-hover-strong: #e5e7eb;
+            --text: #1f2937;
+            --text-muted: #4b5563;
+            --text-subtle: #6b7280;
+            --text-strong: #111827;
+            --text-tab: #374151;
+            --text-faint: #9ca3af;
+            --border: #d1d5db;
+            --border-subtle: #e5e7eb;
+            --accent: #1d4ed8;
+            --accent-hover: #1e40af;
+            --accent-soft: #eff6ff;
+            --accent-soft-hover: #dbeafe;
+            --accent-border: #93c5fd;
+            --primary: #1d4ed8;
+            --primary-hover: #1e40af;
+            --on-primary: #fff;
+            --danger: #9f1d1d;
+            --danger-text: #b91c1c;
+            --danger-bg: #fef2f2;
+            --danger-bg-hover: #fee2e2;
+            --danger-border: #fecaca;
+            --danger-border-strong: #f1a8a8;
+            --warning: #92400e;
+            --success: #1f6f43;
+            --shadow: 0 0.35rem 0.85rem rgba(15, 23, 42, 0.08);
+            --shadow-strong: 0 0.5rem 1rem rgba(15, 23, 42, 0.12);
+        }
+
+        @media (prefers-color-scheme: dark) {
+            :root {
+                --bg: #0f172a;
+                --bg-muted: #1e293b;
+                --bg-subtle: #1e293b;
+                --bg-hover: #334155;
+                --bg-hover-strong: #334155;
+                --text: #e5e7eb;
+                --text-muted: #cbd5e1;
+                --text-subtle: #94a3b8;
+                --text-strong: #f8fafc;
+                --text-tab: #cbd5e1;
+                --text-faint: #64748b;
+                --border: #475569;
+                --border-subtle: #334155;
+                --accent: #93c5fd;
+                --accent-hover: #bfdbfe;
+                --accent-soft: #1e3a5f;
+                --accent-soft-hover: #1e40af;
+                --accent-border: #3b82f6;
+                --primary: #2563eb;
+                --primary-hover: #3b82f6;
+                --on-primary: #fff;
+                --danger: #fca5a5;
+                --danger-text: #fca5a5;
+                --danger-bg: #450a0a;
+                --danger-bg-hover: #7f1d1d;
+                --danger-border: #7f1d1d;
+                --danger-border-strong: #991b1b;
+                --warning: #fbbf24;
+                --success: #15803d;
+                --shadow: 0 0.35rem 0.85rem rgba(0, 0, 0, 0.35);
+                --shadow-strong: 0 0.5rem 1rem rgba(0, 0, 0, 0.45);
+            }
+        }
+
         body {
             max-width: 56rem;
             margin: 0 auto;
             padding: 1.25rem 1.25rem 0;
             font: 14px/1.4 system-ui, sans-serif;
-            color: #1f2937;
+            color: var(--text);
+            background: var(--bg);
+        }
+
+        input[type="text"],
+        input[type="search"],
+        select,
+        textarea {
+            background: var(--bg);
+            color: var(--text);
+            border: 1px solid var(--border);
+            border-radius: 0.25rem;
         }
 
         h1 {
@@ -39,28 +124,28 @@
 
         .settingHelp {
             margin: 0 0 1rem 1.65rem;
-            color: #4b5563;
+            color: var(--text-muted);
             font-size: 0.92em;
         }
 
         .hint {
             margin: 0.25rem 0 1rem;
-            color: #4b5563;
+            color: var(--text-muted);
         }
 
         .hint code {
             font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
             font-size: 0.92em;
             padding: 0.05rem 0.3rem;
-            background: #f3f4f6;
+            background: var(--bg-subtle);
             border-radius: 0.25rem;
         }
 
         .gettingStarted {
             margin: 0 0 1.25rem;
             padding: 0.85rem 1rem;
-            background: #f3f4f6;
-            border: 1px solid #d1d5db;
+            background: var(--bg-subtle);
+            border: 1px solid var(--border);
             border-radius: 0.375rem;
         }
 
@@ -90,21 +175,21 @@
             height: 1.75rem;
             margin: -0.2rem -0.35rem 0 0;
             padding: 0;
-            border: 1px solid #d1d5db;
+            border: 1px solid var(--border);
             border-radius: 0.25rem;
-            background: #fff;
-            color: #4b5563;
+            background: var(--bg);
+            color: var(--text-muted);
             font: 700 1.15rem/1 system-ui, sans-serif;
             cursor: pointer;
         }
 
         .gettingStartedDismiss:hover {
-            background: #e5e7eb;
-            color: #111827;
+            background: var(--border-subtle);
+            color: var(--text-strong);
         }
 
         .gettingStartedDismiss:focus-visible {
-            outline: 2px solid #1d4ed8;
+            outline: 2px solid var(--accent);
             outline-offset: 1px;
         }
 
@@ -124,8 +209,8 @@
         .howItConnects {
             margin: 0 0 1.25rem;
             padding: 0.85rem 1rem;
-            background: #f9fafb;
-            border: 1px solid #e5e7eb;
+            background: var(--bg-muted);
+            border: 1px solid var(--border-subtle);
             border-radius: 0.375rem;
         }
 
@@ -139,7 +224,7 @@
         }
 
         .howItConnectsArrow {
-            color: #9ca3af;
+            color: var(--text-faint);
             font-weight: 500;
         }
 
@@ -153,7 +238,7 @@
             padding: 0;
             border: 0;
             background: none;
-            color: #1d4ed8;
+            color: var(--accent);
             font: inherit;
             font-weight: 600;
             cursor: pointer;
@@ -162,11 +247,11 @@
         }
 
         .tabJump:hover {
-            color: #1e40af;
+            color: var(--accent-hover);
         }
 
         .tabJump:focus-visible {
-            outline: 2px solid #1d4ed8;
+            outline: 2px solid var(--accent);
             outline-offset: 2px;
             border-radius: 0.15rem;
         }
@@ -186,7 +271,7 @@
         .legacyImport {
             margin: 1.75rem 0 0;
             padding: 0.75rem 0 0;
-            border-top: 1px solid #d1d5db;
+            border-top: 1px solid var(--border);
         }
 
         .legacyImportFields {
@@ -267,15 +352,15 @@
         }
 
         .importReport.is-error {
-            color: #9f1d1d;
-            background: #fef2f2;
-            border: 1px solid #fecaca;
+            color: var(--danger);
+            background: var(--danger-bg);
+            border: 1px solid var(--danger-border);
         }
 
         .importReport.is-note {
-            color: #1f2937;
-            background: #f3f4f6;
-            border: 1px solid #d1d5db;
+            color: var(--text);
+            background: var(--bg-subtle);
+            border: 1px solid var(--border);
         }
 
         .importReport > p {
@@ -331,13 +416,13 @@
         .bookmarkExport {
             margin: 1.5rem 0 0;
             padding: 0.75rem 0 0;
-            border-top: 1px solid #d1d5db;
+            border-top: 1px solid var(--border);
         }
 
         .advancedSiteRules {
             margin: 1.75rem 0 0;
             padding: 0.75rem 0 0;
-            border-top: 1px solid #d1d5db;
+            border-top: 1px solid var(--border);
         }
 
         .advancedSiteRules > summary {
@@ -348,7 +433,7 @@
         }
 
         .advancedSiteRules > summary:focus-visible {
-            outline: 2px solid #1d4ed8;
+            outline: 2px solid var(--accent);
             outline-offset: 2px;
             border-radius: 0.15rem;
         }
@@ -356,7 +441,7 @@
         .advancedSiteRulesHint {
             display: block;
             margin: 0.25rem 0 0.75rem;
-            color: #4b5563;
+            color: var(--text-muted);
             font-weight: 400;
             font-size: 0.92em;
         }
@@ -383,13 +468,13 @@
             gap: 0.25rem;
             margin: 0 -1.25rem 1rem;
             padding: calc(0.35rem + env(safe-area-inset-top, 0px)) 1.25rem 0;
-            border-bottom: 1px solid #d1d5db;
-            background: #fff;
+            border-bottom: 1px solid var(--border);
+            background: var(--bg);
             list-style: none;
         }
 
         .tabList.is-stuck {
-            box-shadow: 0 0.35rem 0.85rem rgba(15, 23, 42, 0.08);
+            box-shadow: var(--shadow);
         }
 
         .tabListSentinel {
@@ -404,16 +489,16 @@
             border-bottom: none;
             border-radius: 0.375rem 0.375rem 0 0;
             background: transparent;
-            color: #374151;
+            color: var(--text-tab);
             padding: 0.5rem 0.75rem;
             cursor: pointer;
             font: inherit;
         }
 
         .tabList button[aria-selected="true"] {
-            background: #f3f4f6;
-            border-color: #d1d5db;
-            color: #111827;
+            background: var(--bg-subtle);
+            border-color: var(--border);
+            color: var(--text-strong);
             font-weight: 600;
         }
 
@@ -442,9 +527,9 @@
             gap: 0.75rem 1rem;
             margin: 1.5rem -1.25rem 0;
             padding: 0.75rem 1.25rem calc(0.75rem + env(safe-area-inset-bottom, 0px));
-            border-top: 1px solid #d1d5db;
-            background: #fff;
-            box-shadow: 0 -0.35rem 0.85rem rgba(15, 23, 42, 0.08);
+            border-top: 1px solid var(--border);
+            background: var(--bg);
+            box-shadow: var(--shadow);
             z-index: 20;
         }
 
@@ -457,7 +542,7 @@
 
         .unsavedChangesLabel {
             margin: 0;
-            color: #92400e;
+            color: var(--warning);
             font-weight: 600;
         }
 
@@ -474,30 +559,30 @@
         .actionsBar button {
             font: inherit;
             padding: 0.45rem 0.85rem;
-            border: 1px solid #d1d5db;
+            border: 1px solid var(--border);
             border-radius: 0.375rem;
-            background: #fff;
-            color: #1f2937;
+            background: var(--bg);
+            color: var(--text);
             cursor: pointer;
         }
 
         .actionsBar button:hover:not(:disabled) {
-            background: #f3f4f6;
+            background: var(--bg-subtle);
         }
 
         .actionsBar .primaryAction {
-            border-color: #1e40af;
-            background: #1d4ed8;
-            color: #fff;
+            border-color: var(--primary-hover);
+            background: var(--primary);
+            color: var(--on-primary);
             font-weight: 600;
         }
 
         .actionsBar .primaryAction:hover:not(:disabled) {
-            background: #1e40af;
+            background: var(--primary-hover);
         }
 
         body.has-unsaved-changes .primaryAction {
-            box-shadow: 0 0 0 2px #fff, 0 0 0 4px #1d4ed8;
+            box-shadow: 0 0 0 2px var(--bg), 0 0 0 4px var(--primary);
         }
 
         .actionsBar button:disabled {
@@ -561,9 +646,9 @@
             width: 2rem;
             height: 2rem;
             padding: 0.1rem;
-            border: 1px solid #d1d5db;
+            border: 1px solid var(--border);
             border-radius: 0.25rem;
-            background: #fff;
+            background: var(--bg);
         }
 
         .styleRuleShortcut {
@@ -656,7 +741,7 @@
             height: 2rem;
             padding: 0.25rem 1.6rem 0.25rem 0.5rem;
             font: inherit;
-            background: #fff;
+            background: var(--bg);
         }
 
         .folderCombobox::after {
@@ -665,7 +750,7 @@
             right: 0.55rem;
             top: 0.8rem;
             border: 0.28rem solid transparent;
-            border-top-color: #6b7280;
+            border-top-color: var(--text-subtle);
             pointer-events: none;
         }
 
@@ -679,10 +764,10 @@
             overflow: auto;
             margin: 0;
             padding: 0.25rem 0;
-            background: #fff;
-            border: 1px solid #d1d5db;
+            background: var(--bg);
+            border: 1px solid var(--border);
             border-radius: 0.375rem;
-            box-shadow: 0 0.5rem 1rem rgba(15, 23, 42, 0.12);
+            box-shadow: var(--shadow-strong);
         }
 
         .folderComboboxList[hidden] {
@@ -696,7 +781,7 @@
 
         .folderComboboxGroupLabel {
             padding: 0.4rem 0.65rem 0.15rem;
-            color: #6b7280;
+            color: var(--text-subtle);
             font-size: 0.72rem;
             font-weight: 700;
             letter-spacing: 0.04em;
@@ -713,13 +798,13 @@
 
         .folderComboboxOption.is-active,
         .folderComboboxOption:hover {
-            background: #eff6ff;
-            color: #1d4ed8;
+            background: var(--accent-soft);
+            color: var(--accent);
         }
 
         .folderComboboxEmpty {
             padding: 0.5rem 0.65rem;
-            color: #6b7280;
+            color: var(--text-subtle);
         }
 
         #bookmarkRuleTable .unmatchedBookmarkLabel {
@@ -740,7 +825,7 @@
             max-width: min(24rem, calc(100vw - 2rem));
             padding: 0.75rem 0.75rem 0.75rem 1rem;
             color: white;
-            background: #1f6f43;
+            background: var(--success);
             border-radius: 0.375rem;
             box-shadow: 0 0.5rem 1rem rgba(0, 0, 0, 0.2);
             opacity: 0;
@@ -756,11 +841,11 @@
         }
 
         #statusToast.error {
-            background: #9f1d1d;
+            background: var(--danger);
         }
 
         #statusToast.warning {
-            background: #92400e;
+            background: var(--warning);
         }
 
         #statusToast .statusToastBody {
@@ -856,12 +941,12 @@
         }
 
         input.fieldInvalid {
-            border: 1px solid #9f1d1d;
+            border: 1px solid var(--danger);
         }
 
         .fieldError {
             margin: 0.25rem 0 0;
-            color: #9f1d1d;
+            color: var(--danger);
             font-size: 0.85em;
         }
 
@@ -872,7 +957,7 @@
         .stylePreview {
             margin: 0 0 1.25rem;
             padding-bottom: 1rem;
-            border-bottom: 1px solid #d1d5db;
+            border-bottom: 1px solid var(--border);
         }
 
         .stylePreviewHeader {
@@ -890,7 +975,7 @@
         }
 
         .stylePreviewActiveLabel {
-            color: #4b5563;
+            color: var(--text-muted);
             font-size: 0.92em;
         }
 
@@ -911,26 +996,26 @@
             min-width: 12rem;
             min-height: 4.5rem;
             padding: 0.75rem;
-            background: #f9fafb;
-            border: 1px dashed #d1d5db;
+            background: var(--bg-muted);
+            border: 1px dashed var(--border);
             border-radius: 0.375rem;
         }
 
         .stylePreviewSlotLabel {
             margin: 0 0 0.5rem;
-            color: #6b7280;
+            color: var(--text-subtle);
             font-size: 0.85em;
         }
 
         #stylePreviewLink {
-            color: #1d4ed8;
+            color: var(--accent);
             font: inherit;
         }
 
         .stylePreviewCard {
             padding: 0.65rem 0.75rem;
-            background: #fff;
-            border: 1px solid #e5e7eb;
+            background: var(--bg);
+            border: 1px solid var(--border-subtle);
             border-radius: 0.25rem;
         }
 
@@ -941,7 +1026,7 @@
 
         .stylePreviewCard p {
             margin: 0;
-            color: #374151;
+            color: var(--text-tab);
         }
 
         .rowDeleteBtn {
@@ -951,21 +1036,21 @@
             width: 2rem;
             height: 2rem;
             padding: 0;
-            border: 1px solid #f1a8a8;
+            border: 1px solid var(--danger-border-strong);
             border-radius: 0.25rem;
-            background: #fef2f2;
-            color: #9f1d1d;
+            background: var(--danger-bg);
+            color: var(--danger);
             font: 700 1.15rem/1 system-ui, sans-serif;
             cursor: pointer;
         }
 
         .rowDeleteBtn:hover {
-            background: #fee2e2;
-            border-color: #9f1d1d;
+            background: var(--danger-bg-hover);
+            border-color: var(--danger);
         }
 
         .rowDeleteBtn:focus-visible {
-            outline: 2px solid #9f1d1d;
+            outline: 2px solid var(--danger);
             outline-offset: 1px;
         }
 
@@ -984,20 +1069,20 @@
             width: 2rem;
             height: 2rem;
             padding: 0;
-            border: 1px solid #93c5fd;
+            border: 1px solid var(--accent-border);
             border-radius: 0.25rem;
-            background: #eff6ff;
-            color: #1d4ed8;
+            background: var(--accent-soft);
+            color: var(--accent);
             cursor: pointer;
         }
 
         .rowPreviewBtn:hover {
-            background: #dbeafe;
-            border-color: #1d4ed8;
+            background: var(--accent-soft-hover);
+            border-color: var(--accent);
         }
 
         .rowPreviewBtn:focus-visible {
-            outline: 2px solid #1d4ed8;
+            outline: 2px solid var(--accent);
             outline-offset: 1px;
         }
 
@@ -1018,11 +1103,11 @@
             flex: 0 0 2.1rem;
             font-weight: 600;
             font-variant-numeric: tabular-nums;
-            color: #374151;
+            color: var(--text-tab);
         }
 
         .unmatchedBookmarkRule .bookmarkRulePriorityNum {
-            color: #6b7280;
+            color: var(--text-subtle);
             font-weight: 500;
         }
 
@@ -1038,21 +1123,21 @@
             width: 2rem;
             height: 2rem;
             padding: 0;
-            border: 1px solid #d1d5db;
+            border: 1px solid var(--border);
             border-radius: 0.25rem;
-            background: #fff;
-            color: #374151;
+            background: var(--bg);
+            color: var(--text-tab);
             font: 700 0.95rem/1 system-ui, sans-serif;
             cursor: pointer;
         }
 
         .rowMoveBtn:hover:not(:disabled) {
-            background: #f3f4f6;
-            border-color: #6b7280;
+            background: var(--bg-subtle);
+            border-color: var(--text-subtle);
         }
 
         .rowMoveBtn:focus-visible {
-            outline: 2px solid #1d4ed8;
+            outline: 2px solid var(--accent);
             outline-offset: 1px;
         }
 
@@ -1064,9 +1149,9 @@
         .tableEmptyState {
             margin: 0.25rem 0 0.75rem;
             padding: 0.75rem 1rem;
-            color: #4b5563;
-            background: #f9fafb;
-            border: 1px dashed #d1d5db;
+            color: var(--text-muted);
+            background: var(--bg-muted);
+            border: 1px dashed var(--border);
             border-radius: 0.375rem;
         }
 
@@ -1111,7 +1196,7 @@
             margin: 0;
             padding: 0;
             max-height: min(38.5rem, calc(100vh - 16rem));
-            border: 1px solid #d1d5db;
+            border: 1px solid var(--border);
             border-radius: 0.375rem;
             overflow-x: hidden;
             overflow-y: auto;
@@ -1133,6 +1218,10 @@
             font: inherit;
             padding: 0.25rem 0.65rem;
             cursor: pointer;
+            background: var(--bg);
+            color: var(--text);
+            border: 1px solid var(--border);
+            border-radius: 0.375rem;
         }
 
         .siteListPagination button:disabled {
@@ -1141,7 +1230,7 @@
         }
 
         .siteListPageLabel {
-            color: #4b5563;
+            color: var(--text-muted);
             font-size: 0.92em;
             min-width: 7.5rem;
             text-align: center;
@@ -1150,7 +1239,7 @@
         .siteListItem {
             display: flex;
             align-items: stretch;
-            border-top: 1px solid #e5e7eb;
+            border-top: 1px solid var(--border-subtle);
         }
 
         .siteListItem:first-child {
@@ -1166,7 +1255,7 @@
             margin: 0;
             padding: 0.7rem 0.85rem;
             border: 0;
-            background: #fff;
+            background: var(--bg);
             color: inherit;
             font: inherit;
             text-align: left;
@@ -1174,11 +1263,11 @@
         }
 
         .siteListOpen:hover {
-            background: #f8fafc;
+            background: var(--bg-hover);
         }
 
         .siteListOpen:focus-visible {
-            outline: 2px solid #1d4ed8;
+            outline: 2px solid var(--accent);
             outline-offset: -2px;
         }
 
@@ -1187,7 +1276,7 @@
         }
 
         .siteListMeta {
-            color: #6b7280;
+            color: var(--text-subtle);
             font-size: 0.88em;
         }
 
@@ -1195,7 +1284,7 @@
             display: flex;
             align-items: center;
             padding: 0 0.65rem;
-            border-left: 1px solid #e5e7eb;
+            border-left: 1px solid var(--border-subtle);
         }
 
         .siteDetailBack {
@@ -1204,20 +1293,20 @@
             gap: 0.35rem;
             margin: 0 0 1rem;
             padding: 0.35rem 0.55rem;
-            border: 1px solid #d1d5db;
+            border: 1px solid var(--border);
             border-radius: 0.375rem;
-            background: #fff;
-            color: #1f2937;
+            background: var(--bg);
+            color: var(--text);
             font: inherit;
             cursor: pointer;
         }
 
         .siteDetailBack:hover {
-            background: #f3f4f6;
+            background: var(--bg-subtle);
         }
 
         .siteDetailBack:focus-visible {
-            outline: 2px solid #1d4ed8;
+            outline: 2px solid var(--accent);
             outline-offset: 1px;
         }
 
@@ -1241,8 +1330,8 @@
             gap: 0.25rem;
             margin: 0 0 1rem;
             padding: 0;
-            border-bottom: 1px solid #d1d5db;
-            background: #fff;
+            border-bottom: 1px solid var(--border);
+            background: var(--bg);
         }
 
         .siteDetailTabList button {
@@ -1250,21 +1339,21 @@
             border-bottom: none;
             border-radius: 0.375rem 0.375rem 0 0;
             background: transparent;
-            color: #374151;
+            color: var(--text-tab);
             padding: 0.45rem 0.7rem;
             cursor: pointer;
             font: inherit;
         }
 
         .siteDetailTabList button[aria-selected="true"] {
-            background: #f3f4f6;
-            border-color: #d1d5db;
-            color: #111827;
+            background: var(--bg-subtle);
+            border-color: var(--border);
+            color: var(--text-strong);
             font-weight: 600;
         }
 
         .siteDetailTabList button:focus-visible {
-            outline: 2px solid #1d4ed8;
+            outline: 2px solid var(--accent);
             outline-offset: 2px;
         }
 
@@ -1299,9 +1388,9 @@
         .savedLinkGroup {
             margin: 0.35rem 0;
             padding: 0;
-            border: 1px solid #e5e7eb;
+            border: 1px solid var(--border-subtle);
             border-radius: 0.375rem;
-            background: #fff;
+            background: var(--bg);
         }
 
         .savedLinkGroupHeader {
@@ -1313,7 +1402,7 @@
         }
 
         .savedLinkGroupHeader:hover {
-            background: #f8fafc;
+            background: var(--bg-hover);
         }
 
         .savedLinkGroupToggle {
@@ -1331,18 +1420,18 @@
         }
 
         .savedLinkGroupToggle:hover {
-            background: #f8fafc;
+            background: var(--bg-hover);
         }
 
         .savedLinkGroupToggle:focus-visible {
-            outline: 2px solid #1d4ed8;
+            outline: 2px solid var(--accent);
             outline-offset: -2px;
         }
 
         .savedLinkGroupChevron {
             flex: 0 0 auto;
             width: 0.7rem;
-            color: #6b7280;
+            color: var(--text-subtle);
             font-size: 0.75rem;
             line-height: 1;
         }
@@ -1368,7 +1457,7 @@
             flex: 1;
             min-width: 0;
             padding: 0.55rem 0.5rem;
-            color: #6b7280;
+            color: var(--text-subtle);
             font-size: 0.88em;
             font-weight: 500;
             cursor: pointer;
@@ -1380,7 +1469,7 @@
 
         .savedLinkGroupBody {
             padding: 0 0.75rem 0.75rem;
-            border-top: 1px solid #e5e7eb;
+            border-top: 1px solid var(--border-subtle);
         }
 
         .savedLinkSearchInput {
@@ -1407,7 +1496,7 @@
 
         .savedLinkPagerStatus {
             margin-right: auto;
-            color: #6b7280;
+            color: var(--text-subtle);
             font-size: 0.88em;
         }
 
@@ -1472,7 +1561,7 @@
                 Looks
             </button>
             <button type="button" role="tab" id="tabImportExport" aria-controls="panelImportExport" aria-selected="false" data-tab="imports">
-                Imports/Exports
+                Imports/exports
             </button>
         </div>
 
@@ -1502,7 +1591,7 @@
                     </li>
                     <li>
                         On a site, right-click and choose
-                        <strong>Select Target Classes</strong>, or add the hostname under
+                        <strong>Select target classes</strong>, or add the hostname under
                         <button type="button" class="tabJump" data-open-tab="sites">Sites</button>.
                     </li>
                     <li>
@@ -1538,7 +1627,7 @@
 
             <div class="settingRow">
                 <input type="checkbox" id="enableTopBorder" aria-describedby="enableTopBorderHelp">
-                <label for="enableTopBorder">Enable Top Border</label>
+                <label for="enableTopBorder">Enable top border</label>
             </div>
             <p class="settingHelp" id="enableTopBorderHelp">
                 Draws a colored border at the top of the page when the current URL
@@ -1547,7 +1636,7 @@
 
             <div class="settingRow">
                 <input type="checkbox" id="enableDeepSearch" aria-describedby="enableDeepSearchHelp">
-                <label for="enableDeepSearch">Enable Deep Search</label>
+                <label for="enableDeepSearch">Enable deep search</label>
             </div>
             <p class="settingHelp" id="enableDeepSearchHelp">
                 If a card has no matching link, also match using the element's
@@ -1557,7 +1646,7 @@
 
             <div class="settingRow">
                 <input type="checkbox" id="enableToastNotifications" aria-describedby="enableToastNotificationsHelp" checked>
-                <label for="enableToastNotifications">Enable Toast Notifications</label>
+                <label for="enableToastNotifications">Enable toast notifications</label>
             </div>
             <p class="settingHelp" id="enableToastNotificationsHelp">
                 Show a brief on-page summary after looks are applied, including
@@ -1628,7 +1717,7 @@
             <p class="tableEmptyState" id="styleRulesEmpty" hidden>
                 No looks yet. Add a look to use with saved links and text rules.
             </p>
-            <button type="button" id="addStyleRuleBtn">Add Look</button>
+            <button type="button" id="addStyleRuleBtn">Add look</button>
         </section>
 
         <section
@@ -1643,7 +1732,7 @@
                 <p class="hint">
                     Each website has its own class groups, saved links, and text rules.
                     Click a site to edit it, or add a hostname. Right-click a page and
-                    choose <strong>Select Target Classes</strong> to create a site from
+                    choose <strong>Select target classes</strong> to create a site from
                     the page.
                 </p>
                 <div class="siteListToolbar">
@@ -1673,7 +1762,7 @@
                     <button type="button" id="siteListNextPage">Next</button>
                 </nav>
                 <p class="tableEmptyState" id="sitesEmpty" hidden>
-                    No websites yet. Add a hostname, or use Select Target Classes
+                    No websites yet. Add a hostname, or use Select target classes
                     from the page context menu.
                 </p>
                 <p class="tableEmptyState" id="sitesSearchEmpty" hidden>
@@ -1763,7 +1852,7 @@
                         <tbody id="classGroupBody"></tbody>
                     </table>
                     <p class="tableEmptyState" id="classGroupsEmpty" hidden>
-                        No class groups yet. Add one, or use Select Target Classes on the page.
+                        No class groups yet. Add one, or use Select target classes on the page.
                     </p>
                     <button type="button" id="addClassGroupBtn">Add class group</button>
                 </section>
