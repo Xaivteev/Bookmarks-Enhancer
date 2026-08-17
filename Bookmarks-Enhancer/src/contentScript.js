@@ -284,7 +284,7 @@ function rememberPositiveStatus(href, status) {
 	return false;
 }
 
-function reapplyStoredLinkStatuses(includeHidden = false) {
+function reapplyStoredLinkStatuses() {
 	if (!searchSite || linkStatusMap.size === 0) return;
 	buildLinkMap();
 	const statuses = {};
@@ -292,7 +292,7 @@ function reapplyStoredLinkStatuses(includeHidden = false) {
 		if (status && status !== "none") statuses[href] = status;
 	}
 	if (Object.keys(statuses).length === 0) return;
-	applyBookmarkStyling({ statuses }, includeHidden);
+	applyBookmarkStyling({ statuses });
 }
 
 function enqueueRuntimeMessage(message) {
@@ -677,7 +677,7 @@ function scheduleLookupRetry(hrefs) {
 function clearSoftMissesAndRescan(options = {}) {
 	if (!searchSite) return;
 	softMissHrefs = new Set();
-	sendUniqueHrefs({ includeHidden: true, ...options });
+	sendUniqueHrefs(options);
 }
 
 function scheduleWarmupRescans() {
@@ -834,7 +834,7 @@ function handleRuntimeMessage(message) {
 	if (message.bookmarkIndexReady) {
 		// Folder index settled after SW wake — retry soft misses cheaply.
 		clearSoftMissesAndRescan();
-		reapplyStoredLinkStatuses(true);
+		reapplyStoredLinkStatuses();
 		return;
 	}
 
@@ -858,7 +858,7 @@ function handleRuntimeMessage(message) {
 		}
 		applyBookmarkStyling({
 			statuses: Object.fromEntries(linkStatusMap)
-		}, true);
+		});
 		return;
 	}
 
@@ -1013,7 +1013,7 @@ function performAuthoritativeRefresh(options = {}) {
 			}
 		}
 
-		applyBookmarkStyling(message, true);
+		applyBookmarkStyling(message);
 
 		// Pick up any links added while the authoritative request was running.
 		sendUniqueHrefs();
@@ -1037,7 +1037,7 @@ function performAuthoritativeRefresh(options = {}) {
 		.finally(finishBusy);
 }
 
-function applyBookmarkStyling(message, includeHidden = false) {
+function applyBookmarkStyling(message) {
 	if (!searchSite) return;
 
 	const statuses = message && message.statuses && typeof message.statuses === "object"
@@ -1077,18 +1077,15 @@ function applyBookmarkStyling(message, includeHidden = false) {
 
 	// Then run the existing class-based element styling for configured classes
 	for (const classGroup of classesForSearch) {
-		const elements = Array.from(document.getElementsByClassName(classGroup)).filter(el => {
-			if (hasStatusClass(el)) return false;
-			if (includeHidden) return true;
-
-			return window.getComputedStyle(el).display !== 'none';
-		});
-
+		const elements = [];
+		for (const el of document.getElementsByClassName(classGroup)) {
+			if (hasStatusClass(el)) continue;
+			elements.push(el);
+		}
 		styleElementsForBookmarks(elements, statusLookup);
 	}
 
-	// Apply text filters on the same classes
-	applyTextFilters(includeHidden);
+	applyTextFilters();
 }
 
 function buildBookmarkStatusLookup(statuses) {
@@ -1243,32 +1240,30 @@ function getMatchingTextRules() {
 	);
 }
 
-function getTargetedClassElements(includeHidden = false) {
+function getTargetedClassElements() {
 	const elements = [];
 	for (const classGroup of classesForSearch) {
 		for (const el of document.getElementsByClassName(classGroup)) {
 			if (hasStatusClass(el)) continue;
-			if (!includeHidden && window.getComputedStyle(el).display === 'none') continue;
 			elements.push(el);
 		}
 	}
 	return elements;
 }
 
-function applyTextFilters(includeHidden = false) {
+function applyTextFilters() {
 	const matchingRules = getMatchingTextRules();
 	if (matchingRules.length === 0 || !classesForSearch.length) return;
-	applyTextRulesTo(getTargetedClassElements(includeHidden), matchingRules, includeHidden);
+	applyTextRulesTo(getTargetedClassElements(), matchingRules);
 }
 
-function applyTextRulesTo(elements, matchingRules, includeHidden = false) {
+function applyTextRulesTo(elements, matchingRules) {
 	if (!elements || elements.length === 0) return;
 	matchingRules = matchingRules || getMatchingTextRules();
 	if (matchingRules.length === 0) return;
 
 	for (const element of elements) {
 		if (hasStatusClass(element)) continue;
-		if (!includeHidden && window.getComputedStyle(element).display === 'none') continue;
 
 		let normalizedText = textFilterCache.get(element);
 		if (!normalizedText) {
@@ -1394,8 +1389,7 @@ function processObservedHrefs() {
 	if (textElements.length > 0) {
 		applyTextRulesTo(
 			textElements.filter(el => el.isConnected && !hasStatusClass(el)),
-			getMatchingTextRules(),
-			true
+			getMatchingTextRules()
 		);
 	}
 
