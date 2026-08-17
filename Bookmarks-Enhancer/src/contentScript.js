@@ -160,10 +160,8 @@ function stopPageProcessing() {
 		clearTimeout(mutationDebounceTimer);
 		mutationDebounceTimer = null;
 	}
-	for (const timer of warmupRescanTimers) {
-		clearTimeout(timer);
-	}
-	warmupRescanTimers = [];
+	clearWarmupRescanTimer();
+	initScanHref = "";
 	if (lookupRetryTimer) {
 		clearTimeout(lookupRetryTimer);
 		lookupRetryTimer = null;
@@ -259,7 +257,11 @@ let visibilityRescanTimer = null;
 let lookupRetryTimer = null;
 let lookupRetryHrefs = new Set();
 let lookupRetryAttempt = 0;
-let warmupRescanTimers = [];
+let warmupRescanTimer = null;
+let warmupPendingRetries = 0;
+// Location href last scanned by init or requery. Same-document tabs.onUpdated
+// requery is skipped when init already ran for this URL.
+let initScanHref = "";
 
 function isResolvableStyleId(styleId) {
 	return !!(styleId && styleId !== "none" && getStyleConfigById(styleId));
@@ -639,6 +641,7 @@ function invalidateUrlDependentCaches() {
 		clearTimeout(lookupRetryTimer);
 		lookupRetryTimer = null;
 	}
+	clearWarmupRescanTimer();
 
 	if (mutationDebounceTimer) {
 		clearTimeout(mutationDebounceTimer);
@@ -680,19 +683,32 @@ function clearSoftMissesAndRescan(options = {}) {
 	sendUniqueHrefs(options);
 }
 
-function scheduleWarmupRescans() {
-	for (const timer of warmupRescanTimers) {
-		clearTimeout(timer);
+function clearWarmupRescanTimer() {
+	if (warmupRescanTimer) {
+		clearTimeout(warmupRescanTimer);
+		warmupRescanTimer = null;
 	}
-	warmupRescanTimers = [];
-	// Cold SW / folder index often settles shortly after first paint when the
-	// Firefox window was just focused. Retry soft misses without waiting for
-	// another visibility edge.
-	for (const delay of [1200, 3500]) {
-		warmupRescanTimers.push(setTimeout(() => {
-			clearSoftMissesAndRescan();
-		}, delay));
+	warmupPendingRetries = 0;
+}
+
+function scheduleWarmupRescan() {
+	clearWarmupRescanTimer();
+	// One delayed retry is enough now that the first pass waits for settings.
+	// 1.2s sits after first paint without the later hitch of a 3.5s second pass.
+	warmupRescanTimer = setTimeout(runWarmupRescan, 1200);
+}
+
+function runWarmupRescan() {
+	warmupRescanTimer = null;
+	if (!searchSite) return;
+	if (pendingStatusHrefs.size > 0 && warmupPendingRetries < 5) {
+		warmupPendingRetries += 1;
+		warmupRescanTimer = setTimeout(runWarmupRescan, 400);
+		return;
 	}
+	warmupPendingRetries = 0;
+	if (softMissHrefs.size === 0) return;
+	clearSoftMissesAndRescan();
 }
 
 function requestBookmarkStatuses(hrefs, options = {}) {
@@ -931,6 +947,8 @@ function sendAllHrefs() {
 // Re-asks even for hrefs previously recorded as soft misses.
 function performRequeryRefresh() {
 	if (!searchSite) return;
+	if (initScanHref === location.href) return;
+	initScanHref = location.href;
 
 	buildLinkMap();
 	processedHrefs = new Set();
@@ -1486,10 +1504,11 @@ function initProcessing() {
 	injectBookmarkStyles();
 	ensureVisibilityRescanListeners();
 	// Build initial map and send unique hrefs
+	initScanHref = location.href;
 	sendUniqueHrefs({ showLoading: true });
 	// Start observing for incremental additions
 	startMutationObserver();
-	scheduleWarmupRescans();
+	scheduleWarmupRescan();
 
 	// Background tabs often finish the first scan while still hidden; rescan
 	// once when the user first focuses the tab.
