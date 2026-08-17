@@ -502,12 +502,13 @@
 
         .actionsBar button:disabled {
             opacity: 0.65;
-            cursor: wait;
+            cursor: not-allowed;
         }
 
         .actionsBar button.is-loading {
             position: relative;
             padding-left: 1.75rem;
+            cursor: wait;
         }
 
         .actionsBar button.is-loading::before {
@@ -1898,7 +1899,7 @@
         >
             <p class="hint">
                 Bring saved links in from browser bookmarks, or write them back out.
-                JSON Import and Export in the bar below is a full configuration backup.
+                JSON Backup and Restore in the bar below is a full configuration copy.
             </p>
 
             <section class="legacyImport" aria-labelledby="linkedFolderHeading">
@@ -2093,8 +2094,8 @@
 
         <div class="actionsBar">
             <div class="actionsBarSecondary">
-                <button type="button" id="exportBtn">Export</button>
-                <button type="button" id="importBtn">Import</button>
+                <button type="button" id="exportBtn" title="Download a JSON backup of all settings">Backup</button>
+                <button type="button" id="importBtn" title="Restore settings from a JSON backup">Restore</button>
             </div>
             <p
                 id="unsavedChangesLabel"
@@ -2105,6 +2106,7 @@
                 Unsaved changes
             </p>
             <div class="actionsBarButtons">
+                <button type="button" id="discardBtn" disabled>Discard changes</button>
                 <button type="submit" id="saveBtn" class="primaryAction">Save</button>
             </div>
         </div>

@@ -304,6 +304,13 @@ function createClassPickerPanel() {
 			gap: 8px;
 			margin-top: 12px;
 		}
+		.actionsPrimary {
+			display: flex;
+			margin-top: 8px;
+		}
+		.actionsPrimary button.primary {
+			flex: 1;
+		}
 		button {
 			padding: 7px 10px;
 			border: 1px solid #64748b;
@@ -744,10 +751,14 @@ function renderClassPickerSelection(availableClasses) {
 	explanation.className = "muted";
 	explanation.textContent = "Checked classes are combined: matching elements must contain all of them.";
 
+	const outlineKey = document.createElement("p");
+	outlineKey.className = "muted";
+	outlineKey.textContent = "Orange outline: this element. Green outline: other matches.";
+
 	const actions = document.createElement("div");
 	actions.className = "actions";
 
-	const parentButton = createClassPickerButton("Parent", () => {
+	const parentButton = createClassPickerButton("Wider element", () => {
 		const parent = getSelectableParent(classPickerState.selectedElement);
 		if (!parent) return;
 
@@ -756,7 +767,7 @@ function renderClassPickerSelection(availableClasses) {
 	});
 	parentButton.disabled = !getSelectableParent(element);
 
-	const childButton = createClassPickerButton("Back", () => {
+	const childButton = createClassPickerButton("Previous element", () => {
 		if (classPickerState.selectionHistory.length < 2) return;
 
 		classPickerState.selectionHistory.pop();
@@ -778,8 +789,12 @@ function renderClassPickerSelection(availableClasses) {
 	const saveButton = createClassPickerButton("Save", saveClassPickerSelection, "primary");
 	classPickerState.saveButton = saveButton;
 
-	actions.append(parentButton, childButton, repickButton, cancelButton, saveButton);
-	panel.append(heading, site, selectedElement, classes, count, warning, explanation, actions);
+	const primaryActions = document.createElement("div");
+	primaryActions.className = "actionsPrimary";
+	primaryActions.appendChild(saveButton);
+
+	actions.append(parentButton, childButton, repickButton, cancelButton);
+	panel.append(heading, site, selectedElement, classes, count, warning, explanation, outlineKey, actions, primaryActions);
 	replaceClassPickerPanel(panel);
 
 	if (availableClasses.length === 0) {

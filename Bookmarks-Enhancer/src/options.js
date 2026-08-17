@@ -1369,7 +1369,7 @@ function confirmLinkedFolderExport({ folderLabel, childCount, plan, unsaved }) {
     }
     lines.push(
         "",
-        "Class groups, text rules, custom CSS, and shortcuts are not written. Use JSON Export for a full backup.",
+        "Class groups, text rules, custom CSS, and shortcuts are not written. Use Backup for a full copy.",
         "",
         "If this fails partway, the folder may be incomplete until you export again. Extension data is unchanged.",
         "",
@@ -2641,6 +2641,12 @@ function updateDirtyUi() {
         saveBtn.title = dirty ? "Save unsaved changes" : "Save";
     }
 
+    const discardBtn = document.querySelector("#discardBtn");
+    if (discardBtn) {
+        discardBtn.disabled = actionBarBusy || !sitesReady || !dirty;
+        discardBtn.title = dirty ? "Discard unsaved changes" : "No unsaved changes";
+    }
+
     document.title = dirty
         ? `${OPTIONS_DOC_TITLE} — Unsaved`
         : OPTIONS_DOC_TITLE;
@@ -2768,6 +2774,7 @@ function getActionBarButtons() {
     return [
         document.querySelector("#exportBtn"),
         document.querySelector("#importBtn"),
+        document.querySelector("#discardBtn"),
         document.querySelector("#saveBtn")
     ].filter(Boolean);
 }
@@ -2807,15 +2814,19 @@ function endActionBarBusy() {
 
     actionBarBusyButton = null;
     setSitesReady(sitesReady);
+    updateDirtyUi();
 }
 
 function setSitesReady(ready) {
     sitesReady = ready;
     const saveBtn = document.querySelector("#saveBtn");
     const exportBtn = document.querySelector("#exportBtn");
+    const importBtn = document.querySelector("#importBtn");
     if (!actionBarBusy) {
         if (saveBtn) saveBtn.disabled = !ready;
         if (exportBtn) exportBtn.disabled = !ready;
+        if (importBtn) importBtn.disabled = !ready;
+        updateDirtyUi();
     }
 }
 
@@ -2939,6 +2950,23 @@ function saveOptions(e) {
         console.error("Save failed:", err);
         showStatus("Could not save options", true);
     });
+}
+
+function discardUnsavedChanges() {
+    if (actionBarBusy || !sitesReady || !isFormDirty()) return;
+    const confirmed = window.confirm(
+        "Discard unsaved changes and reload the last saved settings?"
+    );
+    if (!confirmed) return;
+
+    beginActionBarBusy(document.querySelector("#discardBtn"), "Discarding…");
+    restoreOptions()
+        .then(() => {
+            showStatus("Discarded unsaved changes");
+        })
+        .finally(() => {
+            endActionBarBusy();
+        });
 }
 
 function applyLoadedConfiguration(sites, styleRules, general = {}) {
@@ -3094,11 +3122,11 @@ function exportConfigurationFilename() {
 function exportToFile() {
     if (actionBarBusy) return;
     if (!sitesReady) {
-        showStatus("Settings are still loading — try exporting again", true);
+        showStatus("Settings are still loading — try backing up again", true);
         return;
     }
 
-    beginActionBarBusy(document.querySelector("#exportBtn"), "Exporting…");
+    beginActionBarBusy(document.querySelector("#exportBtn"), "Backing up…");
 
     browser.storage.local.get([STORAGE_KEYS.sites, STORAGE_KEYS.siteLinks])
         .then(result => {
@@ -3123,11 +3151,11 @@ function exportToFile() {
             anchor.click();
             anchor.remove();
             URL.revokeObjectURL(url);
-            showStatus("Exported configuration");
+            showStatus("Backed up configuration");
         })
         .catch(err => {
             console.error(err);
-            showStatus("Could not export", true);
+            showStatus("Could not back up", true);
         })
         .finally(() => {
             endActionBarBusy();
@@ -3228,7 +3256,7 @@ function importFromJson(jsonString) {
         }
     } catch (err) {
         console.error(err);
-        showStatus("Import failed", {
+        showStatus("Restore failed", {
             isError: true,
             actions: [
                 {
@@ -3253,19 +3281,19 @@ function importFromJson(jsonString) {
         });
         setSitesReady(true);
         return persistOptionsFromForm({
-            successMessage: "Imported and saved configuration",
+            successMessage: "Restored and saved configuration",
             setBusy: false,
             replaceSavedLinks: true
         });
     }).catch(err => {
-        console.error("Import failed:", err);
-        showStatus("Import loaded into form but could not save", {
+        console.error("Restore failed:", err);
+        showStatus("Restore loaded into form but could not save", {
             isError: true,
             actions: [
                 {
                     label: "Retry save",
                     onClick: () => persistOptionsFromForm({
-                        successMessage: "Imported and saved configuration",
+                        successMessage: "Restored and saved configuration",
                         replaceSavedLinks: true
                     })
                 },
@@ -3317,12 +3345,12 @@ function handleImportFileChange(event) {
     if (!file) return;
     if (actionBarBusy) return;
 
-    beginActionBarBusy(document.querySelector("#importBtn"), "Importing…");
+    beginActionBarBusy(document.querySelector("#importBtn"), "Restoring…");
     file.text()
         .then(text => importFromJson(text))
         .catch(err => {
             console.error("File read failed:", err);
-            showStatus("Could not read import file", {
+            showStatus("Could not read restore file", {
                 isError: true,
                 actions: [
                     {
@@ -3777,6 +3805,7 @@ function setupEventListeners() {
             });
         document.querySelector("#exportBtn")?.addEventListener("click", exportToFile);
         document.querySelector("#importBtn")?.addEventListener("click", importFromFile);
+        document.querySelector("#discardBtn")?.addEventListener("click", discardUnsavedChanges);
         document.querySelector("#importFileInput")?.addEventListener("change", handleImportFileChange);
 
         const stylePreviewLink = document.querySelector("#stylePreviewLink");

@@ -47,6 +47,9 @@
         .counts[hidden],
         .toggle[hidden],
         .error[hidden],
+        .search[hidden],
+        .searchFilters[hidden],
+        .searchScope[hidden],
         .searchStatus[hidden],
         .searchResults[hidden] {
             display: none;
@@ -91,6 +94,10 @@
             margin: 0.45rem 0 0;
             padding: 0;
             border: 0;
+        }
+
+        .searchFilters .searchToggles:first-child {
+            margin-top: 0.45rem;
         }
 
         .toggle.compact {
@@ -165,6 +172,10 @@
             margin-top: 0.9rem;
         }
 
+        #pickClassesBtn.primaryAction {
+            order: -1;
+        }
+
         button {
             font: inherit;
             padding: 0.45rem 0.85rem;
@@ -188,6 +199,22 @@
 
         button.primaryAction:hover:not(:disabled) {
             background: #1e40af;
+        }
+
+        button.textAction {
+            align-self: flex-start;
+            border: 0;
+            background: transparent;
+            color: #1d4ed8;
+            font-weight: 600;
+            text-decoration: underline;
+            text-underline-offset: 0.12em;
+            padding: 0.25rem 0;
+        }
+
+        button.textAction:hover:not(:disabled) {
+            background: transparent;
+            color: #1e40af;
         }
 
         button:disabled {
@@ -231,7 +258,7 @@
         <p id="host" class="host"></p>
         <p id="status" class="status" aria-live="polite">Loading…</p>
         <p id="counts" class="counts" hidden></p>
-        <section class="search" aria-label="Search saved links">
+        <section id="searchSection" class="search" aria-label="Search saved links" hidden>
             <label class="searchLabel" for="linkSearch">Search saved links</label>
             <input
                 type="search"
@@ -239,27 +266,29 @@
                 placeholder="Search titles or URLs…"
                 autocomplete="off"
             >
-            <div class="searchToggles">
-                <label class="toggle compact">
-                    <input type="checkbox" id="searchTitles" checked>
-                    Titles
-                </label>
-                <label class="toggle compact">
-                    <input type="checkbox" id="searchUrls" checked>
-                    URLs
-                </label>
+            <div id="searchFilters" class="searchFilters" hidden>
+                <div class="searchToggles">
+                    <label class="toggle compact">
+                        <input type="checkbox" id="searchTitles" checked>
+                        Titles
+                    </label>
+                    <label class="toggle compact">
+                        <input type="checkbox" id="searchUrls" checked>
+                        URLs
+                    </label>
+                </div>
+                <fieldset id="searchScope" class="searchScope">
+                    <legend class="visuallyHidden">Search scope</legend>
+                    <label id="searchThisSiteRow" class="toggle compact">
+                        <input type="radio" name="searchScope" id="searchThisSite" value="site" checked>
+                        This site
+                    </label>
+                    <label class="toggle compact">
+                        <input type="radio" name="searchScope" id="searchAllSites" value="all">
+                        All sites
+                    </label>
+                </fieldset>
             </div>
-            <fieldset class="searchScope">
-                <legend class="visuallyHidden">Search scope</legend>
-                <label class="toggle compact">
-                    <input type="radio" name="searchScope" id="searchThisSite" value="site" checked>
-                    This site
-                </label>
-                <label class="toggle compact">
-                    <input type="radio" name="searchScope" id="searchAllSites" value="all">
-                    All sites
-                </label>
-            </fieldset>
             <p id="searchStatus" class="searchStatus" hidden aria-live="polite"></p>
             <ul id="searchResults" class="searchResults" hidden></ul>
         </section>
@@ -270,7 +299,7 @@
         <div class="actions">
             <button type="button" id="refreshBtn" disabled>Refresh this tab</button>
             <button type="button" id="pickClassesBtn" disabled>Select target classes</button>
-            <button type="button" id="settingsBtn" class="primaryAction">Open settings</button>
+            <button type="button" id="settingsBtn" class="textAction">Open settings</button>
         </div>
         <p id="error" class="error" hidden></p>
     </main>

@@ -7,10 +7,14 @@ const refreshBtn = document.querySelector("#refreshBtn");
 const pickClassesBtn = document.querySelector("#pickClassesBtn");
 const settingsBtn = document.querySelector("#settingsBtn");
 const errorEl = document.querySelector("#error");
+const searchSection = document.querySelector("#searchSection");
 const linkSearch = document.querySelector("#linkSearch");
+const searchFilters = document.querySelector("#searchFilters");
 const searchTitles = document.querySelector("#searchTitles");
 const searchUrls = document.querySelector("#searchUrls");
+const searchScope = document.querySelector("#searchScope");
 const searchThisSite = document.querySelector("#searchThisSite");
+const searchThisSiteRow = document.querySelector("#searchThisSiteRow");
 const searchAllSites = document.querySelector("#searchAllSites");
 const searchStatus = document.querySelector("#searchStatus");
 const searchResults = document.querySelector("#searchResults");
@@ -23,6 +27,7 @@ let busy = false;
 let searchTimer = null;
 let searchGeneration = 0;
 let preferredAllSites = false;
+let searchFiltersOpen = false;
 
 function formatCount(value) {
 	return Number(value).toLocaleString();
@@ -77,16 +82,16 @@ function applySearchPrefs(prefs) {
 	if (!searchTitles?.checked && !searchUrls?.checked && searchTitles) {
 		searchTitles.checked = true;
 	}
-	syncSearchScope();
+	syncSearchChrome();
 }
 
 function loadSearchPrefs() {
 	return browser.storage.local.get(POPUP_SEARCH_PREFS_KEY).then(result => {
 		const prefs = result && result[POPUP_SEARCH_PREFS_KEY];
 		if (prefs && typeof prefs === "object") applySearchPrefs(prefs);
-		else syncSearchScope();
+		else syncSearchChrome();
 	}).catch(() => {
-		syncSearchScope();
+		syncSearchChrome();
 	});
 }
 
@@ -100,8 +105,23 @@ function hasSearchableHost() {
 	return !!(popupState && popupState.host);
 }
 
+function hasSearchQuery() {
+	return !!(linkSearch?.value || "").trim();
+}
+
+function needsClassSetup(state = popupState) {
+	return !!(state && !state.restricted && (!state.siteMatch || state.classGroupCount === 0));
+}
+
+function shouldShowSearch() {
+	if (hasSearchQuery()) return true;
+	return (Number(popupState?.savedLinkCount) || 0) > 0;
+}
+
 function syncSearchScope() {
 	const canUseThisSite = hasSearchableHost();
+	if (searchThisSiteRow) searchThisSiteRow.hidden = !canUseThisSite;
+	if (searchScope) searchScope.hidden = !canUseThisSite;
 	if (searchThisSite) searchThisSite.disabled = !canUseThisSite;
 	if (!canUseThisSite) {
 		if (searchAllSites) searchAllSites.checked = true;
@@ -110,6 +130,19 @@ function syncSearchScope() {
 	}
 	if (searchThisSite) searchThisSite.checked = !preferredAllSites;
 	if (searchAllSites) searchAllSites.checked = preferredAllSites;
+}
+
+function syncSearchChrome() {
+	const showSearch = shouldShowSearch();
+	if (searchSection) searchSection.hidden = !showSearch;
+	if (!showSearch) {
+		if (searchFilters) searchFilters.hidden = true;
+		return;
+	}
+	if (searchFilters) {
+		searchFilters.hidden = !(hasSearchQuery() || searchFiltersOpen);
+	}
+	syncSearchScope();
 }
 
 function setSearchStatus(message) {
@@ -243,6 +276,7 @@ function runSearch() {
 }
 
 function scheduleSearch() {
+	syncSearchChrome();
 	if (searchTimer) clearTimeout(searchTimer);
 	if (!(linkSearch?.value || "").trim()) {
 		runSearch();
@@ -254,9 +288,14 @@ function scheduleSearch() {
 	}, SEARCH_DEBOUNCE_MS);
 }
 
+function formatPageStatus(styled, hidden) {
+	return `${formatCount(styled)} ${pluralize(styled, "card", "cards")} restyled, ${formatCount(hidden)} hidden`;
+}
+
 function renderPopup(state) {
 	popupState = state && state.ok ? state : null;
 	const canAct = !!(popupState && !popupState.restricted && popupState.tabId != null);
+	const setupNeeded = needsClassSetup(popupState);
 
 	if (hostEl) hostEl.textContent = popupState?.host || "";
 
@@ -272,39 +311,37 @@ function renderPopup(state) {
 			refreshBtn.disabled = true;
 		}
 		if (pickClassesBtn) {
+			pickClassesBtn.classList.remove("primaryAction");
 			pickClassesBtn.dataset.keepDisabled = "true";
 			pickClassesBtn.disabled = true;
 		}
 		if (settingsBtn) settingsBtn.disabled = busy;
-		syncSearchScope();
+		syncSearchChrome();
 		return;
 	}
 
 	if (popupState.restricted) {
 		if (statusEl) statusEl.textContent = "Looks can't run on this page.";
 	} else if (!popupState.siteMatch) {
-		if (statusEl) statusEl.textContent = "This site isn't set up yet.";
+		if (statusEl) statusEl.textContent = "This site isn't set up yet. Pick listing cards to start.";
 	} else if (popupState.classGroupCount === 0) {
 		if (statusEl) {
-			statusEl.textContent = "No class groups yet — cards can't be styled until you pick them.";
+			statusEl.textContent = "No class groups yet — pick listing cards so they can be styled.";
 		}
-	} else {
-		if (statusEl) statusEl.textContent = "Set up";
+	} else if (popupState.pageReady && popupState.styled != null && popupState.hidden != null) {
+		if (statusEl) statusEl.textContent = formatPageStatus(popupState.styled, popupState.hidden);
+	} else if (statusEl) {
+		statusEl.textContent = "Looks are configured for this site.";
 	}
 
-	const parts = [];
-	if (popupState.siteMatch) {
-		parts.push(
-			`${formatCount(popupState.savedLinkCount)} saved ${pluralize(popupState.savedLinkCount, "link", "links")}`
-		);
-	}
-	if (popupState.pageReady && popupState.styled != null && popupState.hidden != null) {
-		parts.push(`Styled ${formatCount(popupState.styled)}`);
-		parts.push(`Hidden ${formatCount(popupState.hidden)}`);
-	}
 	if (countsEl) {
-		countsEl.textContent = parts.join(" · ");
-		countsEl.hidden = parts.length === 0;
+		if (popupState.siteMatch) {
+			countsEl.textContent = `${formatCount(popupState.savedLinkCount)} saved ${pluralize(popupState.savedLinkCount, "link", "links")}`;
+			countsEl.hidden = false;
+		} else {
+			countsEl.hidden = true;
+			countsEl.textContent = "";
+		}
 	}
 
 	if (revealRow && revealHidden) {
@@ -318,11 +355,12 @@ function renderPopup(state) {
 		refreshBtn.disabled = busy || !canAct;
 	}
 	if (pickClassesBtn) {
+		pickClassesBtn.classList.toggle("primaryAction", setupNeeded && canAct);
 		pickClassesBtn.dataset.keepDisabled = canAct ? "" : "true";
 		pickClassesBtn.disabled = busy || !canAct;
 	}
 	if (settingsBtn) settingsBtn.disabled = busy;
-	syncSearchScope();
+	syncSearchChrome();
 }
 
 function loadPopupState() {
@@ -457,6 +495,15 @@ searchAllSites?.addEventListener("change", () => {
 });
 linkSearch?.addEventListener("input", scheduleSearch);
 linkSearch?.addEventListener("search", scheduleSearch);
+searchSection?.addEventListener("focusin", () => {
+	searchFiltersOpen = true;
+	syncSearchChrome();
+});
+searchSection?.addEventListener("focusout", event => {
+	if (searchSection.contains(event.relatedTarget)) return;
+	searchFiltersOpen = false;
+	syncSearchChrome();
+});
 searchResults?.addEventListener("click", event => {
 	const button = event.target.closest(".searchResult");
 	if (!button) return;
