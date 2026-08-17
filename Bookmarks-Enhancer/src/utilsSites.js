@@ -153,6 +153,24 @@ function listPresentLegacyStorageKeys(result) {
 	);
 }
 
+function settingsMetaStorageKeys() {
+	return [
+		STORAGE_KEYS.sites,
+		STORAGE_KEYS.styleRules,
+		STORAGE_KEYS.siteLinks,
+		...Object.values(LEGACY_STORAGE_KEYS)
+	];
+}
+
+function settingsStorageNeedsFullRead(result) {
+	if (!result || typeof result !== "object") return true;
+	if (!Array.isArray(result.sites)) return true;
+	if (listPresentLegacyStorageKeys(result).length > 0) return true;
+	const blob = result[STORAGE_KEYS.siteLinks];
+	if (blob && typeof blob === "object" && !Array.isArray(blob)) return true;
+	return sitesHaveEmbeddedLinks(result.sites);
+}
+
 /**
  * Persist migrated current-format keys and delete legacy keys when present.
  * Safe to call on every startup; no-ops when already migrated.

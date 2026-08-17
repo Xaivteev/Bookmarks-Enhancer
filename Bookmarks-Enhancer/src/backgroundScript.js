@@ -74,6 +74,7 @@ browser.runtime.onMessage.addListener((message, sender, sendResponse) => {
 	if (message && message.getLookShortcutState) {
 		const url = message.url || (sender && sender.tab && sender.tab.url) || "";
 		ensureSettingsReady()
+			.then(() => ensureHostLinksReadyForUrl(url))
 			.then(() => sendResponse(getLookShortcutState(url)))
 			.catch(error => {
 				onError(error);
@@ -88,6 +89,7 @@ browser.runtime.onMessage.addListener((message, sender, sendResponse) => {
 		const title = message.title || (sender && sender.tab && sender.tab.title) || "";
 		const tabId = sender && sender.tab ? sender.tab.id : null;
 		ensureSettingsReady()
+			.then(() => ensureHostLinksReadyForUrl(url))
 			.then(() => toggleLookShortcut(url, title, styleId, tabId))
 			.then(sendResponse)
 			.catch(error => {
@@ -168,6 +170,10 @@ browser.runtime.onMessage.addListener((message, sender, sendResponse) => {
 
 	if (message && message.actionPopupSearchLinks) {
 		ensureSettingsReady()
+			.then(() => message.allSites
+				? ensureAllHostLinksReady()
+				: ensureHostLinksReady(message.host)
+			)
 			.then(() => sendResponse(searchActionPopupLinks(message)))
 			.catch(error => {
 				onError(error);
@@ -187,6 +193,7 @@ browser.runtime.onMessage.addListener((message, sender, sendResponse) => {
 		const tabId = sender && sender.tab ? sender.tab.id : null;
 		const authoritative = !!(message.authoritative || message.mode === "authoritative");
 		ensureSettingsReady()
+			.then(() => ensureHostLinksReadyForHrefs(message.hrefs))
 			.then(() => searchhrefs(message.hrefs, tabId, { authoritative }))
 			.then(sendResponse)
 			.catch(error => {
@@ -323,6 +330,8 @@ let styleRuleById = new Map();
 let linkLookupBySite = new Map();
 let siteHostIndex = new Map();
 const urlNormalizationCache = createUrlNormalizationCache();
+let hostsLoaded = new Set();
+const hostLoadPromises = new Map();
 
 let settingsReady = null;
 let settingsLoadGeneration = 0;
@@ -348,8 +357,25 @@ function matchingSiteConfig(hostname) {
 	return findSiteConfigInHostIndex(siteHostIndex, hostname);
 }
 
+function resolveSiteConfig(host) {
+	if (!host) return null;
+	return siteHostIndex.get(host) || matchingSiteConfig(host) || null;
+}
+
 function rebuildSiteHostIndex() {
 	siteHostIndex = buildSiteHostIndex(sites);
+}
+
+function rebuildLinkLookupForHost(siteConfig) {
+	if (!siteConfig?.site) return;
+	const map = new Map();
+	for (const link of siteConfig.links || []) {
+		if (!link?.url) continue;
+		const key = hrefMatchKey(link.url);
+		if (!key || map.has(key)) continue;
+		map.set(key, link);
+	}
+	linkLookupBySite.set(siteConfig.site, map);
 }
 
 function rebuildLinkLookup() {
@@ -359,15 +385,93 @@ function rebuildLinkLookup() {
 	linkLookupBySite = new Map();
 
 	for (const siteConfig of sites) {
-		const map = new Map();
-		for (const link of siteConfig.links || []) {
-			if (!link?.url) continue;
-			const key = hrefMatchKey(link.url);
-			if (!key || map.has(key)) continue;
-			map.set(key, link);
-		}
-		linkLookupBySite.set(siteConfig.site, map);
+		if (!siteConfig?.site || !hostsLoaded.has(siteConfig.site)) continue;
+		rebuildLinkLookupForHost(siteConfig);
 	}
+}
+
+function markHostsLoaded(siteList) {
+	hostsLoaded = new Set();
+	for (const siteConfig of siteList || []) {
+		if (siteConfig?.site) hostsLoaded.add(siteConfig.site);
+	}
+}
+
+function applyLoadedHostLinks(siteKey, links) {
+	const siteConfig = resolveSiteConfig(siteKey);
+	if (siteConfig) {
+		siteConfig.links = Array.isArray(links) ? links : [];
+		rebuildLinkLookupForHost(siteConfig);
+	}
+	hostsLoaded.add(siteKey);
+}
+
+function loadHostLinksBatch(siteKeys) {
+	const unique = Array.from(new Set((siteKeys || []).filter(Boolean)));
+	const waits = [];
+	const needed = [];
+	for (const siteKey of unique) {
+		if (hostsLoaded.has(siteKey)) continue;
+		const pending = hostLoadPromises.get(siteKey);
+		if (pending) waits.push(pending);
+		else needed.push(siteKey);
+	}
+	if (needed.length === 0) {
+		return waits.length ? Promise.all(waits) : Promise.resolve();
+	}
+
+	const keys = needed.map(siteLinksStorageKey).filter(Boolean);
+	const batchPromise = browser.storage.local.get(keys)
+		.then(result => {
+			for (const siteKey of needed) {
+				applyLoadedHostLinks(siteKey, result[siteLinksStorageKey(siteKey)]);
+				hostLoadPromises.delete(siteKey);
+			}
+		})
+		.catch(error => {
+			for (const siteKey of needed) hostLoadPromises.delete(siteKey);
+			throw error;
+		});
+
+	for (const siteKey of needed) {
+		hostLoadPromises.set(siteKey, batchPromise);
+	}
+	return Promise.all([...waits, batchPromise]);
+}
+
+function ensureHostLinksReady(host) {
+	const siteConfig = resolveSiteConfig(host);
+	if (!siteConfig) return Promise.resolve();
+	if (hostsLoaded.has(siteConfig.site)) return Promise.resolve();
+	return loadHostLinksBatch([siteConfig.site]);
+}
+
+function ensureHostLinksReadyForUrl(url) {
+	try {
+		return ensureHostLinksReady(new URL(url).hostname);
+	} catch {
+		return Promise.resolve();
+	}
+}
+
+function ensureHostLinksReadyForHrefs(hrefs) {
+	const siteKeys = new Set();
+	for (const href of hrefs || []) {
+		if (!href) continue;
+		try {
+			const siteConfig = matchingSiteConfig(new URL(href).hostname);
+			if (siteConfig?.site) siteKeys.add(siteConfig.site);
+		} catch {
+			// Skip invalid hrefs; searchhrefs will ignore them too.
+		}
+	}
+	return loadHostLinksBatch(Array.from(siteKeys));
+}
+
+function ensureAllHostLinksReady() {
+	return loadHostLinksBatch(
+		(sites || []).map(siteConfig => siteConfig?.site).filter(Boolean)
+	);
 }
 
 function applyLoadedSites(nextSites, nextStyleRules, { rebuild = true } = {}) {
@@ -405,12 +509,33 @@ function maybeSplitStoredSiteLinks(result, loadedSites) {
 		});
 }
 
-function loadSettings() {
+function loadSettingsFromFullStorage() {
 	return browser.storage.local.get(null).then(result => {
 		styleRules = migrateStyleRulesFromStorage(result);
 		return purgeLegacyStorage(result).then(migratedSites => {
+			markHostsLoaded(migratedSites);
 			applyLoadedSites(migratedSites, styleRules);
-			return maybeSplitStoredSiteLinks(result, migratedSites);
+			return maybeSplitStoredSiteLinks(result, migratedSites).then(sitesAfter => {
+				if (sitesAfter && sitesAfter !== migratedSites) {
+					markHostsLoaded(sitesAfter);
+					applyLoadedSites(sitesAfter, styleRules);
+				}
+				return sitesAfter;
+			});
+		});
+	});
+}
+
+function loadSettings() {
+	return browser.storage.local.get(settingsMetaStorageKeys()).then(meta => {
+		if (settingsStorageNeedsFullRead(meta)) {
+			return loadSettingsFromFullStorage();
+		}
+		styleRules = migrateStyleRulesFromStorage(meta);
+		hostsLoaded = new Set();
+		return purgeLegacyStorage(meta).then(migratedSites => {
+			applyLoadedSites(migratedSites, styleRules);
+			return migratedSites;
 		});
 	});
 }
@@ -613,11 +738,7 @@ function persistSites(nextSites, { includeLinks = true, rebuild = includeLinks }
 
 	pendingIgnoredSiteWrites += 1;
 	const persist = includeLinks
-		? (() => {
-			const plan = buildSitesStoragePlan(sites, { previousHosts });
-			if (plan.removeKeys.some(Boolean)) pendingIgnoredSiteWrites += 1;
-			return persistSitesStoragePlan(plan);
-		})()
+		? persistLoadedHostLinks(previousHosts)
 		: browser.storage.local.set({
 			[STORAGE_KEYS.sites]: sites.map(siteConfigToStorageMeta).filter(Boolean)
 		});
@@ -625,6 +746,31 @@ function persistSites(nextSites, { includeLinks = true, rebuild = includeLinks }
 		pendingIgnoredSiteWrites = Math.max(0, pendingIgnoredSiteWrites - 1);
 		throw error;
 	});
+}
+
+function persistLoadedHostLinks(previousHosts) {
+	const writes = {
+		[STORAGE_KEYS.sites]: sites.map(siteConfigToStorageMeta).filter(Boolean)
+	};
+	const keepHosts = new Set();
+	for (const siteConfig of sites || []) {
+		const host = siteConfig?.site;
+		if (!host) continue;
+		keepHosts.add(host);
+		if (!hostsLoaded.has(host)) continue;
+		Object.assign(writes, buildHostLinksStorageWrite(host, siteConfig.links));
+	}
+
+	const removeKeys = [STORAGE_KEYS.siteLinks];
+	for (const host of previousHosts || []) {
+		if (!host || keepHosts.has(host)) continue;
+		removeKeys.push(siteLinksStorageKey(host));
+		hostsLoaded.delete(host);
+		linkLookupBySite.delete(host);
+	}
+
+	if (removeKeys.some(Boolean)) pendingIgnoredSiteWrites += 1;
+	return persistSitesStoragePlan({ writes, removeKeys });
 }
 
 function schedulePersistSiteLinks(host) {
@@ -638,6 +784,7 @@ function schedulePersistSiteLinks(host) {
 
 		const writes = {};
 		for (const nextHost of hosts) {
+			if (!hostsLoaded.has(nextHost)) continue;
 			Object.assign(writes, buildHostLinksStorageWrite(
 				nextHost,
 				sites.find(site => site.site === nextHost)?.links
@@ -662,26 +809,28 @@ function addSelectionAsTextRule(selection, site, styleId) {
 }
 
 function addUrlToSiteList(url, title, styleId) {
-	const result = applySavedLinkToMemory(url, title, styleId, { toggleOff: false });
-	if (!result.ok) return Promise.resolve(sites);
-	notifyTabsHrefStatus(url, result.styleId);
-	let host = "";
-	try {
-		host = matchingSiteConfig(new URL(url).hostname)?.site || "";
-	} catch {
-		host = "";
-	}
-	if (!host) return persistSites(sites, { rebuild: false });
-	pendingIgnoredSiteWrites += 1;
-	return browser.storage.local.set({
-		[STORAGE_KEYS.sites]: sites.map(siteConfigToStorageMeta).filter(Boolean),
-		...buildHostLinksStorageWrite(
-			host,
-			sites.find(site => site.site === host)?.links
-		)
-	}).then(() => sites).catch(error => {
-		pendingIgnoredSiteWrites = Math.max(0, pendingIgnoredSiteWrites - 1);
-		throw error;
+	return ensureHostLinksReadyForUrl(url).then(() => {
+		const result = applySavedLinkToMemory(url, title, styleId, { toggleOff: false });
+		if (!result.ok) return sites;
+		notifyTabsHrefStatus(url, result.styleId);
+		let host = "";
+		try {
+			host = matchingSiteConfig(new URL(url).hostname)?.site || "";
+		} catch {
+			host = "";
+		}
+		if (!host) return persistSites(sites, { rebuild: false });
+		pendingIgnoredSiteWrites += 1;
+		return browser.storage.local.set({
+			[STORAGE_KEYS.sites]: sites.map(siteConfigToStorageMeta).filter(Boolean),
+			...buildHostLinksStorageWrite(
+				host,
+				sites.find(site => site.site === host)?.links
+			)
+		}).then(() => sites).catch(error => {
+			pendingIgnoredSiteWrites = Math.max(0, pendingIgnoredSiteWrites - 1);
+			throw error;
+		});
 	});
 }
 
@@ -753,29 +902,31 @@ function getActionPopupState() {
 		const tab = tabs[0];
 		if (!tab) return { ok: false };
 
-		return ensureSettingsReady().then(() => {
-			const siteState = collectActionPopupSiteState(tab.url || "");
-			const base = {
-				ok: true,
-				tabId: tab.id,
-				url: tab.url || "",
-				...siteState,
-				...emptyActionPopupPageState()
-			};
-			if (tab.id == null || siteState.restricted) {
-				return base;
-			}
+		return ensureSettingsReady()
+			.then(() => ensureHostLinksReadyForUrl(tab.url || ""))
+			.then(() => {
+				const siteState = collectActionPopupSiteState(tab.url || "");
+				const base = {
+					ok: true,
+					tabId: tab.id,
+					url: tab.url || "",
+					...siteState,
+					...emptyActionPopupPageState()
+				};
+				if (tab.id == null || siteState.restricted) {
+					return base;
+				}
 
-			return sendTabMessage(tab.id, { getActionPopupPageState: true })
-				.then(pageState => ({
-					...base,
-					pageReady: !!(pageState && pageState.pageReady),
-					styled: typeof pageState?.styled === "number" ? pageState.styled : null,
-					hidden: typeof pageState?.hidden === "number" ? pageState.hidden : null,
-					revealHidden: !!(pageState && pageState.revealHidden)
-				}))
-				.catch(() => base);
-		});
+				return sendTabMessage(tab.id, { getActionPopupPageState: true })
+					.then(pageState => ({
+						...base,
+						pageReady: !!(pageState && pageState.pageReady),
+						styled: typeof pageState?.styled === "number" ? pageState.styled : null,
+						hidden: typeof pageState?.hidden === "number" ? pageState.hidden : null,
+						revealHidden: !!(pageState && pageState.revealHidden)
+					}))
+					.catch(() => base);
+			});
 	});
 }
 
@@ -883,6 +1034,8 @@ function applySavedLinkToMemory(url, title, styleId, { toggleOff = false } = {})
 		siteConfig = ensured.siteConfig;
 		if (!siteConfig) return { ok: false, styleId: "" };
 		siteHostIndex.set(siteConfig.site, siteConfig);
+		hostsLoaded.add(siteConfig.site);
+		linkLookupBySite.set(siteConfig.site, new Map());
 	}
 	if (!Array.isArray(siteConfig.links)) siteConfig.links = [];
 
@@ -1215,26 +1368,42 @@ browser.storage.onChanged.addListener((changes, areaName) => {
 			const nextMeta = changes[STORAGE_KEYS.sites]
 				? changes[STORAGE_KEYS.sites].newValue
 				: sites.map(siteConfigToStorageMeta);
-			const nextLinks = siteLinksByHostFromSites(sites);
+			const nextLinks = {};
+			for (const siteConfig of sites) {
+				if (siteConfig?.site && hostsLoaded.has(siteConfig.site)) {
+					nextLinks[siteConfig.site] = siteConfig.links || [];
+				}
+			}
+			const changedHosts = new Set();
 			if (changes[STORAGE_KEYS.siteLinks] &&
 				changes[STORAGE_KEYS.siteLinks].newValue &&
 				typeof changes[STORAGE_KEYS.siteLinks].newValue === "object" &&
 				!Array.isArray(changes[STORAGE_KEYS.siteLinks].newValue)
 			) {
 				Object.assign(nextLinks, changes[STORAGE_KEYS.siteLinks].newValue);
+				for (const host of Object.keys(changes[STORAGE_KEYS.siteLinks].newValue)) {
+					if (host) changedHosts.add(host);
+				}
 			}
 			for (const [key, change] of Object.entries(changes)) {
 				const host = hostFromSiteLinksStorageKey(key);
 				if (!host) continue;
 				nextLinks[host] = Array.isArray(change.newValue) ? change.newValue : [];
+				changedHosts.add(host);
 			}
-			applyLoadedSites(
-				loadSitesFromStorageResult(
-					storageResultFromSitesAndLinks(nextMeta, nextLinks),
-					{ preserveLinks: true }
-				),
-				styleRules
+			const loadedSites = loadSitesFromStorageResult(
+				storageResultFromSitesAndLinks(nextMeta, nextLinks),
+				{ preserveLinks: true }
 			);
+			const nextLoaded = new Set();
+			for (const siteConfig of loadedSites) {
+				if (!siteConfig?.site) continue;
+				if (hostsLoaded.has(siteConfig.site) || changedHosts.has(siteConfig.site)) {
+					nextLoaded.add(siteConfig.site);
+				}
+			}
+			hostsLoaded = nextLoaded;
+			applyLoadedSites(loadedSites, styleRules);
 			if (changes[STORAGE_KEYS.sites]) {
 				shouldRefreshTabs = true;
 			}
