@@ -292,15 +292,40 @@
             margin: 0.2rem 0;
         }
 
-        .structuredImportActions {
-            display: flex;
-            flex-wrap: wrap;
-            gap: 0.5rem;
-            margin: 0.25rem 0 0;
+        .linkedFolderModeLabel {
+            margin-top: 0.85rem;
+            font-weight: 600;
         }
 
-        #structuredExportHelp {
-            margin: 0.35rem 0 0;
+        .linkedFolderMode {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 0.5rem 1.25rem;
+            margin: 0.15rem 0 0;
+        }
+
+        .linkedFolderMode label {
+            display: inline-flex;
+            align-items: center;
+            gap: 0.35rem;
+            margin: 0;
+            font-weight: 500;
+        }
+
+        .legacyImportFields .linkedFolderMode label {
+            margin-top: 0;
+        }
+
+        .legacyImportFields:has(.linkedFolderMode) {
+            margin-bottom: 0;
+        }
+
+        .linkedFolderPanel {
+            margin: 0.75rem 0 0;
+        }
+
+        .linkedFolderPanel[hidden] {
+            display: none;
         }
 
         .bookmarkExport {
@@ -1876,14 +1901,13 @@
                 JSON Import and Export in the bar below is a full configuration backup.
             </p>
 
-            <section class="legacyImport" aria-labelledby="structuredImportHeading">
-                <h2 id="structuredImportHeading">Linked folder Import/Export</h2>
+            <section class="legacyImport" aria-labelledby="linkedFolderHeading">
+                <h2 id="linkedFolderHeading">Linked folder</h2>
                 <p class="hint">
-                    Import from a linked bookmark folder that uses the same layout as
+                    Use one bookmark folder to import into the extension and to write
+                    sites, looks, and saved links back out. Layout matches
                     Download as bookmarks: a folder per website, then a folder per look,
-                    then the saved links. Looks are matched by name. If a look folder
-                    has no matching look, one is created with empty CSS — add styling
-                    on the Looks tab. Save afterwards to apply.
+                    then the saved links.
                 </p>
                 <div class="legacyImportFields">
                     <label for="structuredImportFolder">Linked bookmark folder</label>
@@ -1895,87 +1919,127 @@
                         <option value="">Loading folders…</option>
                     </select>
                     <p class="settingHelp" id="structuredImportFolderHelp">
-                        Remembered in this browser. Import still runs only when you
-                        click Import. The folder name can be anything; its children
-                        must be site folders named like <code>example.com</code>.
+                        Remembered in this browser. Import and export still run only
+                        when you click their buttons. The folder name can be anything;
+                        its children must be site folders named like
+                        <code>example.com</code>.
                         The Bookmarks Toolbar, Bookmarks Menu, Other Bookmarks, and
                         the bookmark root cannot be used.
                     </p>
+                    <span class="linkedFolderModeLabel" id="linkedFolderModeLabel">Import or export</span>
+                    <div
+                        class="linkedFolderMode"
+                        role="radiogroup"
+                        aria-labelledby="linkedFolderModeLabel"
+                    >
+                        <label>
+                            <input
+                                type="radio"
+                                name="linkedFolderMode"
+                                value="import"
+                                checked
+                            >
+                            Import
+                        </label>
+                        <label>
+                            <input
+                                type="radio"
+                                name="linkedFolderMode"
+                                value="export"
+                            >
+                            Export
+                        </label>
+                    </div>
                 </div>
-                <fieldset class="structuredImportPrune">
-                    <legend>Items not in this folder</legend>
-                    <p class="settingHelp">
-                        By default, sites, looks, and links already in the extension
-                        stay. Choose Remove to drop ones that are not in the linked
-                        folder. Sites with no saved links are not stored in the
-                        bookmark folder, so Remove sites will also delete those.
+
+                <div id="linkedFolderImportPanel" class="linkedFolderPanel">
+                    <p class="hint">
+                        Looks are matched by name. If a look folder has no matching look,
+                        one is created with empty CSS — add styling on the Looks tab.
+                        Save afterwards to apply.
                     </p>
-                    <div class="structuredImportPruneRow">
-                        <span id="structuredImportMissingSitesLabel">Sites not in this folder</span>
-                        <label>
-                            <input
-                                type="radio"
-                                name="structuredImportMissingSites"
-                                value="keep"
-                                checked
-                            >
-                            Keep
-                        </label>
-                        <label>
-                            <input
-                                type="radio"
-                                name="structuredImportMissingSites"
-                                value="remove"
-                                aria-labelledby="structuredImportMissingSitesLabel"
-                            >
-                            Remove
-                        </label>
-                    </div>
-                    <div class="structuredImportPruneRow">
-                        <span id="structuredImportMissingLooksLabel">Looks on a site that are not in this folder</span>
-                        <label>
-                            <input
-                                type="radio"
-                                name="structuredImportMissingLooks"
-                                value="keep"
-                                checked
-                            >
-                            Keep
-                        </label>
-                        <label>
-                            <input
-                                type="radio"
-                                name="structuredImportMissingLooks"
-                                value="remove"
-                                aria-labelledby="structuredImportMissingLooksLabel"
-                            >
-                            Remove
-                        </label>
-                    </div>
-                    <div class="structuredImportPruneRow">
-                        <span id="structuredImportMissingLinksLabel">Saved links that are not in this folder</span>
-                        <label>
-                            <input
-                                type="radio"
-                                name="structuredImportMissingLinks"
-                                value="keep"
-                                checked
-                            >
-                            Keep
-                        </label>
-                        <label>
-                            <input
-                                type="radio"
-                                name="structuredImportMissingLinks"
-                                value="remove"
-                                aria-labelledby="structuredImportMissingLinksLabel"
-                            >
-                            Remove
-                        </label>
-                    </div>
-                </fieldset>
-                <div class="structuredImportActions">
-                    <button type="button" id="structuredImportBtn">Import folder</button>
+                    <fieldset class="structuredImportPrune">
+                        <legend>Items not in this folder</legend>
+                        <p class="settingHelp">
+                            By default, sites, looks, and links already in the extension
+                            stay. Choose Remove to drop ones that are not in the linked
+                            folder. Sites with no saved links are not stored in the
+                            bookmark folder, so Remove sites will also delete those.
+                        </p>
+                        <div class="structuredImportPruneRow">
+                            <span id="structuredImportMissingSitesLabel">Sites not in this folder</span>
+                            <label>
+                                <input
+                                    type="radio"
+                                    name="structuredImportMissingSites"
+                                    value="keep"
+                                    checked
+                                >
+                                Keep
+                            </label>
+                            <label>
+                                <input
+                                    type="radio"
+                                    name="structuredImportMissingSites"
+                                    value="remove"
+                                    aria-labelledby="structuredImportMissingSitesLabel"
+                                >
+                                Remove
+                            </label>
+                        </div>
+                        <div class="structuredImportPruneRow">
+                            <span id="structuredImportMissingLooksLabel">Looks on a site that are not in this folder</span>
+                            <label>
+                                <input
+                                    type="radio"
+                                    name="structuredImportMissingLooks"
+                                    value="keep"
+                                    checked
+                                >
+                                Keep
+                            </label>
+                            <label>
+                                <input
+                                    type="radio"
+                                    name="structuredImportMissingLooks"
+                                    value="remove"
+                                    aria-labelledby="structuredImportMissingLooksLabel"
+                                >
+                                Remove
+                            </label>
+                        </div>
+                        <div class="structuredImportPruneRow">
+                            <span id="structuredImportMissingLinksLabel">Saved links that are not in this folder</span>
+                            <label>
+                                <input
+                                    type="radio"
+                                    name="structuredImportMissingLinks"
+                                    value="keep"
+                                    checked
+                                >
+                                Keep
+                            </label>
+                            <label>
+                                <input
+                                    type="radio"
+                                    name="structuredImportMissingLinks"
+                                    value="remove"
+                                    aria-labelledby="structuredImportMissingLinksLabel"
+                                >
+                                Remove
+                            </label>
+                        </div>
+                    </fieldset>
+                    <button type="button" id="structuredImportBtn">Import from linked folder</button>
+                </div>
+
+                <div id="linkedFolderExportPanel" class="linkedFolderPanel" hidden>
+                    <p class="hint" id="structuredExportHelp">
+                        Makes the linked folder match the current sites, looks, and
+                        saved links: it adds missing items, removes leftovers and
+                        invalid bookmarks, and updates or moves existing URLs. Writes
+                        to the browser immediately and asks for confirmation first.
+                    </p>
                     <button
                         type="button"
                         id="structuredExportBtn"
@@ -1984,12 +2048,7 @@
                         Export to linked folder
                     </button>
                 </div>
-                <p class="settingHelp" id="structuredExportHelp">
-                    Export makes the linked folder match the current sites, looks,
-                    and saved links: it adds missing items, removes leftovers and
-                    invalid bookmarks, and updates or moves existing URLs. It writes
-                    to the browser immediately and asks for confirmation first.
-                </p>
+
                 <div id="structuredImportReport" class="importReport" hidden></div>
             </section>
 

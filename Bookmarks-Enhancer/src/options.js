@@ -1116,6 +1116,14 @@ function handleStructuredImportFolderChange() {
     select?.classList.remove("fieldInvalid");
 }
 
+function syncLinkedFolderMode() {
+    const mode = document.querySelector('input[name="linkedFolderMode"]:checked')?.value || "import";
+    const importPanel = document.querySelector("#linkedFolderImportPanel");
+    const exportPanel = document.querySelector("#linkedFolderExportPanel");
+    if (importPanel) importPanel.hidden = mode !== "import";
+    if (exportPanel) exportPanel.hidden = mode !== "export";
+}
+
 function hideStructuredImportReport() {
     const report = document.querySelector("#structuredImportReport");
     if (!report) return;
@@ -1269,7 +1277,7 @@ function importStructuredBookmarkFolder() {
 
     const openHost = isSiteDetailOpen() ? sitesDraft[selectedSiteIndex]?.site : "";
     const styleRules = normalizeStyleRules(collectStyleRules());
-    const originalLabel = button?.textContent || "Import folder";
+    const originalLabel = button?.textContent || "Import from linked folder";
     if (button) {
         button.disabled = true;
         button.textContent = "Importing…";
@@ -3756,6 +3764,9 @@ function setupEventListeners() {
             "change",
             handleStructuredImportFolderChange
         );
+        document.querySelectorAll('input[name="linkedFolderMode"]').forEach(input => {
+            input.addEventListener("change", syncLinkedFolderMode);
+        });
         document.querySelector("#legacyExportBookmarksBtn")?.addEventListener("click", exportAllSitesBookmarks);
         document.querySelector("#siteExportBookmarksBtn")?.addEventListener("click", exportCurrentSiteBookmarks);
         document.querySelector("#addTextRuleBtn")?.addEventListener("click", () => createTextRuleRow());
