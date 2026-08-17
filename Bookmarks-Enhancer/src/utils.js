@@ -470,20 +470,36 @@ function migrateStyleRulesFromStorage(result) {
  * All site storage and matching must go through this (via hostnameMatchesSite
  * when comparing a hostname to a configured site).
  */
+const SITE_NORMALIZATION_CACHE_LIMIT = 500;
+const siteNormalizationCache = new Map();
+
 function normalizeSite(site) {
 	if (typeof site !== "string") return "";
+	const cached = siteNormalizationCache.get(site);
+	if (cached !== undefined) {
+		siteNormalizationCache.delete(site);
+		siteNormalizationCache.set(site, cached);
+		return cached;
+	}
 
 	const trimmedSite = site.trim().toLowerCase().replace(/^\*\./, "");
-	if (!trimmedSite) return "";
-
-	try {
-		const url = new URL(
-			trimmedSite.includes("://") ? trimmedSite : `http://${trimmedSite}`
-		);
-		return url.hostname.replace(/\.$/, "").replace(/^www\./, "");
-	} catch {
-		return trimmedSite.replace(/\.$/, "").replace(/^www\./, "");
+	let normalized = "";
+	if (trimmedSite) {
+		try {
+			const url = new URL(
+				trimmedSite.includes("://") ? trimmedSite : `http://${trimmedSite}`
+			);
+			normalized = url.hostname.replace(/\.$/, "").replace(/^www\./, "");
+		} catch {
+			normalized = trimmedSite.replace(/\.$/, "").replace(/^www\./, "");
+		}
 	}
+
+	siteNormalizationCache.set(site, normalized);
+	while (siteNormalizationCache.size > SITE_NORMALIZATION_CACHE_LIMIT) {
+		siteNormalizationCache.delete(siteNormalizationCache.keys().next().value);
+	}
+	return normalized;
 }
 
 /** @deprecated Alias of normalizeSite for older call sites. */
@@ -565,20 +581,47 @@ function readUrlNormalizationCache(href) {
 	return value;
 }
 
-function writeUrlNormalizationCache(href, normalized) {
+function writeUrlNormalizationCache(href, entry) {
 	let cache = null;
 	try {
 		if (typeof urlNormalizationCache !== "undefined") cache = urlNormalizationCache;
 	} catch {
 		cache = null;
 	}
-	if (!cache) return;
+	if (!cache || typeof href !== "string") return;
 	if (cache.has(href)) {
 		cache.delete(href);
 	}
-	cache.set(href, normalized);
+	cache.set(href, entry);
 	while (cache.size > URL_NORMALIZATION_CACHE_LIMIT) {
 		cache.delete(cache.keys().next().value);
+	}
+}
+
+function urlCacheNormalized(value) {
+	if (typeof value === "string") return value;
+	if (value && typeof value.normalized === "string") return value.normalized;
+	return undefined;
+}
+
+function urlCacheMatchKey(value) {
+	return value && typeof value === "object" && typeof value.matchKey === "string"
+		? value.matchKey
+		: undefined;
+}
+
+function hrefMatchKeyFromParts(host, pathname, search) {
+	if (!host) return "";
+	let path = pathname || "/";
+	if (path !== "/" && path.endsWith("/")) path = path.slice(0, -1);
+	return `${host}${path}${search || ""}`;
+}
+
+function writeNormalizedHrefCache(href, normalized, matchKey) {
+	const entry = { normalized, matchKey };
+	writeUrlNormalizationCache(href, entry);
+	if (normalized && normalized !== href) {
+		writeUrlNormalizationCache(normalized, entry);
 	}
 }
 
@@ -598,7 +641,8 @@ function normalizeHrefForSearch(href, explicitRules) {
 	try {
 		const cached = readUrlNormalizationCache(href);
 		if (cached !== undefined && explicitRules === undefined) {
-			return cached;
+			const normalized = urlCacheNormalized(cached);
+			if (normalized !== undefined) return normalized;
 		}
 
 		const url = new URL(href, typeof window !== 'undefined' ? window.location.origin : undefined);
@@ -639,26 +683,31 @@ function normalizeHrefForSearch(href, explicitRules) {
 			normalized = normalized.slice(0, -1);
 		}
 
+		const matchKey = hrefMatchKeyFromParts(hostname, url.pathname, url.search) || normalized;
 		if (explicitRules === undefined) {
-			writeUrlNormalizationCache(href, normalized);
+			writeNormalizedHrefCache(href, normalized, matchKey);
 		}
 		return normalized;
 	} catch {
 		if (explicitRules === undefined) {
-			writeUrlNormalizationCache(href, href);
+			writeNormalizedHrefCache(href, href, href);
 		}
 		return href;
 	}
 }
 
 function hrefMatchKeyFromNormalized(normalized) {
+	if (!normalized) return "";
+	const cached = readUrlNormalizationCache(normalized);
+	const cachedKey = urlCacheMatchKey(cached);
+	if (cachedKey) return cachedKey;
+
 	try {
 		const url = new URL(normalized);
 		const host = normalizeSite(url.hostname);
-		if (!host) return normalized;
-		let path = url.pathname || "/";
-		if (path !== "/" && path.endsWith("/")) path = path.slice(0, -1);
-		return `${host}${path}${url.search}`;
+		const matchKey = hrefMatchKeyFromParts(host, url.pathname, url.search) || normalized;
+		writeNormalizedHrefCache(normalized, normalized, matchKey);
+		return matchKey;
 	} catch {
 		return normalized;
 	}

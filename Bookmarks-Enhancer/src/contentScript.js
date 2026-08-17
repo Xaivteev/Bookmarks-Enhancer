@@ -13,12 +13,14 @@ globalThis.__beContentScriptInstalled = true;
 let loadedSites = [];
 let classesForSearch = [];
 let preparedStyleRules = DEFAULT_STYLE_RULES.map(rule => ({ ...rule }));
+let styleConfigById = new Map();
+let managedClassNames = [];
+let managedClassNameSet = new Set();
 let preparedTextRules = [];
 let searchSite = true;
 let enableTopBorder = false;
 let enableDeepSearch = false;
 let enableToastNotifications = true;
-let managedClassNames = [];
 // Defaults only include built-in ids (blocked/favorited/seen). Custom UUID styles
 // arrive via storage — gate lookups until then so early requery cannot stick
 // positives in processedHrefs that applyBookmarkStyling silently skips.
@@ -71,21 +73,28 @@ function onError(error) {
 }
 
 function refreshManagedClassNames() {
-	managedClassNames = [
-		...preparedStyleRules.map(rule => styleRuleClassName(rule)),
-		...STALE_MANAGED_CLASS_NAMES
-	];
+	styleConfigById = new Map();
+	managedClassNames = [];
+	for (let index = 0; index < preparedStyleRules.length; index++) {
+		const rule = preparedStyleRules[index];
+		if (!rule?.id) continue;
+		const className = styleRuleClassName(rule);
+		styleConfigById.set(rule.id, {
+			className,
+			border: getStyleRuleBorder(rule),
+			priority: index
+		});
+		if (className) managedClassNames.push(className);
+	}
+	for (const className of STALE_MANAGED_CLASS_NAMES) {
+		if (className) managedClassNames.push(className);
+	}
+	managedClassNameSet = new Set(managedClassNames);
 }
 
 function getStyleConfigById(styleId) {
-	const index = preparedStyleRules.findIndex(rule => rule.id === styleId);
-	if (index < 0) return null;
-	const rule = preparedStyleRules[index];
-	return {
-		className: styleRuleClassName(rule),
-		border: getStyleRuleBorder(rule),
-		priority: index
-	};
+	if (!styleId) return null;
+	return styleConfigById.get(styleId) || null;
 }
 
 function getConfiguredClassGroups(pairs) {
@@ -102,9 +111,12 @@ function getConfiguredClassGroups(pairs) {
 	return Array.from(new Set(classGroups));
 }
 
+refreshManagedClassNames();
+
 function updateClassesForSearch() {
+	const host = normalizeSite(window.location.hostname);
 	const matchingSites = loadedSites.filter(siteConfig =>
-		hostnameMatchesSite(window.location.hostname, siteConfig.site)
+		hostnameMatchesNormalized(host, siteConfig.site)
 	);
 	searchSite = matchingSites.length > 0;
 	classesForSearch = getConfiguredClassGroups(sitesToSearchPairs(matchingSites));
@@ -288,7 +300,6 @@ function rememberPositiveStatus(href, status) {
 
 function reapplyStoredLinkStatuses() {
 	if (!searchSite || linkStatusMap.size === 0) return;
-	buildLinkMap();
 	const statuses = {};
 	for (const [href, status] of linkStatusMap) {
 		if (status && status !== "none") statuses[href] = status;
@@ -856,7 +867,6 @@ function handleRuntimeMessage(message) {
 
 	if (message.statusUpdates) {
 		if (!searchSite) return;
-		buildLinkMap();
 		const classNames = managedClassNames.filter(Boolean);
 		for (const [href, status] of Object.entries(message.statusUpdates)) {
 			pendingStatusHrefs.delete(href);
@@ -867,7 +877,7 @@ function handleRuntimeMessage(message) {
 				processedHrefs.delete(href);
 				linkStatusMap.delete(href);
 			}
-			const links = linkMap.get(href) || [];
+			const links = linksForHref(href);
 			for (const link of links) {
 				if (classNames.length) link.classList.remove(...classNames);
 			}
@@ -918,9 +928,25 @@ function collectLink(link) {
 	return normalized;
 }
 
+function linksForHref(href) {
+	const links = linkMap.get(href);
+	if (!links || links.length === 0) return [];
+	const live = [];
+	let dropped = false;
+	for (const link of links) {
+		if (link && link.isConnected) live.push(link);
+		else dropped = true;
+	}
+	if (dropped) {
+		if (live.length) linkMap.set(href, live);
+		else linkMap.delete(href);
+	}
+	return live;
+}
+
 function sendUniqueHrefs(options = {}) {
 	if (!searchSite) return; // skip if site not relevant
-	buildLinkMap();
+	if (options.rebuildMap !== false || linkMap.size === 0) buildLinkMap();
 	const allHrefs = Array.from(linkMap.keys());
 	for (const href of allHrefs) {
 		if (linkStatusMap.has(href)) {
@@ -1034,7 +1060,7 @@ function performAuthoritativeRefresh(options = {}) {
 		applyBookmarkStyling(message);
 
 		// Pick up any links added while the authoritative request was running.
-		sendUniqueHrefs();
+		sendUniqueHrefs({ rebuildMap: false });
 	}
 
 	// No links yet — keep existing styles instead of wiping to empty.
@@ -1076,7 +1102,7 @@ function applyBookmarkStyling(message) {
 	}
 
 	for (const [normalized, status] of statusLookup) {
-		const elements = linkMap.get(normalized) || [];
+		const elements = linksForHref(normalized);
 		for (const element of elements) {
 			applyStatusClass(element, status.className);
 		}
@@ -1232,7 +1258,11 @@ function applyStatusClass(element, className) {
 }
 
 function hasStatusClass(element) {
-	return managedClassNames.some(className => element.classList.contains(className));
+	const classList = element.classList;
+	for (let i = 0; i < classList.length; i++) {
+		if (managedClassNameSet.has(classList[i])) return true;
+	}
+	return false;
 }
 
 function preprocessTextRules(rules) {
@@ -1252,9 +1282,9 @@ function preprocessTextRules(rules) {
 }
 
 function getMatchingTextRules() {
-	const currentHost = window.location.hostname;
+	const currentHost = normalizeSite(window.location.hostname);
 	return preparedTextRules.filter(rule =>
-		hostnameMatchesSite(currentHost, rule.site)
+		hostnameMatchesNormalized(currentHost, rule.site)
 	);
 }
 
@@ -1434,7 +1464,7 @@ function applyCachedLinkStatus(norm) {
 	const style = getStyleConfigById(status);
 	if (!style) return;
 
-	const els = linkMap.get(norm) || [];
+	const els = linksForHref(norm);
 	for (const el of els) {
 		if (hasStatusClass(el)) continue;
 		applyStatusClass(el, style.className);

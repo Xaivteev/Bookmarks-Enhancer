@@ -319,6 +319,7 @@ function onError(error) {
 let urlRules = [];
 let sites = [];
 let styleRules = DEFAULT_STYLE_RULES.map(rule => ({ ...rule }));
+let styleRuleById = new Map();
 let linkLookupBySite = new Map();
 let siteHostIndex = new Map();
 const urlNormalizationCache = createUrlNormalizationCache();
@@ -333,6 +334,15 @@ function lookupEntryStyle(entry) {
 	if (!entry) return null;
 	return typeof entry === "string" ? entry : (entry.style || null);
 }
+
+function rebuildStyleRuleIndex() {
+	styleRuleById = new Map();
+	for (const rule of styleRules || []) {
+		if (rule?.id) styleRuleById.set(rule.id, rule);
+	}
+}
+
+rebuildStyleRuleIndex();
 
 function matchingSiteConfig(hostname) {
 	return findSiteConfigInHostIndex(siteHostIndex, hostname);
@@ -365,6 +375,7 @@ function applyLoadedSites(nextSites, nextStyleRules, { rebuild = true } = {}) {
 	styleRules = Array.isArray(nextStyleRules)
 		? nextStyleRules
 		: DEFAULT_STYLE_RULES.map(rule => ({ ...rule }));
+	rebuildStyleRuleIndex();
 	if (rebuild) rebuildLinkLookup();
 	else rebuildSiteHostIndex();
 }
@@ -772,7 +783,7 @@ const ACTION_POPUP_SEARCH_LIMIT = 40;
 
 function getStyleRuleName(styleId) {
 	const id = typeof styleId === "string" ? styleId.trim() : "";
-	const rule = (styleRules || []).find(entry => entry.id === id);
+	const rule = styleRuleById.get(id);
 	if (rule && rule.name) return rule.name;
 	return id;
 }
@@ -916,7 +927,8 @@ function toggleLookShortcut(url, title, styleId, senderTabId) {
 	if (!isValidHttpUrl(url) || !styleId) {
 		return { ok: false };
 	}
-	if (!styleRules.some(rule => rule.id === styleId && rule.shortcutIcon)) {
+	const shortcutRule = styleRuleById.get(styleId);
+	if (!shortcutRule || !shortcutRule.shortcutIcon) {
 		return { ok: false };
 	}
 
@@ -947,6 +959,8 @@ function notifyTabsHrefStatus(url, styleId, senderTabId) {
 	} catch {
 		return;
 	}
+	const normalizedTargetHost = normalizeSite(hostname);
+	if (!normalizedTargetHost) return;
 	const normalized = normalizeHrefForSearch(url);
 	const status = styleId || "none";
 	browser.tabs.query({}).then(tabs => {
@@ -954,12 +968,12 @@ function notifyTabsHrefStatus(url, styleId, senderTabId) {
 			if (!tab?.id || !tab.url) continue;
 			let tabHost = "";
 			try {
-				tabHost = new URL(tab.url).hostname;
+				tabHost = normalizeSite(new URL(tab.url).hostname);
 			} catch {
 				continue;
 			}
-			if (!hostnameMatchesSite(tabHost, hostname) &&
-				!hostnameMatchesSite(hostname, tabHost)) {
+			if (!hostnameMatchesNormalized(tabHost, normalizedTargetHost) &&
+				!hostnameMatchesNormalized(normalizedTargetHost, tabHost)) {
 				continue;
 			}
 			const payload = {
@@ -1231,6 +1245,7 @@ browser.storage.onChanged.addListener((changes, areaName) => {
 		styleRules = migrateStyleRulesFromStorage({
 			styleRules: changes[STORAGE_KEYS.styleRules].newValue
 		});
+		rebuildStyleRuleIndex();
 		shouldRefreshTabs = true;
 		shouldRefreshMenus = true;
 	}
