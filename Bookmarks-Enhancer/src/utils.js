@@ -1785,6 +1785,53 @@ function buildStructuredBookmarkExportPlan(sites, styleRules) {
 	};
 }
 
+function indexStructuredExportPlan(plan) {
+	const sites = new Map();
+	for (const site of plan?.siteFolders || []) {
+		const host = normalizeSite(site.title);
+		if (!host) continue;
+		const looks = new Map();
+		for (const look of site.looks || []) {
+			const lookKey = lookNameKey(look.title);
+			if (!lookKey) continue;
+			const links = new Map();
+			for (const link of look.links || []) {
+				const hrefKey = hrefMatchKey(link.url);
+				if (!hrefKey) continue;
+				links.set(hrefKey, link);
+			}
+			looks.set(lookKey, { title: look.title, links });
+		}
+		sites.set(host, { title: site.title, looks });
+	}
+	return sites;
+}
+
+function desiredExportLinksByHref(desired) {
+	const map = new Map();
+	for (const [host, site] of desired) {
+		for (const [lookKey, look] of site.looks) {
+			for (const [hrefKey, link] of look.links) {
+				map.set(hrefKey, {
+					host,
+					lookKey,
+					lookTitle: look.title,
+					link
+				});
+			}
+		}
+	}
+	return map;
+}
+
+function structuredExportLookMapKey(host, lookKey) {
+	return `${host}\u0000${lookKey}`;
+}
+
+function bookmarkFolderTitle(node) {
+	return bookmarkNodeTitle(node) || String(node?.title || "").trim();
+}
+
 function promiseEach(items, fn) {
 	return (items || []).reduce(
 		(chain, item, index) => chain.then(() => fn(item, index)),
@@ -1809,40 +1856,231 @@ function removeBookmarkNode(node) {
 	return Promise.reject(new Error("Cannot remove bookmark items"));
 }
 
-function removeBookmarkChildren(folderId) {
-	const id = String(folderId || "");
-	if (!id || !browser.bookmarks || typeof browser.bookmarks.getChildren !== "function") {
-		return Promise.reject(new Error("Bookmark folders are not available"));
+function createBookmarkFolder(parentId, title) {
+	return browser.bookmarks.create({ parentId, title }).then(node => {
+		if (node && !Array.isArray(node.children)) node.children = [];
+		return node;
+	});
+}
+
+function maybeUpdateBookmarkTitle(node, title, stats) {
+	const nextTitle = title || "";
+	if (!node?.id || (node.title || "") === nextTitle) {
+		return Promise.resolve(node);
 	}
-	return browser.bookmarks.getChildren(id).then(children =>
-		promiseEach(children || [], removeBookmarkNode)
+	if (!browser.bookmarks || typeof browser.bookmarks.update !== "function") {
+		return Promise.resolve(node);
+	}
+	return browser.bookmarks.update(node.id, { title: nextTitle }).then(updated => {
+		stats.updated += 1;
+		node.title = nextTitle;
+		return updated || node;
+	});
+}
+
+function maybeMoveBookmarkNode(node, parentId, stats) {
+	if (!node?.id || !parentId || node.parentId === parentId) {
+		return Promise.resolve(node);
+	}
+	if (!browser.bookmarks || typeof browser.bookmarks.move !== "function") {
+		return Promise.reject(new Error("Cannot move bookmark items"));
+	}
+	return browser.bookmarks.move(node.id, { parentId }).then(moved => {
+		stats.moved += 1;
+		node.parentId = parentId;
+		return moved || node;
+	});
+}
+
+function siteFoldersForExportHost(root, host) {
+	return (root?.children || []).filter(child =>
+		isBookmarkFolderNode(child) &&
+		isPlausibleHostname(bookmarkFolderTitle(child)) &&
+		normalizeSite(child.title) === host
 	);
 }
 
-function writeStructuredBookmarksToFolder(folderId, plan) {
-	const parentId = String(folderId || "");
-	if (!parentId || !browser.bookmarks || typeof browser.bookmarks.create !== "function") {
+function lookFoldersForExportKey(siteFolders, lookKey) {
+	const found = [];
+	for (const siteNode of siteFolders || []) {
+		for (const child of siteNode.children || []) {
+			if (!isBookmarkFolderNode(child)) continue;
+			const title = bookmarkFolderTitle(child);
+			if (!title || lookNameKey(title) !== lookKey) continue;
+			found.push(child);
+		}
+	}
+	return found;
+}
+
+function collectBookmarkLinkNodes(root) {
+	const links = [];
+	function walk(node) {
+		for (const child of node?.children || []) {
+			if (isBookmarkLinkNode(child)) links.push(child);
+			if (isBookmarkFolderNode(child)) walk(child);
+		}
+	}
+	walk(root);
+	return links;
+}
+
+function claimExistingExportLinks(root, desiredLinks, lookNodes) {
+	const claimed = new Map();
+	const usedIds = new Set();
+	const links = collectBookmarkLinkNodes(root);
+
+	function tryClaim(node, requireCorrectLook) {
+		if (!node?.id || usedIds.has(node.id) || !isValidHttpUrl(node.url)) return;
+		const hrefKey = hrefMatchKey(node.url);
+		const want = desiredLinks.get(hrefKey);
+		if (!want || claimed.has(hrefKey)) return;
+		let linkHost = "";
+		try {
+			linkHost = normalizeSite(new URL(node.url).hostname);
+		} catch {
+			return;
+		}
+		if (linkHost !== want.host) return;
+		if (requireCorrectLook) {
+			const lookNode = lookNodes.get(structuredExportLookMapKey(want.host, want.lookKey));
+			if (!lookNode || node.parentId !== lookNode.id) return;
+		}
+		claimed.set(hrefKey, node);
+		usedIds.add(node.id);
+	}
+
+	for (const node of links) tryClaim(node, true);
+	for (const node of links) tryClaim(node, false);
+	return { claimed, usedIds };
+}
+
+function collectExportPruneNodes(root, keepIds) {
+	const prune = [];
+	function walk(node) {
+		for (const child of node?.children || []) {
+			if (keepIds.has(child.id)) {
+				walk(child);
+				continue;
+			}
+			prune.push(child);
+		}
+	}
+	walk(root);
+	return prune;
+}
+
+function ensureStructuredExportFolders(root, desired, stats) {
+	const siteNodes = new Map();
+	const lookNodes = new Map();
+
+	return promiseEach([...desired.keys()], host => {
+		const wantedSite = desired.get(host);
+		const existingSites = siteFoldersForExportHost(root, host);
+		const existingLooksByHost = existingSites.slice();
+		const getSite = existingSites.length > 0
+			? Promise.resolve(existingSites[0])
+			: createBookmarkFolder(root.id, wantedSite.title).then(node => {
+				stats.created += 1;
+				if (!Array.isArray(root.children)) root.children = [];
+				root.children.push(node);
+				node.parentId = root.id;
+				return node;
+			});
+
+		return getSite.then(siteNode => {
+			siteNodes.set(host, siteNode);
+			return maybeUpdateBookmarkTitle(siteNode, wantedSite.title, stats).then(() =>
+				promiseEach([...wantedSite.looks.keys()], lookKey => {
+					const wantedLook = wantedSite.looks.get(lookKey);
+					const existingLooks = lookFoldersForExportKey(existingLooksByHost, lookKey);
+					const getLook = existingLooks.length > 0
+						? maybeMoveBookmarkNode(existingLooks[0], siteNode.id, stats)
+						: createBookmarkFolder(siteNode.id, wantedLook.title).then(node => {
+							stats.created += 1;
+							if (!Array.isArray(siteNode.children)) siteNode.children = [];
+							siteNode.children.push(node);
+							node.parentId = siteNode.id;
+							return node;
+						});
+					return getLook.then(lookNode => {
+						lookNodes.set(structuredExportLookMapKey(host, lookKey), lookNode);
+						return maybeUpdateBookmarkTitle(lookNode, wantedLook.title, stats);
+					});
+				})
+			);
+		});
+	}).then(() => ({ siteNodes, lookNodes }));
+}
+
+function syncStructuredExportLinks(root, desired, lookNodes, stats) {
+	const desiredLinks = desiredExportLinksByHref(desired);
+	const { claimed } = claimExistingExportLinks(root, desiredLinks, lookNodes);
+
+	return promiseEach([...desiredLinks.entries()], ([hrefKey, want]) => {
+		const lookNode = lookNodes.get(structuredExportLookMapKey(want.host, want.lookKey));
+		if (!lookNode?.id) return Promise.resolve();
+		const title = want.link.title || want.link.url;
+		const node = claimed.get(hrefKey);
+		if (!node) {
+			return browser.bookmarks.create({
+				parentId: lookNode.id,
+				title,
+				url: want.link.url
+			}).then(created => {
+				stats.created += 1;
+				if (created) {
+					if (!Array.isArray(lookNode.children)) lookNode.children = [];
+					lookNode.children.push(created);
+				}
+			});
+		}
+		return maybeMoveBookmarkNode(node, lookNode.id, stats)
+			.then(() => maybeUpdateBookmarkTitle(node, title, stats));
+	}).then(() => claimed);
+}
+
+function syncStructuredBookmarksToFolder(folderId, plan) {
+	const id = String(folderId || "");
+	if (!id) {
+		return Promise.reject(new Error("Choose a bookmark folder to export to."));
+	}
+	if (!browser.bookmarks) {
 		return Promise.reject(new Error("Bookmark folders are not available"));
 	}
 
-	return promiseEach(plan?.siteFolders || [], site =>
-		browser.bookmarks.create({ parentId, title: site.title }).then(siteNode =>
-			promiseEach(site.looks || [], look =>
-				browser.bookmarks.create({
-					parentId: siteNode.id,
-					title: look.title
-				}).then(lookNode =>
-					promiseEach(look.links || [], link =>
-						browser.bookmarks.create({
-							parentId: lookNode.id,
-							title: link.title || link.url,
-							url: link.url
-						})
-					)
-				)
+	const desired = indexStructuredExportPlan(plan);
+	const stats = { created: 0, updated: 0, moved: 0, deleted: 0 };
+
+	return loadBookmarkSubtree(id).then(nodes => {
+		const root = asBookmarkNodeArray(nodes)[0];
+		if (!root || isBookmarkLinkNode(root) || isBookmarkSeparatorNode(root)) {
+			throw new Error("That bookmark folder is no longer available");
+		}
+		return ensureStructuredExportFolders(root, desired, stats)
+			.then(({ siteNodes, lookNodes }) =>
+				syncStructuredExportLinks(root, desired, lookNodes, stats)
+					.then(claimed => {
+						const keepIds = new Set([root.id]);
+						for (const node of siteNodes.values()) {
+							if (node?.id) keepIds.add(node.id);
+						}
+						for (const node of lookNodes.values()) {
+							if (node?.id) keepIds.add(node.id);
+						}
+						for (const node of claimed.values()) {
+							if (node?.id) keepIds.add(node.id);
+						}
+						const prune = collectExportPruneNodes(root, keepIds);
+						return promiseEach(prune, node =>
+							removeBookmarkNode(node).then(() => {
+								stats.deleted += 1;
+							})
+						);
+					})
 			)
-		)
-	);
+			.then(() => stats);
+	});
 }
 
 function isValidTextRule(rule) {

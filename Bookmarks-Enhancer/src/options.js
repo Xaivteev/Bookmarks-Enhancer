@@ -1345,13 +1345,14 @@ function linkedFolderSelectLabel() {
 }
 
 function confirmLinkedFolderExport({ folderLabel, childCount, plan, unsaved }) {
-    const deleteLine = childCount > 0
-        ? `This will delete all ${formatCount(childCount, "item")} currently in that folder, then write ${formatCount(plan.siteCount, "site folder")}, ${formatCount(plan.lookCount, "look folder")}, and ${formatCount(plan.linkCount, "link")} from the extension.`
-        : `That folder is empty. This will write ${formatCount(plan.siteCount, "site folder")}, ${formatCount(plan.lookCount, "look folder")}, and ${formatCount(plan.linkCount, "link")} from the extension.`;
+    const current = childCount > 0
+        ? `The folder currently has ${formatCount(childCount, "top-level item")}.`
+        : "The folder is currently empty.";
     const lines = [
-        `Replace everything in "${folderLabel}"?`,
+        `Update "${folderLabel}" to match the extension?`,
         "",
-        deleteLine,
+        `This will write ${formatCount(plan.siteCount, "site folder")}, ${formatCount(plan.lookCount, "look folder")}, and ${formatCount(plan.linkCount, "link")}. Missing items are added. Bookmarks and folders that are not in the extension, or not valid for import, are removed. Existing URLs keep their bookmarks: titles are updated, and links are moved if their look changed.`,
+        current,
         "",
         "This writes to the browser immediately. It does not wait for Save."
     ];
@@ -1362,9 +1363,9 @@ function confirmLinkedFolderExport({ folderLabel, childCount, plan, unsaved }) {
         "",
         "Class groups, text rules, custom CSS, and shortcuts are not written. Use JSON Export for a full backup.",
         "",
-        "If this fails after deleting the current contents, the folder can be empty until you export again. Extension data is unchanged.",
+        "If this fails partway, the folder may be incomplete until you export again. Extension data is unchanged.",
         "",
-        "Replace folder?"
+        "Update folder?"
     );
     return window.confirm(lines.join("\n"));
 }
@@ -1466,35 +1467,38 @@ function exportStructuredBookmarksToLinkedFolder() {
                 button.textContent = "Exporting…";
             }
 
-            return removeBookmarkChildren(folderId)
-                .then(() => writeStructuredBookmarksToFolder(folderId, plan)
-                    .then(() => {
-                        showStatus(
-                            `Exported ${formatCount(plan.linkCount, "bookmark")} to "${folderLabel}"`
-                        );
-                    })
-                    .catch(error => {
-                        const detail = error && error.message ? error.message : String(error);
-                        console.error("Linked folder bookmark write failed:", error);
-                        showStructuredImportReport({
-                            mode: "error",
-                            title: "The linked folder was cleared, but writing failed. The folder may be empty until you export again. Extension data is unchanged.",
-                            items: [detail]
-                        });
-                        showStatus(
-                            "Export failed after clearing the linked folder. Extension data is unchanged.",
-                            true
-                        );
-                    })
-                )
+            return syncStructuredBookmarksToFolder(folderId, plan)
+                .then(stats => {
+                    const parts = [
+                        `Exported ${formatCount(plan.linkCount, "bookmark")} to "${folderLabel}"`
+                    ];
+                    const changes = [];
+                    if (stats?.created) changes.push(`${stats.created} added`);
+                    if (stats?.moved) changes.push(`${stats.moved} moved`);
+                    if (stats?.updated) changes.push(`${stats.updated} updated`);
+                    if (stats?.deleted) changes.push(`${stats.deleted} removed`);
+                    showStatus(
+                        changes.length > 0
+                            ? `${parts[0]} (${changes.join(", ")})`
+                            : `${parts[0]} (already matched)`
+                    );
+                })
                 .catch(error => {
                     const detail = error && error.message ? error.message : String(error);
-                    console.error("Linked folder bookmark wipe failed:", error);
-                    if (/no longer available/i.test(detail)) {
+                    console.error("Linked folder bookmark export failed:", error);
+                    if (/no longer available/i.test(detail) || /empty bookmark subtree/i.test(detail)) {
                         markLinkedFolderMissing();
                         return;
                     }
-                    showStatus(`Could not export to that bookmark folder: ${detail}`, true);
+                    showStructuredImportReport({
+                        mode: "error",
+                        title: "Export failed partway. The linked folder may be incomplete until you export again. Extension data is unchanged.",
+                        items: [detail]
+                    });
+                    showStatus(
+                        "Export failed partway. The linked folder may be incomplete until you export again. Extension data is unchanged.",
+                        true
+                    );
                 })
                 .finally(() => {
                     if (button) {
