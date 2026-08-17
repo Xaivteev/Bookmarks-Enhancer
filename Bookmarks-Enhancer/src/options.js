@@ -377,8 +377,14 @@ function createStyleRuleRow(rule = null) {
     nameInput.className = "styleRuleName";
     nameInput.value = styleRule.name || "";
     nameInput.placeholder = "Style name";
-    nameInput.addEventListener("input", refreshAllStyleSelects);
-    nameCell.appendChild(nameInput);
+    const nameError = createFieldError(`style-name-${styleRule.id}-error`);
+    nameInput.setAttribute("aria-describedby", nameError.id);
+    nameInput.addEventListener("input", () => {
+        refreshAllStyleSelects();
+        validateLookNames();
+    });
+    nameInput.addEventListener("blur", validateLookNames);
+    nameCell.append(nameInput, nameError);
 
     const kindCell = document.createElement("td");
     const kindSelect = document.createElement("select");
@@ -435,6 +441,7 @@ function createStyleRuleRow(rule = null) {
             refreshAllStyleSelects();
             refreshShortcutIconOptions();
             refreshAllTableEmptyStates();
+            validateLookNames();
         })
     ));
 
@@ -488,6 +495,7 @@ function loadStyleRuleRows(rules) {
         cachedStyleRules.forEach(rule => createStyleRuleRow(rule));
     refreshAllStyleSelects();
     refreshAllTableEmptyStates();
+    validateLookNames();
 }
 
 function setFieldError(input, errorEl, message) {
@@ -829,10 +837,6 @@ function addSiteFromInput() {
     scheduleDirtyUiUpdate();
 }
 
-function isBookmarkRootNode(node) {
-    return !!node && (node.id === "root________" || node.id === "0");
-}
-
 function flattenBookmarkFolders(nodes, path = "", group = null) {
     const folders = [];
 
@@ -906,8 +910,12 @@ function populateImportFolderSelect(select, folders) {
 }
 
 function populateAllImportFolderSelects(folders) {
+    const linkedSelect = document.querySelector("#structuredImportFolder");
     for (const select of document.querySelectorAll(".importBookmarkFolder")) {
-        populateImportFolderSelect(select, folders);
+        const list = select === linkedSelect
+            ? (folders || []).filter(folder => !isProtectedBookmarkFolderId(folder.id))
+            : folders;
+        populateImportFolderSelect(select, list);
     }
 }
 
@@ -1073,6 +1081,19 @@ function persistLinkedBookmarkFolderId(folderId) {
 function applyLinkedBookmarkFolderSelect() {
     const select = document.querySelector("#structuredImportFolder");
     if (!select || select.disabled || !linkedBookmarkFolderId) return;
+
+    if (isProtectedBookmarkFolderId(linkedBookmarkFolderId)) {
+        persistLinkedBookmarkFolderId("");
+        select.value = "";
+        showStructuredImportReport({
+            mode: "error",
+            title: "That bookmark folder cannot be used as the linked folder.",
+            items: [
+                "Choose a folder inside the Bookmarks Toolbar, Bookmarks Menu, or Other Bookmarks — not those folders themselves."
+            ]
+        });
+        return;
+    }
 
     const exists = [...select.options].some(option => option.value === linkedBookmarkFolderId);
     if (exists) {
@@ -1317,6 +1338,182 @@ function importStructuredBookmarkFolder() {
         });
 }
 
+function linkedFolderSelectLabel() {
+    const select = document.querySelector("#structuredImportFolder");
+    const option = select?.selectedOptions?.[0];
+    return option && option.value ? option.textContent.trim() : "";
+}
+
+function confirmLinkedFolderExport({ folderLabel, childCount, plan, unsaved }) {
+    const deleteLine = childCount > 0
+        ? `This will delete all ${formatCount(childCount, "item")} currently in that folder, then write ${formatCount(plan.siteCount, "site folder")}, ${formatCount(plan.lookCount, "look folder")}, and ${formatCount(plan.linkCount, "link")} from the extension.`
+        : `That folder is empty. This will write ${formatCount(plan.siteCount, "site folder")}, ${formatCount(plan.lookCount, "look folder")}, and ${formatCount(plan.linkCount, "link")} from the extension.`;
+    const lines = [
+        `Replace everything in "${folderLabel}"?`,
+        "",
+        deleteLine,
+        "",
+        "This writes to the browser immediately. It does not wait for Save."
+    ];
+    if (unsaved) {
+        lines.push("You have unsaved changes. Those unsaved sites, looks, and links will be written.");
+    }
+    lines.push(
+        "",
+        "Class groups, text rules, custom CSS, and shortcuts are not written. Use JSON Export for a full backup.",
+        "",
+        "If this fails after deleting the current contents, the folder can be empty until you export again. Extension data is unchanged.",
+        "",
+        "Replace folder?"
+    );
+    return window.confirm(lines.join("\n"));
+}
+
+function markLinkedFolderMissing() {
+    const folderSelect = document.querySelector("#structuredImportFolder");
+    persistLinkedBookmarkFolderId("");
+    if (folderSelect) folderSelect.value = "";
+    showStructuredImportReport({
+        mode: "error",
+        title: "That linked bookmark folder is no longer available.",
+        items: ["Choose a bookmark folder again to link it to this extension."]
+    });
+    showStatus("That linked bookmark folder is no longer available.", true);
+}
+
+function exportStructuredBookmarksToLinkedFolder() {
+    const folderSelect = document.querySelector("#structuredImportFolder");
+    const button = document.querySelector("#structuredExportBtn");
+    const folderId = folderSelect?.value || "";
+
+    if (!folderId) {
+        folderSelect?.classList.add("fieldInvalid");
+        folderSelect?.setAttribute("aria-invalid", "true");
+        showStructuredImportReport({
+            mode: "error",
+            title: "Choose a bookmark folder to export to.",
+            items: []
+        });
+        folderSelect?.focus();
+        return;
+    }
+    if (isProtectedBookmarkFolderId(folderId)) {
+        persistLinkedBookmarkFolderId("");
+        folderSelect.value = "";
+        showStructuredImportReport({
+            mode: "error",
+            title: "That bookmark folder cannot be used as the linked folder.",
+            items: [
+                "Choose a folder inside the Bookmarks Toolbar, Bookmarks Menu, or Other Bookmarks — not those folders themselves."
+            ]
+        });
+        return;
+    }
+
+    folderSelect.classList.remove("fieldInvalid");
+    folderSelect.removeAttribute("aria-invalid");
+
+    if (!validateLookNames()) {
+        showRowValidationError(
+            "looks",
+            ".styleRuleName.fieldInvalid",
+            "Look names must be unique before exporting to bookmarks",
+            "Review looks"
+        );
+        return;
+    }
+
+    flushSiteDetailToDraft();
+    const styleRules = normalizeStyleRules(collectStyleRules());
+    const plan = buildStructuredBookmarkExportPlan(sitesDraft, styleRules);
+    if (!plan.ok) {
+        showStructuredImportErrors(plan.errors);
+        showRowValidationError(
+            "looks",
+            ".styleRuleName.fieldInvalid",
+            "Look names must be unique before exporting to bookmarks",
+            "Review looks"
+        );
+        return;
+    }
+    if (plan.linkCount === 0) {
+        hideStructuredImportReport();
+        showStatus("No saved links to export", true);
+        return;
+    }
+
+    const folderLabel = linkedFolderSelectLabel() || "the linked folder";
+    const originalLabel = button?.textContent || "Export to linked folder";
+    const childrenPromise = browser.bookmarks && typeof browser.bookmarks.getChildren === "function"
+        ? browser.bookmarks.getChildren(folderId).then(children => (children || []).length)
+        : Promise.reject(new Error("Bookmark folders are not available"));
+
+    childrenPromise
+        .then(childCount => {
+            if (!confirmLinkedFolderExport({
+                folderLabel,
+                childCount,
+                plan,
+                unsaved: isFormDirty()
+            })) {
+                showStatus("Export cancelled");
+                return;
+            }
+
+            hideStructuredImportReport();
+            if (button) {
+                button.disabled = true;
+                button.textContent = "Exporting…";
+            }
+
+            return removeBookmarkChildren(folderId)
+                .then(() => writeStructuredBookmarksToFolder(folderId, plan)
+                    .then(() => {
+                        showStatus(
+                            `Exported ${formatCount(plan.linkCount, "bookmark")} to "${folderLabel}"`
+                        );
+                    })
+                    .catch(error => {
+                        const detail = error && error.message ? error.message : String(error);
+                        console.error("Linked folder bookmark write failed:", error);
+                        showStructuredImportReport({
+                            mode: "error",
+                            title: "The linked folder was cleared, but writing failed. The folder may be empty until you export again. Extension data is unchanged.",
+                            items: [detail]
+                        });
+                        showStatus(
+                            "Export failed after clearing the linked folder. Extension data is unchanged.",
+                            true
+                        );
+                    })
+                )
+                .catch(error => {
+                    const detail = error && error.message ? error.message : String(error);
+                    console.error("Linked folder bookmark wipe failed:", error);
+                    if (/no longer available/i.test(detail)) {
+                        markLinkedFolderMissing();
+                        return;
+                    }
+                    showStatus(`Could not export to that bookmark folder: ${detail}`, true);
+                })
+                .finally(() => {
+                    if (button) {
+                        button.disabled = false;
+                        button.textContent = originalLabel;
+                    }
+                });
+        })
+        .catch(error => {
+            console.error("Linked folder bookmark export failed:", error);
+            const detail = error && error.message ? error.message : String(error);
+            if (/no longer available/i.test(detail) || /empty bookmark subtree/i.test(detail)) {
+                markLinkedFolderMissing();
+                return;
+            }
+            showStatus(`Could not export to that bookmark folder: ${detail}`, true);
+        });
+}
+
 function downloadTextFile(filename, text, mimeType) {
     const blob = new Blob([text], { type: mimeType });
     const url = URL.createObjectURL(blob);
@@ -1337,7 +1534,7 @@ function bookmarkExportFilename(host) {
 }
 
 function exportBookmarksHtmlFile(sites, { rootFolderName, filename, emptyMessage }) {
-    const list = Array.isArray(sites) ? sites.filter(siteConfig => siteConfig?.site) : [];
+    const list = (Array.isArray(sites) ? sites : []).filter(siteHasBookmarkExportLinks);
     if (list.length === 0) {
         showStatus(emptyMessage, true);
         return;
@@ -1353,7 +1550,7 @@ function exportAllSitesBookmarks() {
     exportBookmarksHtmlFile(sitesDraft, {
         rootFolderName: BOOKMARK_EXPORT_ROOT_FOLDER,
         filename: bookmarkExportFilename(),
-        emptyMessage: "No websites to export"
+        emptyMessage: "No saved links to export"
     });
 }
 
@@ -2245,6 +2442,31 @@ function validateSiteDetail() {
     return allValid;
 }
 
+function validateLookNames() {
+    const inputs = Array.from(document.querySelectorAll(".styleRuleName"));
+    const byKey = new Map();
+    for (const input of inputs) {
+        const key = lookNameKey(input.value);
+        if (!key) continue;
+        if (!byKey.has(key)) byKey.set(key, []);
+        byKey.get(key).push(input);
+    }
+
+    let valid = true;
+    for (const input of inputs) {
+        const key = lookNameKey(input.value);
+        const duplicate = !!key && (byKey.get(key) || []).length > 1;
+        const errorEl = input.parentElement?.querySelector(".fieldError");
+        setFieldError(
+            input,
+            errorEl,
+            duplicate ? "Look names must be unique (ignoring case)." : ""
+        );
+        if (duplicate) valid = false;
+    }
+    return valid;
+}
+
 function validateConfigurableRuleRows() {
     if (isSiteDetailOpen() && !validateSiteDetail()) {
         showRowValidationError(
@@ -2256,6 +2478,15 @@ function validateConfigurableRuleRows() {
                 openSiteIndex: selectedSiteIndex,
                 siteTab: siteTabForSelector(".fieldInvalid")
             }
+        );
+        return false;
+    }
+    if (!validateLookNames()) {
+        showRowValidationError(
+            "looks",
+            ".styleRuleName.fieldInvalid",
+            "Look names must be unique before saving",
+            "Review looks"
         );
         return false;
     }
@@ -3513,6 +3744,10 @@ function setupEventListeners() {
         document.querySelector("#legacyImportBtn")?.addEventListener("click", importLegacyBookmarkFolder);
         document.querySelector("#siteImportBtn")?.addEventListener("click", importSiteBookmarkFolder);
         document.querySelector("#structuredImportBtn")?.addEventListener("click", importStructuredBookmarkFolder);
+        document.querySelector("#structuredExportBtn")?.addEventListener(
+            "click",
+            exportStructuredBookmarksToLinkedFolder
+        );
         document.querySelector("#structuredImportFolder")?.addEventListener(
             "change",
             handleStructuredImportFolderChange

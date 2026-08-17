@@ -292,6 +292,17 @@
             margin: 0.2rem 0;
         }
 
+        .structuredImportActions {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 0.5rem;
+            margin: 0.25rem 0 0;
+        }
+
+        #structuredExportHelp {
+            margin: 0.35rem 0 0;
+        }
+
         .bookmarkExport {
             margin: 1.5rem 0 0;
             padding: 0.75rem 0 0;
@@ -1534,6 +1545,7 @@
                 Assign a unique shortcut icon and color to show a toggle in the
                 top-right of matching sites. Icons cannot be reused, so at most
                 five looks can have shortcuts — other looks stay on the context menu.
+                Look names must be unique, ignoring case.
             </p>
 
             <div class="stylePreview" id="stylePreviewRoot">
@@ -1655,6 +1667,8 @@
                             Remembered in this browser. Import still runs only when you
                             click Import. The folder name can be anything; its children
                             must be site folders named like <code>example.com</code>.
+                            The Bookmarks Toolbar, Bookmarks Menu, Other Bookmarks, and
+                            the bookmark root cannot be used.
                         </p>
                     </div>
                     <fieldset class="structuredImportPrune">
@@ -1662,7 +1676,8 @@
                         <p class="settingHelp">
                             By default, sites, looks, and links already in the extension
                             stay. Choose Remove to drop ones that are not in the linked
-                            folder.
+                            folder. Sites with no saved links are not stored in the
+                            bookmark folder, so Remove sites will also delete those.
                         </p>
                         <div class="structuredImportPruneRow">
                             <span id="structuredImportMissingSitesLabel">Sites not in this folder</span>
@@ -1728,7 +1743,21 @@
                             </label>
                         </div>
                     </fieldset>
-                    <button type="button" id="structuredImportBtn">Import folder</button>
+                    <div class="structuredImportActions">
+                        <button type="button" id="structuredImportBtn">Import folder</button>
+                        <button
+                            type="button"
+                            id="structuredExportBtn"
+                            aria-describedby="structuredExportHelp"
+                        >
+                            Export to linked folder
+                        </button>
+                    </div>
+                    <p class="settingHelp" id="structuredExportHelp">
+                        Export deletes everything currently in the linked folder, then
+                        writes the current sites, looks, and saved links. It writes to
+                        the browser immediately and asks for confirmation first.
+                    </p>
                     <div id="structuredImportReport" class="importReport" hidden></div>
                 </section>
 
@@ -1765,6 +1794,7 @@
                         Download an HTML bookmarks file you can import in Chrome or
                         Firefox. It uses a Bookmarks Enhancer folder, then a folder
                         per site, then a folder per look, then the saved links.
+                        Empty site and look folders are omitted.
                     </p>
                     <button type="button" id="legacyExportBookmarksBtn">Export bookmarks</button>
                 </section>
@@ -1916,6 +1946,7 @@
                             <strong id="siteExportHostLabel">this website</strong>
                             that Chrome or Firefox can import. Structure is this site,
                             then a folder per look, then the saved links.
+                            Empty look folders are omitted.
                         </p>
                         <button type="button" id="siteExportBookmarksBtn">Export bookmarks</button>
                     </section>

@@ -83,6 +83,38 @@ const DEFAULT_STYLE_RULES = [
 
 const BOOKMARK_EXPORT_ROOT_FOLDER = "Bookmarks Enhancer";
 
+const PROTECTED_BOOKMARK_FOLDER_IDS = new Set([
+	"root________",
+	"menu________",
+	"toolbar_____",
+	"unfiled_____",
+	"mobile______",
+	"0",
+	"1",
+	"2",
+	"3"
+]);
+
+function bookmarkNodeId(nodeOrId) {
+	if (nodeOrId && typeof nodeOrId === "object") {
+		return String(nodeOrId.id || "");
+	}
+	return String(nodeOrId || "");
+}
+
+function isBookmarkRootNode(nodeOrId) {
+	const id = bookmarkNodeId(nodeOrId);
+	return id === "root________" || id === "0";
+}
+
+function isProtectedBookmarkFolderId(id) {
+	return PROTECTED_BOOKMARK_FOLDER_IDS.has(String(id || ""));
+}
+
+function isProtectedBookmarkFolder(node) {
+	return !!node && isProtectedBookmarkFolderId(node.id);
+}
+
 const UNMATCHED_BOOKMARK_RULE_ID = "__unmatched__";
 
 function isUnmatchedBookmarkRule(rule) {
@@ -987,6 +1019,19 @@ function groupSiteLinksByLook(siteConfig) {
 	return groups;
 }
 
+function bookmarkExportLookGroups(siteConfig) {
+	const groups = new Map();
+	for (const [styleId, links] of groupSiteLinksByLook(siteConfig)) {
+		if (!links.length) continue;
+		groups.set(styleId, links);
+	}
+	return groups;
+}
+
+function siteHasBookmarkExportLinks(siteConfig) {
+	return bookmarkExportLookGroups(siteConfig).size > 0;
+}
+
 function renderBookmarkFolderHtml(name, inner, indent, addDate) {
 	const pad = "    ".repeat(indent);
 	const heading = `<DT><H3 ADD_DATE="${addDate}">${escapeBookmarkHtml(name)}</H3>`;
@@ -1002,7 +1047,8 @@ function renderBookmarkLinkHtml(link, indent, addDate) {
 function renderSiteBookmarkFolderHtml(siteConfig, styleRules, indent, addDate) {
 	const host = siteConfig?.site || "";
 	if (!host) return "";
-	const groups = groupSiteLinksByLook(siteConfig);
+	const groups = bookmarkExportLookGroups(siteConfig);
+	if (groups.size === 0) return "";
 	let inner = "";
 	for (const [styleId, links] of groups) {
 		const lookInner = links
@@ -1031,7 +1077,7 @@ function countBookmarkExportLinks(sites) {
 function buildNetscapeBookmarkHtml(sites, styleRules, options = {}) {
 	const addDate = String(Math.floor(Date.now() / 1000));
 	const list = (Array.isArray(sites) ? sites : [])
-		.filter(siteConfig => siteConfig?.site)
+		.filter(siteHasBookmarkExportLinks)
 		.sort((a, b) => (a.site || "").localeCompare(b.site || ""));
 	const indent = options.rootFolderName ? 1 : 0;
 	let inner = list
@@ -1242,6 +1288,11 @@ function findLookNameCollisions(styleRules) {
 	return collisions;
 }
 
+function formatLookNameCollisionMessage(collision) {
+	const quoted = (collision?.names || []).map(name => `"${name}"`).join(" and ");
+	return `${quoted} share the same name (ignoring case). Rename them on the Looks tab so each name is unique.`;
+}
+
 function cloneSitesForStructuredImport(sites) {
 	return (Array.isArray(sites) ? sites : []).map(siteConfig => ({
 		...siteConfig,
@@ -1261,10 +1312,7 @@ function parseStructuredBookmarkTree(nodes, styleRules) {
 	const rules = normalizeStyleRules(styleRules);
 	const collisions = findLookNameCollisions(rules);
 	for (const collision of collisions) {
-		const quoted = collision.names.map(name => `"${name}"`).join(" and ");
-		errors.push(structuredImportError(
-			`${quoted} share the same name (ignoring case). Rename them on the Looks tab so each name is unique.`
-		));
+		errors.push(structuredImportError(formatLookNameCollisionMessage(collision)));
 	}
 
 	const roots = asBookmarkNodeArray(nodes);
@@ -1685,6 +1733,116 @@ function importStructuredBookmarkFolderIntoSites(sites, styleRules, folderId, op
 		}
 		return applyStructuredBookmarkParse(sites, styleRules, parsed, options);
 	});
+}
+
+function buildStructuredBookmarkExportPlan(sites, styleRules) {
+	const rules = normalizeStyleRules(styleRules);
+	const collisions = findLookNameCollisions(rules);
+	if (collisions.length > 0) {
+		return {
+			ok: false,
+			errors: collisions.map(collision => structuredImportError(
+				formatLookNameCollisionMessage(collision)
+			)),
+			siteFolders: [],
+			siteCount: 0,
+			lookCount: 0,
+			linkCount: 0
+		};
+	}
+
+	const list = (Array.isArray(sites) ? sites : [])
+		.filter(siteHasBookmarkExportLinks)
+		.sort((a, b) => (a.site || "").localeCompare(b.site || ""));
+	const siteFolders = [];
+	let lookCount = 0;
+	let linkCount = 0;
+
+	for (const siteConfig of list) {
+		const looks = [];
+		for (const [styleId, links] of bookmarkExportLookGroups(siteConfig)) {
+			looks.push({
+				title: lookNameForBookmarkExport(styleId, rules),
+				links
+			});
+			lookCount += 1;
+			linkCount += links.length;
+		}
+		if (looks.length === 0) continue;
+		siteFolders.push({
+			title: siteConfig.site,
+			looks
+		});
+	}
+
+	return {
+		ok: true,
+		errors: [],
+		siteFolders,
+		siteCount: siteFolders.length,
+		lookCount,
+		linkCount
+	};
+}
+
+function promiseEach(items, fn) {
+	return (items || []).reduce(
+		(chain, item, index) => chain.then(() => fn(item, index)),
+		Promise.resolve()
+	);
+}
+
+function removeBookmarkNode(node) {
+	if (!node?.id || !browser.bookmarks) {
+		return Promise.resolve();
+	}
+	const isLink = isBookmarkLinkNode(node) || isBookmarkSeparatorNode(node);
+	if (isLink && typeof browser.bookmarks.remove === "function") {
+		return browser.bookmarks.remove(node.id);
+	}
+	if (typeof browser.bookmarks.removeTree === "function") {
+		return browser.bookmarks.removeTree(node.id);
+	}
+	if (typeof browser.bookmarks.remove === "function") {
+		return browser.bookmarks.remove(node.id);
+	}
+	return Promise.reject(new Error("Cannot remove bookmark items"));
+}
+
+function removeBookmarkChildren(folderId) {
+	const id = String(folderId || "");
+	if (!id || !browser.bookmarks || typeof browser.bookmarks.getChildren !== "function") {
+		return Promise.reject(new Error("Bookmark folders are not available"));
+	}
+	return browser.bookmarks.getChildren(id).then(children =>
+		promiseEach(children || [], removeBookmarkNode)
+	);
+}
+
+function writeStructuredBookmarksToFolder(folderId, plan) {
+	const parentId = String(folderId || "");
+	if (!parentId || !browser.bookmarks || typeof browser.bookmarks.create !== "function") {
+		return Promise.reject(new Error("Bookmark folders are not available"));
+	}
+
+	return promiseEach(plan?.siteFolders || [], site =>
+		browser.bookmarks.create({ parentId, title: site.title }).then(siteNode =>
+			promiseEach(site.looks || [], look =>
+				browser.bookmarks.create({
+					parentId: siteNode.id,
+					title: look.title
+				}).then(lookNode =>
+					promiseEach(look.links || [], link =>
+						browser.bookmarks.create({
+							parentId: lookNode.id,
+							title: link.title || link.url,
+							url: link.url
+						})
+					)
+				)
+			)
+		)
+	);
 }
 
 function isValidTextRule(rule) {
