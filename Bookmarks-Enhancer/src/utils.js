@@ -96,15 +96,52 @@ function isValidHttpUrl(href) {
 	}
 }
 
+function hostnameMatchesNormalized(normalizedHostname, normalizedSite) {
+	return !!normalizedHostname && !!normalizedSite && (
+		normalizedHostname === normalizedSite ||
+		normalizedHostname.endsWith(`.${normalizedSite}`)
+	);
+}
+
 function findMatchingSiteConfig(sites, hostname) {
+	const host = normalizeSite(hostname);
+	if (!host) return null;
 	let best = null;
 	for (const siteConfig of sites || []) {
-		if (!hostnameMatchesSite(hostname, siteConfig.site)) continue;
-		if (!best || siteConfig.site.length > best.site.length) {
+		const site = siteConfig?.site;
+		if (!hostnameMatchesNormalized(host, site)) continue;
+		if (!best || site.length > best.site.length) {
 			best = siteConfig;
 		}
 	}
 	return best;
+}
+
+function buildSiteHostIndex(sites) {
+	const index = new Map();
+	for (const siteConfig of sites || []) {
+		const host = siteConfig?.site;
+		if (!host || index.has(host)) continue;
+		index.set(host, siteConfig);
+	}
+	return index;
+}
+
+function findSiteConfigByNormalizedHost(index, normalizedHost) {
+	if (!index || !normalizedHost) return null;
+	let candidate = normalizedHost;
+	while (candidate) {
+		const match = index.get(candidate);
+		if (match) return match;
+		const dot = candidate.indexOf(".");
+		if (dot < 0) break;
+		candidate = candidate.slice(dot + 1);
+	}
+	return null;
+}
+
+function findSiteConfigInHostIndex(index, hostname) {
+	return findSiteConfigByNormalizedHost(index, normalizeSite(hostname));
 }
 
 function sitesToSearchPairs(sites) {
@@ -459,13 +496,7 @@ function isPlausibleHostname(site) {
 }
 
 function hostnameMatchesSite(hostname, site) {
-	const normalizedHostname = normalizeSite(hostname);
-	const normalizedSite = normalizeSite(site);
-
-	if (!normalizedHostname || !normalizedSite) return false;
-
-	return normalizedHostname === normalizedSite ||
-		normalizedHostname.endsWith(`.${normalizedSite}`);
+	return hostnameMatchesNormalized(normalizeSite(hostname), normalizeSite(site));
 }
 
 function getPageRunStateForUrl(url, sites) {
@@ -555,8 +586,9 @@ function normalizeHrefForSearch(href, explicitRules) {
 		const url = new URL(href, typeof window !== 'undefined' ? window.location.origin : undefined);
 		if (url.protocol !== "http:" && url.protocol !== "https:") return href;
 
+		const hostname = normalizeSite(url.hostname);
 		const rule = getActiveUrlRules(explicitRules).find(entry =>
-			hostnameMatchesSite(url.hostname, entry.site)
+			hostnameMatchesNormalized(hostname, entry.site)
 		);
 
 		if (rule) {
@@ -601,8 +633,7 @@ function normalizeHrefForSearch(href, explicitRules) {
 	}
 }
 
-function hrefMatchKey(href, explicitRules) {
-	const normalized = normalizeHrefForSearch(href, explicitRules);
+function hrefMatchKeyFromNormalized(normalized) {
 	try {
 		const url = new URL(normalized);
 		const host = normalizeSite(url.hostname);
@@ -613,4 +644,8 @@ function hrefMatchKey(href, explicitRules) {
 	} catch {
 		return normalized;
 	}
+}
+
+function hrefMatchKey(href, explicitRules) {
+	return hrefMatchKeyFromNormalized(normalizeHrefForSearch(href, explicitRules));
 }

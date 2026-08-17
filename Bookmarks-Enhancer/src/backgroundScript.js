@@ -320,6 +320,7 @@ let urlRules = [];
 let sites = [];
 let styleRules = DEFAULT_STYLE_RULES.map(rule => ({ ...rule }));
 let linkLookupBySite = new Map();
+let siteHostIndex = new Map();
 const urlNormalizationCache = createUrlNormalizationCache();
 
 let settingsReady = null;
@@ -332,9 +333,18 @@ function lookupEntryStyle(entry) {
 	return typeof entry === "string" ? entry : (entry.style || null);
 }
 
+function matchingSiteConfig(hostname) {
+	return findSiteConfigInHostIndex(siteHostIndex, hostname);
+}
+
+function rebuildSiteHostIndex() {
+	siteHostIndex = buildSiteHostIndex(sites);
+}
+
 function rebuildLinkLookup() {
 	urlRules = sitesToUrlRules(sites);
 	urlNormalizationCache.clear();
+	rebuildSiteHostIndex();
 	linkLookupBySite = new Map();
 
 	for (const siteConfig of sites) {
@@ -355,6 +365,7 @@ function applyLoadedSites(nextSites, nextStyleRules, { rebuild = true } = {}) {
 		? nextStyleRules
 		: DEFAULT_STYLE_RULES.map(rule => ({ ...rule }));
 	if (rebuild) rebuildLinkLookup();
+	else rebuildSiteHostIndex();
 }
 
 function maybeSplitStoredSiteLinks(result, loadedSites) {
@@ -577,7 +588,10 @@ browser.tabs.query({ currentWindow: true, active: true })
 function persistSites(nextSites, { includeLinks = true, rebuild = includeLinks } = {}) {
 	sites = Array.isArray(nextSites) ? nextSites : sites;
 	if (rebuild) rebuildLinkLookup();
-	else urlRules = sitesToUrlRules(sites);
+	else {
+		urlRules = sitesToUrlRules(sites);
+		rebuildSiteHostIndex();
+	}
 
 	pendingIgnoredSiteWrites += 1;
 	const writes = includeLinks
@@ -619,7 +633,20 @@ function addUrlToSiteList(url, title, styleId) {
 }
 
 function getPageRunState(url) {
-	return getPageRunStateForUrl(url, sites);
+	const idle = { siteMatch: false, runStyling: false, runShortcuts: false };
+	if (typeof url !== "string" || !/^https?:/i.test(url)) return idle;
+	let hostname = "";
+	try {
+		hostname = new URL(url).hostname;
+	} catch {
+		return idle;
+	}
+	const siteMatch = !!matchingSiteConfig(hostname);
+	return {
+		siteMatch,
+		runShortcuts: siteMatch,
+		runStyling: siteMatch
+	};
 }
 
 function emptyActionPopupPageState() {
@@ -657,7 +684,7 @@ function collectActionPopupSiteState(url) {
 		};
 	}
 
-	const siteConfig = host ? findMatchingSiteConfig(sites, host) : null;
+	const siteConfig = host ? matchingSiteConfig(host) : null;
 	return {
 		restricted: false,
 		host: siteConfig ? siteConfig.site : host,
@@ -726,7 +753,7 @@ function searchActionPopupLinks(options = {}) {
 	if (allSites) {
 		siteList = Array.isArray(sites) ? sites : [];
 	} else if (host) {
-		const match = findMatchingSiteConfig(sites, host);
+		const match = matchingSiteConfig(host);
 		siteList = match ? [match] : [];
 	}
 
@@ -772,11 +799,13 @@ function getLookShortcutState(url) {
 	} catch {
 		return { ok: false, url, styleId: "", site: "" };
 	}
-	const siteConfig = findMatchingSiteConfig(sites, hostname);
+	const siteConfig = matchingSiteConfig(hostname);
 	return {
 		ok: !!siteConfig,
 		url,
-		styleId: lookupLinkStyle(url) || "",
+		styleId: siteConfig
+			? (lookupLinkStyleForSite(normalizeHrefForSearch(url), siteConfig) || "")
+			: "",
 		site: siteConfig ? siteConfig.site : ""
 	};
 }
@@ -793,13 +822,14 @@ function applySavedLinkToMemory(url, title, styleId, { toggleOff = false } = {})
 		return { ok: false, styleId: "" };
 	}
 
-	let siteConfig = findMatchingSiteConfig(sites, hostname);
+	let siteConfig = matchingSiteConfig(hostname);
 	if (!siteConfig) {
 		if (toggleOff) return { ok: false, styleId: "" };
 		const ensured = ensureSiteConfig(sites, hostname);
 		sites = ensured.sites;
 		siteConfig = ensured.siteConfig;
 		if (!siteConfig) return { ok: false, styleId: "" };
+		siteHostIndex.set(siteConfig.site, siteConfig);
 	}
 	if (!Array.isArray(siteConfig.links)) siteConfig.links = [];
 
@@ -855,7 +885,7 @@ function toggleLookShortcut(url, title, styleId, senderTabId) {
 		return { ok: false };
 	}
 
-	if (!findMatchingSiteConfig(sites, hostname)) {
+	if (!matchingSiteConfig(hostname)) {
 		return { ok: false };
 	}
 
@@ -1165,6 +1195,13 @@ function invalidateLinkCaches() {
 	rebuildLinkLookup();
 }
 
+function lookupLinkStyleForSite(normalizedHref, siteConfig) {
+	if (!siteConfig) return null;
+	return lookupEntryStyle(
+		linkLookupBySite.get(siteConfig.site)?.get(hrefMatchKeyFromNormalized(normalizedHref))
+	);
+}
+
 function lookupLinkStyle(href) {
 	if (!href) return null;
 	const normalized = normalizeHrefForSearch(href);
@@ -1178,20 +1215,33 @@ function lookupLinkStyle(href) {
 			return null;
 		}
 	}
-
-	const siteConfig = findMatchingSiteConfig(sites, hostname);
-	if (!siteConfig) return null;
-	return lookupEntryStyle(
-		linkLookupBySite.get(siteConfig.site)?.get(hrefMatchKey(href))
-	);
+	return lookupLinkStyleForSite(normalized, matchingSiteConfig(hostname));
 }
 
 function searchhrefs(hrefs) {
 	const statuses = {};
+	let lastHost = "";
+	let lastSite = null;
+	let haveLastHost = false;
+
 	for (const href of hrefs || []) {
-		if (!href || !isValidHttpUrl(href)) continue;
+		if (!href) continue;
+		let parsed;
+		try {
+			parsed = new URL(href);
+		} catch {
+			continue;
+		}
+		if (parsed.protocol !== "http:" && parsed.protocol !== "https:") continue;
+
 		const normalized = normalizeHrefForSearch(href);
-		statuses[normalized] = lookupLinkStyle(href) || "none";
+		const host = normalizeSite(parsed.hostname);
+		if (!haveLastHost || host !== lastHost) {
+			lastHost = host;
+			lastSite = findSiteConfigByNormalizedHost(siteHostIndex, host);
+			haveLastHost = true;
+		}
+		statuses[normalized] = lookupLinkStyleForSite(normalized, lastSite) || "none";
 	}
 	return Promise.resolve({ statuses });
 }
