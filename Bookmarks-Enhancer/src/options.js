@@ -3421,7 +3421,7 @@ function showStatus(message, options = false) {
     }, duration);
 }
 
-const OPTIONS_TABS = new Set(["general", "sites", "looks"]);
+const OPTIONS_TABS = new Set(["general", "sites", "looks", "imports"]);
 const SITE_DETAIL_TABS = new Set(["classes", "links", "text", "params"]);
 const DEFAULT_SITE_DETAIL_TAB = "links";
 
@@ -3633,10 +3633,10 @@ function activateOptionsTab(tabId, options = {}) {
         panel.hidden = !selected;
     }
 
-    if (tabId === "sites" || tabId === "looks" || tabId === "general") {
+    if (tabId === "sites" || tabId === "looks" || tabId === "general" || tabId === "imports") {
         refreshAllStyleSelects();
     }
-    if (tabId === "sites") {
+    if (tabId === "sites" || tabId === "imports") {
         loadLegacyImportFolders();
     }
 

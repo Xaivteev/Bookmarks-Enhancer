@@ -397,6 +397,12 @@
             padding-top: 0.5rem;
         }
 
+        #panelImportExport > .legacyImport:first-of-type {
+            margin-top: 0;
+            padding-top: 0;
+            border-top: 0;
+        }
+
         .tabPanel.active {
             display: block;
         }
@@ -1439,6 +1445,9 @@
             <button type="button" role="tab" id="tabStyleRules" aria-controls="panelStyleRules" aria-selected="false" data-tab="looks">
                 Looks
             </button>
+            <button type="button" role="tab" id="tabImportExport" aria-controls="panelImportExport" aria-selected="false" data-tab="imports">
+                Imports/Exports
+            </button>
         </div>
 
         <section
@@ -1644,161 +1653,6 @@
                 <p class="tableEmptyState" id="sitesSearchEmpty" hidden>
                     No websites match that search.
                 </p>
-
-                <section class="legacyImport" aria-labelledby="structuredImportHeading">
-                    <h2 id="structuredImportHeading">Import sites and looks from bookmarks</h2>
-                    <p class="hint">
-                        Import from a linked bookmark folder that uses the same layout as
-                        Export to bookmarks: a folder per website, then a folder per look,
-                        then the saved links. Looks are matched by name. If a look folder
-                        has no matching look, one is created with empty CSS — add styling
-                        on the Looks tab. Save afterwards to apply.
-                    </p>
-                    <div class="legacyImportFields">
-                        <label for="structuredImportFolder">Linked bookmark folder</label>
-                        <select
-                            id="structuredImportFolder"
-                            class="importBookmarkFolder"
-                            aria-describedby="structuredImportFolderHelp"
-                        >
-                            <option value="">Loading folders…</option>
-                        </select>
-                        <p class="settingHelp" id="structuredImportFolderHelp">
-                            Remembered in this browser. Import still runs only when you
-                            click Import. The folder name can be anything; its children
-                            must be site folders named like <code>example.com</code>.
-                            The Bookmarks Toolbar, Bookmarks Menu, Other Bookmarks, and
-                            the bookmark root cannot be used.
-                        </p>
-                    </div>
-                    <fieldset class="structuredImportPrune">
-                        <legend>Items not in this folder</legend>
-                        <p class="settingHelp">
-                            By default, sites, looks, and links already in the extension
-                            stay. Choose Remove to drop ones that are not in the linked
-                            folder. Sites with no saved links are not stored in the
-                            bookmark folder, so Remove sites will also delete those.
-                        </p>
-                        <div class="structuredImportPruneRow">
-                            <span id="structuredImportMissingSitesLabel">Sites not in this folder</span>
-                            <label>
-                                <input
-                                    type="radio"
-                                    name="structuredImportMissingSites"
-                                    value="keep"
-                                    checked
-                                >
-                                Keep
-                            </label>
-                            <label>
-                                <input
-                                    type="radio"
-                                    name="structuredImportMissingSites"
-                                    value="remove"
-                                    aria-labelledby="structuredImportMissingSitesLabel"
-                                >
-                                Remove
-                            </label>
-                        </div>
-                        <div class="structuredImportPruneRow">
-                            <span id="structuredImportMissingLooksLabel">Looks on a site that are not in this folder</span>
-                            <label>
-                                <input
-                                    type="radio"
-                                    name="structuredImportMissingLooks"
-                                    value="keep"
-                                    checked
-                                >
-                                Keep
-                            </label>
-                            <label>
-                                <input
-                                    type="radio"
-                                    name="structuredImportMissingLooks"
-                                    value="remove"
-                                    aria-labelledby="structuredImportMissingLooksLabel"
-                                >
-                                Remove
-                            </label>
-                        </div>
-                        <div class="structuredImportPruneRow">
-                            <span id="structuredImportMissingLinksLabel">Saved links that are not in this folder</span>
-                            <label>
-                                <input
-                                    type="radio"
-                                    name="structuredImportMissingLinks"
-                                    value="keep"
-                                    checked
-                                >
-                                Keep
-                            </label>
-                            <label>
-                                <input
-                                    type="radio"
-                                    name="structuredImportMissingLinks"
-                                    value="remove"
-                                    aria-labelledby="structuredImportMissingLinksLabel"
-                                >
-                                Remove
-                            </label>
-                        </div>
-                    </fieldset>
-                    <div class="structuredImportActions">
-                        <button type="button" id="structuredImportBtn">Import folder</button>
-                        <button
-                            type="button"
-                            id="structuredExportBtn"
-                            aria-describedby="structuredExportHelp"
-                        >
-                            Export to linked folder
-                        </button>
-                    </div>
-                    <p class="settingHelp" id="structuredExportHelp">
-                        Export makes the linked folder match the current sites, looks,
-                        and saved links: it adds missing items, removes leftovers and
-                        invalid bookmarks, and updates or moves existing URLs. It writes
-                        to the browser immediately and asks for confirmation first.
-                    </p>
-                    <div id="structuredImportReport" class="importReport" hidden></div>
-                </section>
-
-                <section class="legacyImport" aria-labelledby="legacyImportHeading">
-                    <h2 id="legacyImportHeading">Import look links from bookmarks</h2>
-                    <p class="hint">
-                        Choose any bookmark folder and one look. Every http(s) bookmark in
-                        that folder (including nested folders) is saved under that look,
-                        grouped by website. Folder names are ignored. Save afterwards to apply.
-                    </p>
-                    <div class="legacyImportFields">
-                        <label for="legacyImportFolder">Bookmark folder</label>
-                        <select
-                            id="legacyImportFolder"
-                            class="importBookmarkFolder"
-                            aria-describedby="legacyImportFolderHelp"
-                        >
-                            <option value="">Loading folders…</option>
-                        </select>
-                        <p class="settingHelp" id="legacyImportFolderHelp">
-                            Includes the selected folder and all folders inside it.
-                        </p>
-
-                        <label for="legacyImportLook">Look</label>
-                        <select id="legacyImportLook" class="importBookmarkLook"></select>
-                    </div>
-                    <button type="button" id="legacyImportBtn">Import folder</button>
-                    <p class="fieldError" id="legacyImportError" hidden></p>
-                </section>
-
-                <section class="bookmarkExport" aria-labelledby="legacyExportHeading">
-                    <h2 id="legacyExportHeading">Export to bookmarks</h2>
-                    <p class="hint">
-                        Download an HTML bookmarks file you can import in Chrome or
-                        Firefox. It uses a Bookmarks Enhancer folder, then a folder
-                        per site, then a folder per look, then the saved links.
-                        Empty site and look folders are omitted.
-                    </p>
-                    <button type="button" id="legacyExportBookmarksBtn">Export bookmarks</button>
-                </section>
             </div>
 
             <div id="siteDetailView" hidden>
@@ -1941,7 +1795,7 @@
                     </section>
 
                     <section class="bookmarkExport" aria-labelledby="siteExportHeading">
-                        <h2 id="siteExportHeading">Export to bookmarks</h2>
+                        <h2 id="siteExportHeading">Download as bookmarks</h2>
                         <p class="hint">
                             Download an HTML bookmarks file for
                             <strong id="siteExportHostLabel">this website</strong>
@@ -1949,7 +1803,7 @@
                             then a folder per look, then the saved links.
                             Empty look folders are omitted.
                         </p>
-                        <button type="button" id="siteExportBookmarksBtn">Export bookmarks</button>
+                        <button type="button" id="siteExportBookmarksBtn">Download bookmarks</button>
                     </section>
                 </section>
 
@@ -2007,6 +1861,175 @@
                     <p class="fieldError" id="siteKeepParamsError" hidden></p>
                 </section>
             </div>
+        </section>
+
+        <section
+            id="panelImportExport"
+            class="tabPanel"
+            role="tabpanel"
+            aria-labelledby="tabImportExport"
+            data-tab-panel="imports"
+            hidden
+        >
+            <p class="hint">
+                Bring saved links in from browser bookmarks, or write them back out.
+                JSON Import and Export in the bar below is a full configuration backup.
+            </p>
+
+            <section class="legacyImport" aria-labelledby="structuredImportHeading">
+                <h2 id="structuredImportHeading">Linked folder Import/Export</h2>
+                <p class="hint">
+                    Import from a linked bookmark folder that uses the same layout as
+                    Download as bookmarks: a folder per website, then a folder per look,
+                    then the saved links. Looks are matched by name. If a look folder
+                    has no matching look, one is created with empty CSS — add styling
+                    on the Looks tab. Save afterwards to apply.
+                </p>
+                <div class="legacyImportFields">
+                    <label for="structuredImportFolder">Linked bookmark folder</label>
+                    <select
+                        id="structuredImportFolder"
+                        class="importBookmarkFolder"
+                        aria-describedby="structuredImportFolderHelp"
+                    >
+                        <option value="">Loading folders…</option>
+                    </select>
+                    <p class="settingHelp" id="structuredImportFolderHelp">
+                        Remembered in this browser. Import still runs only when you
+                        click Import. The folder name can be anything; its children
+                        must be site folders named like <code>example.com</code>.
+                        The Bookmarks Toolbar, Bookmarks Menu, Other Bookmarks, and
+                        the bookmark root cannot be used.
+                    </p>
+                </div>
+                <fieldset class="structuredImportPrune">
+                    <legend>Items not in this folder</legend>
+                    <p class="settingHelp">
+                        By default, sites, looks, and links already in the extension
+                        stay. Choose Remove to drop ones that are not in the linked
+                        folder. Sites with no saved links are not stored in the
+                        bookmark folder, so Remove sites will also delete those.
+                    </p>
+                    <div class="structuredImportPruneRow">
+                        <span id="structuredImportMissingSitesLabel">Sites not in this folder</span>
+                        <label>
+                            <input
+                                type="radio"
+                                name="structuredImportMissingSites"
+                                value="keep"
+                                checked
+                            >
+                            Keep
+                        </label>
+                        <label>
+                            <input
+                                type="radio"
+                                name="structuredImportMissingSites"
+                                value="remove"
+                                aria-labelledby="structuredImportMissingSitesLabel"
+                            >
+                            Remove
+                        </label>
+                    </div>
+                    <div class="structuredImportPruneRow">
+                        <span id="structuredImportMissingLooksLabel">Looks on a site that are not in this folder</span>
+                        <label>
+                            <input
+                                type="radio"
+                                name="structuredImportMissingLooks"
+                                value="keep"
+                                checked
+                            >
+                            Keep
+                        </label>
+                        <label>
+                            <input
+                                type="radio"
+                                name="structuredImportMissingLooks"
+                                value="remove"
+                                aria-labelledby="structuredImportMissingLooksLabel"
+                            >
+                            Remove
+                        </label>
+                    </div>
+                    <div class="structuredImportPruneRow">
+                        <span id="structuredImportMissingLinksLabel">Saved links that are not in this folder</span>
+                        <label>
+                            <input
+                                type="radio"
+                                name="structuredImportMissingLinks"
+                                value="keep"
+                                checked
+                            >
+                            Keep
+                        </label>
+                        <label>
+                            <input
+                                type="radio"
+                                name="structuredImportMissingLinks"
+                                value="remove"
+                                aria-labelledby="structuredImportMissingLinksLabel"
+                            >
+                            Remove
+                        </label>
+                    </div>
+                </fieldset>
+                <div class="structuredImportActions">
+                    <button type="button" id="structuredImportBtn">Import folder</button>
+                    <button
+                        type="button"
+                        id="structuredExportBtn"
+                        aria-describedby="structuredExportHelp"
+                    >
+                        Export to linked folder
+                    </button>
+                </div>
+                <p class="settingHelp" id="structuredExportHelp">
+                    Export makes the linked folder match the current sites, looks,
+                    and saved links: it adds missing items, removes leftovers and
+                    invalid bookmarks, and updates or moves existing URLs. It writes
+                    to the browser immediately and asks for confirmation first.
+                </p>
+                <div id="structuredImportReport" class="importReport" hidden></div>
+            </section>
+
+            <section class="legacyImport" aria-labelledby="legacyImportHeading">
+                <h2 id="legacyImportHeading">Import look links from bookmarks</h2>
+                <p class="hint">
+                    Choose any bookmark folder and one look. Every http(s) bookmark in
+                    that folder (including nested folders) is saved under that look,
+                    grouped by website. Folder names are ignored. Save afterwards to apply.
+                </p>
+                <div class="legacyImportFields">
+                    <label for="legacyImportFolder">Bookmark folder</label>
+                    <select
+                        id="legacyImportFolder"
+                        class="importBookmarkFolder"
+                        aria-describedby="legacyImportFolderHelp"
+                    >
+                        <option value="">Loading folders…</option>
+                    </select>
+                    <p class="settingHelp" id="legacyImportFolderHelp">
+                        Includes the selected folder and all folders inside it.
+                    </p>
+
+                    <label for="legacyImportLook">Look</label>
+                    <select id="legacyImportLook" class="importBookmarkLook"></select>
+                </div>
+                <button type="button" id="legacyImportBtn">Import folder</button>
+                <p class="fieldError" id="legacyImportError" hidden></p>
+            </section>
+
+            <section class="bookmarkExport" aria-labelledby="legacyExportHeading">
+                <h2 id="legacyExportHeading">Download as bookmarks</h2>
+                <p class="hint">
+                    Download an HTML bookmarks file you can import in Chrome or
+                    Firefox. It uses a Bookmarks Enhancer folder, then a folder
+                    per site, then a folder per look, then the saved links.
+                    Empty site and look folders are omitted.
+                </p>
+                <button type="button" id="legacyExportBookmarksBtn">Download bookmarks</button>
+            </section>
         </section>
 
         <div class="actionsBar">
