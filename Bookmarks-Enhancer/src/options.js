@@ -16,6 +16,7 @@ let previewStyleId = "";
 let suppressDirtyTracking = false;
 let savedFormSnapshot = null;
 let dirtyUiSyncTimer = null;
+let linkedBookmarkFolderId = "";
 const OPTIONS_DOC_TITLE = "Bookmarks Enhancer Options";
 const SITES_PAGE_SIZE = 10;
 let sitesListPage = 1;
@@ -921,6 +922,7 @@ function loadLegacyImportFolders() {
     return browser.bookmarks.getTree()
         .then(tree => {
             populateAllImportFolderSelects(flattenBookmarkFolders(tree));
+            applyLinkedBookmarkFolderSelect();
         })
         .catch(error => {
             console.error("Could not load bookmark folders:", error);
@@ -1054,6 +1056,265 @@ function importSiteBookmarkFolder() {
         button: document.querySelector("#siteImportBtn"),
         hostFilter: host
     });
+}
+
+function persistLinkedBookmarkFolderId(folderId) {
+    const id = normalizeStoredFolderId(folderId) || "";
+    linkedBookmarkFolderId = id;
+    const write = id
+        ? browser.storage.local.set({ [STORAGE_KEYS.linkedBookmarkFolderId]: id })
+        : browser.storage.local.remove(STORAGE_KEYS.linkedBookmarkFolderId);
+    write.catch(error => {
+        console.error("Could not save linked bookmark folder:", error);
+        showStatus("Could not save the linked bookmark folder", true);
+    });
+}
+
+function applyLinkedBookmarkFolderSelect() {
+    const select = document.querySelector("#structuredImportFolder");
+    if (!select || select.disabled || !linkedBookmarkFolderId) return;
+
+    const exists = [...select.options].some(option => option.value === linkedBookmarkFolderId);
+    if (exists) {
+        select.value = linkedBookmarkFolderId;
+        return;
+    }
+
+    persistLinkedBookmarkFolderId("");
+    select.value = "";
+    showStructuredImportReport({
+        mode: "error",
+        title: "That linked bookmark folder is no longer available.",
+        items: ["Choose a bookmark folder again to link it to this extension."]
+    });
+}
+
+function handleStructuredImportFolderChange() {
+    const select = document.querySelector("#structuredImportFolder");
+    persistLinkedBookmarkFolderId(select?.value || "");
+    select?.classList.remove("fieldInvalid");
+}
+
+function hideStructuredImportReport() {
+    const report = document.querySelector("#structuredImportReport");
+    if (!report) return;
+    report.hidden = true;
+    report.classList.remove("is-error", "is-note");
+    report.replaceChildren();
+}
+
+function showStructuredImportReport({ mode, title, items = [] }) {
+    const report = document.querySelector("#structuredImportReport");
+    if (!report) return;
+    report.classList.toggle("is-error", mode === "error");
+    report.classList.toggle("is-note", mode !== "error");
+    report.replaceChildren();
+
+    if (title) {
+        const heading = document.createElement("p");
+        heading.textContent = title;
+        report.appendChild(heading);
+    }
+
+    const listItems = (items || []).filter(Boolean);
+    if (listItems.length > 0) {
+        const list = document.createElement("ul");
+        for (const item of listItems) {
+            const li = document.createElement("li");
+            li.textContent = item;
+            list.appendChild(li);
+        }
+        report.appendChild(list);
+    }
+
+    report.hidden = false;
+}
+
+function structuredImportPruneSelected(name) {
+    return document.querySelector(`input[name="${name}"]:checked`)?.value === "remove";
+}
+
+function describeSkippedBookmark(skip) {
+    const url = skip?.url || "(untitled)";
+    if (skip?.reason === "host-mismatch") {
+        return `${url} is in ${skip.site}, but its host is ${skip.actualHost || "(unknown)"}`;
+    }
+    return `${url} is not an http(s) bookmark`;
+}
+
+function showStructuredImportErrors(errors) {
+    const items = (errors || []).map(error => error?.message || String(error)).filter(Boolean);
+    const title = items.length === 1
+        ? "Could not import from that bookmark folder."
+        : `Could not import: ${formatCount(items.length, "problem")} found.`;
+    showStructuredImportReport({ mode: "error", title, items });
+    showStatus(title, { isError: true, duration: 8000 });
+}
+
+function showStructuredImportSuccess(result) {
+    const parts = [];
+    if (result.linksAdded > 0) {
+        parts.push(
+            `Added ${formatCount(result.linksAdded, "link")} across ${formatCount(result.sitesTouched, "site")}`
+        );
+    }
+    if (result.sitesCreated > 0) {
+        parts.push(`${formatCount(result.sitesCreated, "new site")}`);
+    }
+    if (result.linksReassigned > 0) {
+        parts.push(
+            `Reassigned ${formatCount(result.linksReassigned, "link")} to a different look`
+        );
+    }
+    if (result.linksTitleUpdated > 0) {
+        parts.push(`Updated ${formatCount(result.linksTitleUpdated, "link title")}`);
+    }
+    if (result.sitesRemoved > 0) {
+        parts.push(`Removed ${formatCount(result.sitesRemoved, "site")}`);
+    }
+    if (result.looksRemoved > 0) {
+        parts.push(`Removed ${formatCount(result.looksRemoved, "look")} from sites`);
+    }
+    if (result.linksRemoved > 0) {
+        parts.push(`Removed ${formatCount(result.linksRemoved, "saved link")}`);
+    }
+
+    const created = result.createdLooks || [];
+    if (created.length > 0) {
+        parts.push(
+            `Created ${formatCount(created.length, "look")} with empty CSS (${created.join(", ")}). Add styling on the Looks tab`
+        );
+    }
+
+    const skipped = result.skipped || [];
+    const notHttp = skipped.filter(entry => entry.reason === "not-http").length;
+    const mismatch = skipped.filter(entry => entry.reason === "host-mismatch").length;
+    if (skipped.length > 0) {
+        const reasons = [];
+        if (notHttp) reasons.push(`${notHttp} not http(s)`);
+        if (mismatch) reasons.push(`${mismatch} did not match their site folder`);
+        parts.push(`Skipped ${formatCount(skipped.length, "bookmark")} (${reasons.join(", ")})`);
+    }
+
+    if (parts.length === 0) {
+        hideStructuredImportReport();
+        showStatus("No sites, looks, or links to import from that folder");
+        return;
+    }
+
+    const warning = created.length > 0 || skipped.length > 0;
+    showStatus(`${parts.join(". ")}. Save to apply.`, {
+        warning,
+        duration: warning || parts.length > 2 ? 12000 : 6000
+    });
+
+    if (skipped.length === 0) {
+        hideStructuredImportReport();
+        return;
+    }
+
+    const items = skipped.slice(0, 10).map(describeSkippedBookmark);
+    if (skipped.length > 10) {
+        items.push(`…and ${skipped.length - 10} more`);
+    }
+    showStructuredImportReport({
+        mode: "note",
+        title: "Skipped bookmarks",
+        items
+    });
+}
+
+function importStructuredBookmarkFolder() {
+    const folderSelect = document.querySelector("#structuredImportFolder");
+    const button = document.querySelector("#structuredImportBtn");
+    const folderId = folderSelect?.value || "";
+
+    if (!folderId) {
+        folderSelect?.classList.add("fieldInvalid");
+        folderSelect?.setAttribute("aria-invalid", "true");
+        showStructuredImportReport({
+            mode: "error",
+            title: "Choose a bookmark folder to import.",
+            items: []
+        });
+        folderSelect?.focus();
+        return;
+    }
+
+    folderSelect.classList.remove("fieldInvalid");
+    folderSelect.removeAttribute("aria-invalid");
+    hideStructuredImportReport();
+    flushSiteDetailToDraft();
+
+    const openHost = isSiteDetailOpen() ? sitesDraft[selectedSiteIndex]?.site : "";
+    const styleRules = normalizeStyleRules(collectStyleRules());
+    const originalLabel = button?.textContent || "Import folder";
+    if (button) {
+        button.disabled = true;
+        button.textContent = "Importing…";
+    }
+
+    importStructuredBookmarkFolderIntoSites(sitesDraft, styleRules, folderId, {
+        removeMissingSites: structuredImportPruneSelected("structuredImportMissingSites"),
+        removeMissingLooks: structuredImportPruneSelected("structuredImportMissingLooks"),
+        removeMissingLinks: structuredImportPruneSelected("structuredImportMissingLinks")
+    })
+        .then(result => {
+            if (!result?.ok) {
+                showStructuredImportErrors(result?.errors || [
+                    { message: "Could not import from that bookmark folder." }
+                ]);
+                return;
+            }
+
+            sitesDraft = result.sites;
+            if ((result.createdLooks || []).length > 0) {
+                loadStyleRuleRows(result.styleRules);
+            } else {
+                cachedStyleRules = result.styleRules;
+                refreshAllStyleSelects();
+            }
+
+            try {
+                if (openHost) {
+                    const index = sitesDraft.findIndex(siteConfig => siteConfig.site === openHost);
+                    if (index >= 0) {
+                        openSiteDetail(index);
+                    } else {
+                        showSiteListView();
+                    }
+                } else {
+                    renderSiteList();
+                }
+                scheduleDirtyUiUpdate();
+            } catch (uiError) {
+                console.error("Structured bookmark import UI update failed:", uiError);
+            }
+
+            showStructuredImportSuccess(result);
+        })
+        .catch(error => {
+            console.error("Structured bookmark folder import failed:", error);
+            const detail = error && error.message ? error.message : String(error);
+            if (/no longer available/i.test(detail) || /empty bookmark subtree/i.test(detail)) {
+                persistLinkedBookmarkFolderId("");
+                if (folderSelect) folderSelect.value = "";
+                showStructuredImportReport({
+                    mode: "error",
+                    title: "That linked bookmark folder is no longer available.",
+                    items: ["Choose a bookmark folder again to link it to this extension."]
+                });
+                showStatus("That linked bookmark folder is no longer available.", true);
+                return;
+            }
+            showStatus(`Could not import that bookmark folder: ${detail}`, true);
+        })
+        .finally(() => {
+            if (button) {
+                button.disabled = false;
+                button.textContent = originalLabel;
+            }
+        });
 }
 
 function downloadTextFile(filename, text, mimeType) {
@@ -2468,6 +2729,9 @@ function restoreOptions() {
     return browser.storage.local.get(null)
         .then(result => {
         applyGettingStartedVisibility(!!result[STORAGE_KEYS.hideGettingStarted]);
+            linkedBookmarkFolderId = normalizeStoredFolderId(
+                result[STORAGE_KEYS.linkedBookmarkFolderId]
+            ) || "";
             const styleRules = migrateStyleRulesFromStorage(result);
             return purgeLegacyStorage(result).then(sites => {
                 applyLoadedConfiguration(sites, styleRules, {
@@ -3248,6 +3512,11 @@ function setupEventListeners() {
         document.querySelector("#addLinkFolderBtn")?.addEventListener("click", addLinkFolderFromSelect);
         document.querySelector("#legacyImportBtn")?.addEventListener("click", importLegacyBookmarkFolder);
         document.querySelector("#siteImportBtn")?.addEventListener("click", importSiteBookmarkFolder);
+        document.querySelector("#structuredImportBtn")?.addEventListener("click", importStructuredBookmarkFolder);
+        document.querySelector("#structuredImportFolder")?.addEventListener(
+            "change",
+            handleStructuredImportFolderChange
+        );
         document.querySelector("#legacyExportBookmarksBtn")?.addEventListener("click", exportAllSitesBookmarks);
         document.querySelector("#siteExportBookmarksBtn")?.addEventListener("click", exportCurrentSiteBookmarks);
         document.querySelector("#addTextRuleBtn")?.addEventListener("click", () => createTextRuleRow());

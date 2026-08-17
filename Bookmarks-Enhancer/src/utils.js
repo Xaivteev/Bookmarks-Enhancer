@@ -8,7 +8,8 @@ const STORAGE_KEYS = {
 	enableDeepSearch: "enableDeepSearch",
 	enableToastNotifications: "enableToastNotifications",
 	// Options UI only — not part of config export/import or page refresh.
-	hideGettingStarted: "hideGettingStarted"
+	hideGettingStarted: "hideGettingStarted",
+	linkedBookmarkFolderId: "linkedBookmarkFolderId"
 };
 
 // Session-only: focus the options page on a hash route such as #sites/example.com.
@@ -1199,6 +1200,493 @@ function importBookmarkFolderLinksIntoSites(result, sites) {
 	}).catch(() => normalizeSites(sites));
 }
 
+function lookNameKey(name) {
+	return typeof name === "string" ? name.trim().toLowerCase() : "";
+}
+
+function bookmarkNodeTitle(node) {
+	return String(node?.title || "").trim();
+}
+
+function isBookmarkSeparatorNode(node) {
+	return !!node && node.type === "separator";
+}
+
+function isBookmarkLinkNode(node) {
+	if (!node || isBookmarkSeparatorNode(node)) return false;
+	if (node.type === "bookmark") return true;
+	return typeof node.url === "string" && node.url.length > 0;
+}
+
+function isBookmarkFolderNode(node) {
+	if (!node || isBookmarkSeparatorNode(node) || isBookmarkLinkNode(node)) return false;
+	return node.type === "folder" || !node.url;
+}
+
+function findLookNameCollisions(styleRules) {
+	const byKey = new Map();
+	for (const rule of styleRules || []) {
+		const key = lookNameKey(rule?.name);
+		if (!key) continue;
+		if (!byKey.has(key)) byKey.set(key, []);
+		byKey.get(key).push(rule);
+	}
+	const collisions = [];
+	for (const rules of byKey.values()) {
+		if (rules.length < 2) continue;
+		collisions.push({
+			names: rules.map(rule => rule.name),
+			ids: rules.map(rule => rule.id)
+		});
+	}
+	return collisions;
+}
+
+function cloneSitesForStructuredImport(sites) {
+	return (Array.isArray(sites) ? sites : []).map(siteConfig => ({
+		...siteConfig,
+		classGroups: Array.isArray(siteConfig.classGroups) ? siteConfig.classGroups.slice() : [],
+		textRules: Array.isArray(siteConfig.textRules) ? siteConfig.textRules.slice() : [],
+		links: Array.isArray(siteConfig.links) ? siteConfig.links.slice() : [],
+		linkFolders: Array.isArray(siteConfig.linkFolders) ? siteConfig.linkFolders.slice() : []
+	}));
+}
+
+function structuredImportError(message, path) {
+	return path ? { path, message } : { message };
+}
+
+function parseStructuredBookmarkTree(nodes, styleRules) {
+	const errors = [];
+	const rules = normalizeStyleRules(styleRules);
+	const collisions = findLookNameCollisions(rules);
+	for (const collision of collisions) {
+		const quoted = collision.names.map(name => `"${name}"`).join(" and ");
+		errors.push(structuredImportError(
+			`${quoted} share the same name (ignoring case). Rename them on the Looks tab so each name is unique.`
+		));
+	}
+
+	const roots = asBookmarkNodeArray(nodes);
+	const root = roots[0];
+	if (!root) {
+		errors.push(structuredImportError("That bookmark folder is empty or no longer available."));
+		return { errors, sites: new Map(), createdLooks: [] };
+	}
+	if (isBookmarkLinkNode(root) || isBookmarkSeparatorNode(root)) {
+		errors.push(structuredImportError(
+			"The linked item must be a bookmark folder whose children are site folders."
+		));
+		return { errors, sites: new Map(), createdLooks: [] };
+	}
+
+	const lookIdByKey = new Map();
+	for (const rule of rules) {
+		const key = lookNameKey(rule.name);
+		if (key && !lookIdByKey.has(key)) lookIdByKey.set(key, rule.id);
+	}
+
+	const createdLooks = [];
+	const createdByKey = new Map();
+	const canResolveLooks = collisions.length === 0;
+
+	function resolveLook(folderName, { createIfMissing }) {
+		const key = lookNameKey(folderName);
+		if (!key || !canResolveLooks) return null;
+		if (lookIdByKey.has(key)) {
+			return { id: lookIdByKey.get(key), key, name: folderName.trim() };
+		}
+		if (!createIfMissing) return { id: "", key, name: folderName.trim() };
+		if (createdByKey.has(key)) return createdByKey.get(key);
+		const created = {
+			id: createStyleRuleId(),
+			key,
+			name: folderName.trim(),
+			kind: "custom",
+			predefined: "",
+			css: "",
+			shortcutIcon: "",
+			shortcutColor: DEFAULT_SHORTCUT_COLOR
+		};
+		createdByKey.set(key, created);
+		lookIdByKey.set(key, created.id);
+		createdLooks.push(created);
+		return created;
+	}
+
+	const sites = new Map();
+	let sawNonHostnameFolder = false;
+
+	function ensureParsedSite(host) {
+		if (!sites.has(host)) {
+			sites.set(host, {
+				host,
+				lookKeys: new Set(),
+				lookIds: new Set(),
+				linksByLook: new Map()
+			});
+		}
+		return sites.get(host);
+	}
+
+	for (const child of root.children || []) {
+		if (isBookmarkSeparatorNode(child)) continue;
+		if (isBookmarkLinkNode(child)) {
+			const label = bookmarkNodeTitle(child) || child.url || "Untitled bookmark";
+			errors.push(structuredImportError(
+				`Unexpected bookmark "${label}" at the top of the linked folder. Only site folders are allowed here.`,
+				label
+			));
+			continue;
+		}
+		if (!isBookmarkFolderNode(child)) {
+			errors.push(structuredImportError(
+				"The linked folder contains an item that is not a site folder.",
+				bookmarkNodeTitle(child) || "Untitled"
+			));
+			continue;
+		}
+
+		const siteTitle = bookmarkNodeTitle(child) || "Untitled folder";
+		if (!isPlausibleHostname(siteTitle)) {
+			sawNonHostnameFolder = true;
+			errors.push(structuredImportError(
+				`Folder "${siteTitle}" is not a website hostname. Rename it to a hostname such as example.com.`,
+				siteTitle
+			));
+			continue;
+		}
+
+		const host = normalizeSite(siteTitle);
+		const parsedSite = ensureParsedSite(host);
+
+		for (const lookChild of child.children || []) {
+			if (isBookmarkSeparatorNode(lookChild)) continue;
+			if (isBookmarkLinkNode(lookChild)) {
+				const label = bookmarkNodeTitle(lookChild) || lookChild.url || "Untitled bookmark";
+				errors.push(structuredImportError(
+					`Site folder "${siteTitle}" contains a bookmark that is not inside a look folder. Put "${label}" in a look folder such as Blocked.`,
+					host
+				));
+				continue;
+			}
+			if (!isBookmarkFolderNode(lookChild)) {
+				errors.push(structuredImportError(
+					`Site folder "${siteTitle}" contains an item that is not a look folder.`,
+					host
+				));
+				continue;
+			}
+
+			const lookTitle = bookmarkNodeTitle(lookChild);
+			if (!lookTitle) {
+				errors.push(structuredImportError(
+					`Site folder "${siteTitle}" contains a look folder with no name.`,
+					host
+				));
+				continue;
+			}
+
+			const lookKey = lookNameKey(lookTitle);
+			parsedSite.lookKeys.add(lookKey);
+			const existingLook = resolveLook(lookTitle, { createIfMissing: false });
+			if (existingLook?.id) parsedSite.lookIds.add(existingLook.id);
+
+			for (const linkChild of lookChild.children || []) {
+				if (isBookmarkSeparatorNode(linkChild)) continue;
+				if (isBookmarkFolderNode(linkChild)) {
+					const extra = bookmarkNodeTitle(linkChild) || "Untitled folder";
+					errors.push(structuredImportError(
+						`Look folders cannot contain other folders. Move or remove "${extra}" from "${lookTitle}".`,
+						`${host} / ${lookTitle} / ${extra}`
+					));
+					continue;
+				}
+				if (!isBookmarkLinkNode(linkChild)) {
+					errors.push(structuredImportError(
+						`Look folder "${lookTitle}" contains an item that is not a bookmark.`,
+						`${host} / ${lookTitle}`
+					));
+					continue;
+				}
+				if (!parsedSite.linksByLook.has(lookKey)) {
+					parsedSite.linksByLook.set(lookKey, {
+						folderName: lookTitle,
+						nodes: []
+					});
+				}
+				parsedSite.linksByLook.get(lookKey).nodes.push(linkChild);
+			}
+		}
+	}
+
+	if (sawNonHostnameFolder) {
+		errors.push(structuredImportError(
+			"The linked folder's children must be site hostnames (example.com). If you imported a bookmarks HTML file, select the inner folder whose children are site names, not the outer Imported folder."
+		));
+	}
+
+	if (errors.length > 0) {
+		return { errors, sites: new Map(), createdLooks: [] };
+	}
+
+	for (const parsedSite of sites.values()) {
+		for (const [lookKey, group] of parsedSite.linksByLook) {
+			let importedAny = false;
+			for (const node of group.nodes) {
+				if (!isValidHttpUrl(node.url)) continue;
+				let linkHost = "";
+				try {
+					linkHost = normalizeSite(new URL(node.url).hostname);
+				} catch {
+					linkHost = "";
+				}
+				if (linkHost !== parsedSite.host) continue;
+				if (!normalizeSavedLink({
+					url: node.url,
+					title: node.title,
+					style: "blocked"
+				})) continue;
+				importedAny = true;
+				break;
+			}
+			if (!importedAny) continue;
+			const resolved = resolveLook(group.folderName, { createIfMissing: true });
+			if (resolved?.id) parsedSite.lookIds.add(resolved.id);
+			else parsedSite.linksByLook.delete(lookKey);
+		}
+	}
+
+	return { errors, sites, createdLooks, lookIdByKey };
+}
+
+function applyStructuredBookmarkParse(sites, styleRules, parsed, options = {}) {
+	const createdLooks = parsed.createdLooks || [];
+	let nextStyleRules = normalizeStyleRules([
+		...(styleRules || []),
+		...createdLooks.map(look => ({
+			id: look.id,
+			name: look.name,
+			kind: "custom",
+			predefined: "",
+			css: "",
+			shortcutIcon: "",
+			shortcutColor: look.shortcutColor || DEFAULT_SHORTCUT_COLOR
+		}))
+	]);
+
+	let next = cloneSitesForStructuredImport(sites);
+	const treeHosts = new Set(parsed.sites.keys());
+	const skipped = [];
+	let linksAdded = 0;
+	let linksReassigned = 0;
+	let linksTitleUpdated = 0;
+	let sitesCreated = 0;
+	let sitesTouched = 0;
+
+	function skipLink(reason, details) {
+		skipped.push({ reason, ...details });
+	}
+
+	for (const parsedSite of parsed.sites.values()) {
+		let siteConfig = null;
+		let importedHere = 0;
+
+		for (const group of parsedSite.linksByLook.values()) {
+			const lookKey = lookNameKey(group.folderName);
+			const styleId = parsed.lookIdByKey?.get(lookKey) || "";
+
+			for (const node of group.nodes) {
+				const rawUrl = typeof node.url === "string" ? node.url : "";
+				if (!isValidHttpUrl(rawUrl)) {
+					skipLink("not-http", {
+						url: rawUrl || bookmarkNodeTitle(node) || "(untitled)",
+						site: parsedSite.host
+					});
+					continue;
+				}
+				let linkHost = "";
+				try {
+					linkHost = normalizeSite(new URL(rawUrl).hostname);
+				} catch {
+					linkHost = "";
+				}
+				if (linkHost !== parsedSite.host) {
+					skipLink("host-mismatch", {
+						url: rawUrl,
+						site: parsedSite.host,
+						actualHost: linkHost || "(unknown)"
+					});
+					continue;
+				}
+				const saved = normalizeSavedLink({
+					url: rawUrl,
+					title: node.title,
+					style: styleId
+				});
+				if (!saved) {
+					skipLink("not-http", { url: rawUrl, site: parsedSite.host });
+					continue;
+				}
+				if (!styleId) continue;
+
+				if (!siteConfig) {
+					const existed = next.some(entry => entry.site === parsedSite.host);
+					const ensured = ensureSiteConfig(next, parsedSite.host);
+					next = ensured.sites;
+					siteConfig = ensured.siteConfig;
+					if (!siteConfig) break;
+					if (!existed) sitesCreated += 1;
+					if (!Array.isArray(siteConfig.links)) siteConfig.links = [];
+				}
+
+				siteConfig.linkFolders = addLinkFolderId(siteConfig.linkFolders, styleId);
+				const pageKey = hrefMatchKey(saved.url);
+				const existingIndex = siteConfig.links.findIndex(link =>
+					link?.url && hrefMatchKey(link.url) === pageKey
+				);
+				if (existingIndex >= 0) {
+					const existing = siteConfig.links[existingIndex];
+					const nextTitle = saved.title || existing.title;
+					const lookChanged = existing.style !== saved.style;
+					const titleChanged = nextTitle !== (existing.title || "");
+					if (lookChanged || titleChanged) {
+						siteConfig.links[existingIndex] = {
+							url: saved.url,
+							title: nextTitle,
+							style: saved.style
+						};
+						if (lookChanged) linksReassigned += 1;
+						else linksTitleUpdated += 1;
+					}
+				} else {
+					siteConfig.links.push(saved);
+					linksAdded += 1;
+				}
+				importedHere += 1;
+			}
+		}
+
+		if (importedHere > 0) {
+			sitesTouched += 1;
+			if (siteConfig) {
+				siteConfig.linksRevision = (siteConfig.linksRevision || 0) + 1;
+			}
+		}
+	}
+
+	let sitesRemoved = 0;
+	let looksRemoved = 0;
+	let linksRemoved = 0;
+
+	if (options.removeMissingSites) {
+		const kept = [];
+		for (const siteConfig of next) {
+			if (treeHosts.has(siteConfig.site)) {
+				kept.push(siteConfig);
+			} else {
+				sitesRemoved += 1;
+			}
+		}
+		next = kept;
+	}
+
+	if (options.removeMissingLooks) {
+		for (const siteConfig of next) {
+			if (!treeHosts.has(siteConfig.site)) continue;
+			const parsedSite = parsed.sites.get(siteConfig.site);
+			const presentIds = new Set(parsedSite?.lookIds || []);
+			const removedIds = new Set(
+				(siteConfig.linkFolders || []).filter(id => !presentIds.has(id))
+			);
+			if (removedIds.size === 0) continue;
+			siteConfig.linkFolders = (siteConfig.linkFolders || []).filter(id => presentIds.has(id));
+			const beforeLinks = (siteConfig.links || []).length;
+			siteConfig.links = (siteConfig.links || []).filter(link => !removedIds.has(link.style));
+			looksRemoved += removedIds.size;
+			linksRemoved += beforeLinks - siteConfig.links.length;
+			siteConfig.linksRevision = (siteConfig.linksRevision || 0) + 1;
+		}
+	}
+
+	if (options.removeMissingLinks) {
+		for (const siteConfig of next) {
+			if (!treeHosts.has(siteConfig.site)) continue;
+			const parsedSite = parsed.sites.get(siteConfig.site);
+			const treeKeys = new Set();
+			for (const group of parsedSite?.linksByLook?.values() || []) {
+				const lookKey = lookNameKey(group.folderName);
+				const styleId = parsed.lookIdByKey?.get(lookKey) || "";
+				for (const node of group.nodes) {
+					if (!isValidHttpUrl(node.url)) continue;
+					let linkHost = "";
+					try {
+						linkHost = normalizeSite(new URL(node.url).hostname);
+					} catch {
+						continue;
+					}
+					if (linkHost !== siteConfig.site) continue;
+					const saved = normalizeSavedLink({
+						url: node.url,
+						title: node.title,
+						style: styleId || "blocked"
+					});
+					if (!saved) continue;
+					treeKeys.add(hrefMatchKey(saved.url));
+				}
+			}
+			const beforeLinks = (siteConfig.links || []).length;
+			siteConfig.links = (siteConfig.links || []).filter(link =>
+				link?.url && treeKeys.has(hrefMatchKey(link.url))
+			);
+			const removedHere = beforeLinks - siteConfig.links.length;
+			if (removedHere > 0) {
+				linksRemoved += removedHere;
+				siteConfig.linksRevision = (siteConfig.linksRevision || 0) + 1;
+			}
+		}
+	}
+
+	return {
+		ok: true,
+		sites: next,
+		styleRules: nextStyleRules,
+		createdLooks: createdLooks.map(look => look.name),
+		linksAdded,
+		linksReassigned,
+		linksTitleUpdated,
+		sitesCreated,
+		sitesTouched,
+		sitesRemoved,
+		looksRemoved,
+		linksRemoved,
+		skipped
+	};
+}
+
+function importStructuredBookmarkFolderIntoSites(sites, styleRules, folderId, options = {}) {
+	const id = typeof folderId === "string" || typeof folderId === "number"
+		? String(folderId)
+		: "";
+	if (!id) {
+		return Promise.resolve({
+			ok: false,
+			errors: [structuredImportError("Choose a bookmark folder to import.")]
+		});
+	}
+	if (!browser.bookmarks) {
+		return Promise.reject(new Error("Bookmark folders are not available"));
+	}
+
+	return loadBookmarkSubtree(id).then(tree => {
+		const parsed = parseStructuredBookmarkTree(tree, styleRules);
+		if (parsed.errors.length > 0) {
+			return { ok: false, errors: parsed.errors };
+		}
+		return applyStructuredBookmarkParse(sites, styleRules, parsed, options);
+	});
+}
+
 function isValidTextRule(rule) {
 	return !!rule &&
 		typeof rule.site === "string" &&
@@ -1590,22 +2078,34 @@ function createUrlNormalizationCache() {
 }
 
 function readUrlNormalizationCache(href) {
-	if (!urlNormalizationCache || !urlNormalizationCache.has(href)) return undefined;
-	const value = urlNormalizationCache.get(href);
+	let cache = null;
+	try {
+		if (typeof urlNormalizationCache !== "undefined") cache = urlNormalizationCache;
+	} catch {
+		cache = null;
+	}
+	if (!cache || !cache.has(href)) return undefined;
+	const value = cache.get(href);
 	// Refresh LRU insertion order.
-	urlNormalizationCache.delete(href);
-	urlNormalizationCache.set(href, value);
+	cache.delete(href);
+	cache.set(href, value);
 	return value;
 }
 
 function writeUrlNormalizationCache(href, normalized) {
-	if (!urlNormalizationCache) return;
-	if (urlNormalizationCache.has(href)) {
-		urlNormalizationCache.delete(href);
+	let cache = null;
+	try {
+		if (typeof urlNormalizationCache !== "undefined") cache = urlNormalizationCache;
+	} catch {
+		cache = null;
 	}
-	urlNormalizationCache.set(href, normalized);
-	while (urlNormalizationCache.size > URL_NORMALIZATION_CACHE_LIMIT) {
-		urlNormalizationCache.delete(urlNormalizationCache.keys().next().value);
+	if (!cache) return;
+	if (cache.has(href)) {
+		cache.delete(href);
+	}
+	cache.set(href, normalized);
+	while (cache.size > URL_NORMALIZATION_CACHE_LIMIT) {
+		cache.delete(cache.keys().next().value);
 	}
 }
 

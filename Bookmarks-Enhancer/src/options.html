@@ -217,6 +217,81 @@
             margin: 0.25rem 0 0;
         }
 
+        .structuredImportPrune {
+            margin: 0.75rem 0 1rem;
+            padding: 0;
+            border: 0;
+            min-width: 0;
+        }
+
+        .structuredImportPrune legend {
+            padding: 0;
+            font-weight: 600;
+        }
+
+        .structuredImportPrune .settingHelp {
+            margin: 0.35rem 0 0;
+        }
+
+        .structuredImportPruneRow {
+            display: grid;
+            grid-template-columns: minmax(0, 1fr) auto auto;
+            gap: 0.5rem 1rem;
+            align-items: center;
+            max-width: 36rem;
+            margin: 0.5rem 0 0;
+        }
+
+        .structuredImportPruneRow > span {
+            font-weight: 600;
+        }
+
+        .structuredImportPruneRow label {
+            display: inline-flex;
+            align-items: center;
+            gap: 0.35rem;
+            margin: 0;
+            font-weight: 500;
+            white-space: nowrap;
+        }
+
+        .importReport {
+            margin: 0.75rem 0 0;
+            padding: 0.65rem 0.75rem;
+            border-radius: 0.375rem;
+            font-size: 0.9em;
+        }
+
+        .importReport[hidden] {
+            display: none;
+        }
+
+        .importReport.is-error {
+            color: #9f1d1d;
+            background: #fef2f2;
+            border: 1px solid #fecaca;
+        }
+
+        .importReport.is-note {
+            color: #1f2937;
+            background: #f3f4f6;
+            border: 1px solid #d1d5db;
+        }
+
+        .importReport > p {
+            margin: 0;
+            font-weight: 600;
+        }
+
+        .importReport ul {
+            margin: 0.4rem 0 0;
+            padding-left: 1.2rem;
+        }
+
+        .importReport li {
+            margin: 0.2rem 0;
+        }
+
         .bookmarkExport {
             margin: 1.5rem 0 0;
             padding: 0.75rem 0 0;
@@ -1558,12 +1633,111 @@
                     No websites match that search.
                 </p>
 
-                <section class="legacyImport" aria-labelledby="legacyImportHeading">
-                    <h2 id="legacyImportHeading">Import from bookmarks</h2>
+                <section class="legacyImport" aria-labelledby="structuredImportHeading">
+                    <h2 id="structuredImportHeading">Import sites and looks from bookmarks</h2>
                     <p class="hint">
-                        Choose a bookmark folder and a look. Each website found in that
-                        folder (including nested folders) is added under Sites, and its
-                        links are saved under that look. Save afterwards to apply.
+                        Import from a linked bookmark folder that uses the same layout as
+                        Export to bookmarks: a folder per website, then a folder per look,
+                        then the saved links. Looks are matched by name. If a look folder
+                        has no matching look, one is created with empty CSS — add styling
+                        on the Looks tab. Save afterwards to apply.
+                    </p>
+                    <div class="legacyImportFields">
+                        <label for="structuredImportFolder">Linked bookmark folder</label>
+                        <select
+                            id="structuredImportFolder"
+                            class="importBookmarkFolder"
+                            aria-describedby="structuredImportFolderHelp"
+                        >
+                            <option value="">Loading folders…</option>
+                        </select>
+                        <p class="settingHelp" id="structuredImportFolderHelp">
+                            Remembered in this browser. Import still runs only when you
+                            click Import. The folder name can be anything; its children
+                            must be site folders named like <code>example.com</code>.
+                        </p>
+                    </div>
+                    <fieldset class="structuredImportPrune">
+                        <legend>Items not in this folder</legend>
+                        <p class="settingHelp">
+                            By default, sites, looks, and links already in the extension
+                            stay. Choose Remove to drop ones that are not in the linked
+                            folder.
+                        </p>
+                        <div class="structuredImportPruneRow">
+                            <span id="structuredImportMissingSitesLabel">Sites not in this folder</span>
+                            <label>
+                                <input
+                                    type="radio"
+                                    name="structuredImportMissingSites"
+                                    value="keep"
+                                    checked
+                                >
+                                Keep
+                            </label>
+                            <label>
+                                <input
+                                    type="radio"
+                                    name="structuredImportMissingSites"
+                                    value="remove"
+                                    aria-labelledby="structuredImportMissingSitesLabel"
+                                >
+                                Remove
+                            </label>
+                        </div>
+                        <div class="structuredImportPruneRow">
+                            <span id="structuredImportMissingLooksLabel">Looks on a site that are not in this folder</span>
+                            <label>
+                                <input
+                                    type="radio"
+                                    name="structuredImportMissingLooks"
+                                    value="keep"
+                                    checked
+                                >
+                                Keep
+                            </label>
+                            <label>
+                                <input
+                                    type="radio"
+                                    name="structuredImportMissingLooks"
+                                    value="remove"
+                                    aria-labelledby="structuredImportMissingLooksLabel"
+                                >
+                                Remove
+                            </label>
+                        </div>
+                        <div class="structuredImportPruneRow">
+                            <span id="structuredImportMissingLinksLabel">Saved links that are not in this folder</span>
+                            <label>
+                                <input
+                                    type="radio"
+                                    name="structuredImportMissingLinks"
+                                    value="keep"
+                                    checked
+                                >
+                                Keep
+                            </label>
+                            <label>
+                                <input
+                                    type="radio"
+                                    name="structuredImportMissingLinks"
+                                    value="remove"
+                                    aria-labelledby="structuredImportMissingLinksLabel"
+                                >
+                                Remove
+                            </label>
+                        </div>
+                    </fieldset>
+                    <button type="button" id="structuredImportBtn">Import folder</button>
+                    <div id="structuredImportReport" class="importReport" hidden></div>
+                </section>
+
+                <section class="legacyImport" aria-labelledby="legacyImportHeading">
+                    <h2 id="legacyImportHeading">Import look links from bookmarks</h2>
+                    <p class="hint">
+                        Choose any bookmark folder and one look. Every http(s) bookmark in
+                        that folder (including nested folders) is saved under that look,
+                        grouped by website. Folder names are ignored. Save afterwards to apply.
                     </p>
                     <div class="legacyImportFields">
                         <label for="legacyImportFolder">Bookmark folder</label>
