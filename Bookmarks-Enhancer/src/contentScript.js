@@ -866,25 +866,7 @@ function handleRuntimeMessage(message) {
 	}
 
 	if (message.statusUpdates) {
-		if (!searchSite) return;
-		const classNames = managedClassNames.filter(Boolean);
-		for (const [href, status] of Object.entries(message.statusUpdates)) {
-			pendingStatusHrefs.delete(href);
-			if (status && status !== "none") {
-				rememberPositiveStatus(href, status);
-			} else {
-				softMissHrefs.add(href);
-				processedHrefs.delete(href);
-				linkStatusMap.delete(href);
-			}
-			const links = linksForHref(href);
-			for (const link of links) {
-				if (classNames.length) link.classList.remove(...classNames);
-			}
-		}
-		applyBookmarkStyling({
-			statuses: Object.fromEntries(linkStatusMap)
-		});
+		applyHrefStatusUpdates(message.statusUpdates);
 		return;
 	}
 
@@ -1081,6 +1063,122 @@ function performAuthoritativeRefresh(options = {}) {
 		.finally(finishBusy);
 }
 
+function positiveStatusesFromLinkMap() {
+	const statuses = {};
+	for (const [href, status] of linkStatusMap) {
+		if (status && status !== "none") statuses[href] = status;
+	}
+	return statuses;
+}
+
+function closestConfiguredCards(element) {
+	if (!(element instanceof Element) || !classesForSearch.length) return [];
+	const cards = [];
+	const seen = new Set();
+	for (const classGroup of classesForSearch) {
+		const required = classGroup.split(/\s+/).filter(Boolean);
+		if (!required.length) continue;
+		let node = element;
+		while (node && node.nodeType === 1) {
+			if (required.every(name => node.classList.contains(name))) {
+				if (!seen.has(node)) {
+					seen.add(node);
+					cards.push(node);
+				}
+				break;
+			}
+			node = node.parentElement;
+		}
+	}
+	return cards;
+}
+
+function restyleConfiguredCard(card, statusLookup, matchingTextRules) {
+	let matchedClassName = findStatusClassFromLinks(card, statusLookup);
+	if (enableDeepSearch && !matchedClassName) {
+		const text = card.textContent || "";
+		const html = card.innerHTML || "";
+		const statusesByPriority = Array.from(statusLookup.values())
+			.sort((a, b) => a.priority - b.priority);
+		for (const bookmark of statusesByPriority) {
+			if (elementMatchesBookmarkFallback(card, text, html, bookmark)) {
+				matchedClassName = bookmark.className;
+				break;
+			}
+		}
+	}
+	if (matchedClassName) {
+		applyStatusClass(card, matchedClassName);
+		return;
+	}
+	if (managedClassNames.length) {
+		card.classList.remove(...managedClassNames);
+	}
+	if (matchingTextRules && matchingTextRules.length) {
+		textFilterCache.delete(card);
+		applyTextRulesTo([card], matchingTextRules);
+	}
+}
+
+function applyPageTopBorder(statusLookup) {
+	if (!enableTopBorder || !document.body) return;
+	const currentStatus = statusLookup.get(normalizeHrefForSearch(window.location.href));
+	if (!currentStatus) return;
+	if (originalBodyBorderTop === null) {
+		originalBodyBorderTop = document.body.style.borderTop;
+	}
+	document.body.style.borderTop = currentStatus.border;
+}
+
+function syncPageTopBorder(statusLookup) {
+	if (!enableTopBorder) return;
+	if (statusLookup.get(normalizeHrefForSearch(window.location.href))) {
+		applyPageTopBorder(statusLookup);
+	} else {
+		clearExtensionTopBorder();
+	}
+}
+
+// Look toggle / context-menu add: restyle only the changed href's anchors and
+// their cards. A full applyBookmarkStyling would re-walk every unstyled card.
+function applyHrefStatusUpdates(statusUpdates) {
+	if (!searchSite || !statusUpdates || typeof statusUpdates !== "object") return;
+
+	const pageHref = normalizeHrefForSearch(window.location.href);
+	let touchedPageUrl = false;
+	const affectedCards = new Set();
+
+	for (const [href, status] of Object.entries(statusUpdates)) {
+		pendingStatusHrefs.delete(href);
+		if (status && status !== "none") {
+			rememberPositiveStatus(href, status);
+		} else {
+			softMissHrefs.add(href);
+			processedHrefs.delete(href);
+			linkStatusMap.delete(href);
+		}
+		if (href === pageHref) touchedPageUrl = true;
+
+		const style = status && status !== "none" ? getStyleConfigById(status) : null;
+		for (const link of linksForHref(href)) {
+			if (style) applyStatusClass(link, style.className);
+			else if (managedClassNames.length) {
+				link.classList.remove(...managedClassNames);
+			}
+			for (const card of closestConfiguredCards(link)) {
+				affectedCards.add(card);
+			}
+		}
+	}
+
+	const statusLookup = buildBookmarkStatusLookup(positiveStatusesFromLinkMap());
+	const matchingTextRules = getMatchingTextRules();
+	for (const card of affectedCards) {
+		restyleConfiguredCard(card, statusLookup, matchingTextRules);
+	}
+	if (touchedPageUrl) syncPageTopBorder(statusLookup);
+}
+
 function applyBookmarkStyling(message) {
 	if (!searchSite) return;
 
@@ -1108,16 +1206,7 @@ function applyBookmarkStyling(message) {
 		}
 	}
 
-	if (enableTopBorder) {
-		const normalizedCurrentUrl = normalizeHrefForSearch(window.location.href);
-		const currentStatus = statusLookup.get(normalizedCurrentUrl);
-		if (currentStatus) {
-			if (originalBodyBorderTop === null) {
-				originalBodyBorderTop = document.body.style.borderTop;
-			}
-			document.body.style.borderTop = currentStatus.border;
-		}
-	}
+	applyPageTopBorder(statusLookup);
 
 	// Then run the existing class-based element styling for configured classes
 	for (const classGroup of classesForSearch) {
