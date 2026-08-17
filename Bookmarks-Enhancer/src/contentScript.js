@@ -1094,7 +1094,7 @@ function closestConfiguredCards(element) {
 }
 
 function restyleConfiguredCard(card, statusLookup, matchingTextRules) {
-	let matchedClassName = findStatusClassFromLinks(card, statusLookup);
+	let matchedClassName = bestStatusClassForCard(card, statusLookup);
 	if (enableDeepSearch && !matchedClassName) {
 		const text = card.textContent || "";
 		const html = card.innerHTML || "";
@@ -1207,17 +1207,8 @@ function applyBookmarkStyling(message) {
 	}
 
 	applyPageTopBorder(statusLookup);
-
-	// Then run the existing class-based element styling for configured classes
-	for (const classGroup of classesForSearch) {
-		const elements = [];
-		for (const el of document.getElementsByClassName(classGroup)) {
-			if (hasStatusClass(el)) continue;
-			elements.push(el);
-		}
-		styleElementsForBookmarks(elements, statusLookup);
-	}
-
+	applyCardStylesFromLinks(statusLookup);
+	applyDeepSearchToUnstyledCards(statusLookup);
 	applyTextFilters();
 }
 
@@ -1247,64 +1238,55 @@ function buildBookmarkStatusLookup(statuses) {
 	return statusLookup;
 }
 
-function styleElementsForBookmarks(elements, statusLookup) {
-	const statusesByPriority = enableDeepSearch
-		? Array.from(statusLookup.values()).sort((a, b) => a.priority - b.priority)
-		: [];
+function applyCardStylesFromLinks(statusLookup) {
+	if (!classesForSearch.length || !statusLookup || statusLookup.size === 0) return;
+	const cardBest = new Map();
+	for (const status of statusLookup.values()) {
+		for (const link of linksForHref(status.normalized)) {
+			for (const card of closestConfiguredCards(link)) {
+				const current = cardBest.get(card);
+				if (!current || status.priority < current.priority) {
+					cardBest.set(card, status);
+				}
+			}
+		}
+	}
+	for (const [card, status] of cardBest) {
+		applyStatusClass(card, status.className);
+	}
+}
 
-	for (const element of elements) {
-		let matchedClassName = findStatusClassFromLinks(element, statusLookup);
+function applyDeepSearchToUnstyledCards(statusLookup) {
+	if (!enableDeepSearch || !classesForSearch.length) return;
+	const statusesByPriority = Array.from(statusLookup.values())
+		.sort((a, b) => a.priority - b.priority);
+	if (statusesByPriority.length === 0) return;
 
-		if (enableDeepSearch && !matchedClassName) {
+	for (const classGroup of classesForSearch) {
+		for (const element of document.getElementsByClassName(classGroup)) {
+			if (hasStatusClass(element)) continue;
 			const text = element.textContent || "";
 			const html = element.innerHTML || "";
-
 			for (const bookmark of statusesByPriority) {
 				if (elementMatchesBookmarkFallback(element, text, html, bookmark)) {
-					matchedClassName = bookmark.className;
+					applyStatusClass(element, bookmark.className);
 					break;
 				}
 			}
 		}
-
-		if (matchedClassName) {
-			applyStatusClass(element, matchedClassName);
-		}
 	}
 }
 
-function findStatusClassFromLinks(element, statusLookup) {
-	const linkHrefs = getElementLinkHrefSet(element);
-	if (linkHrefs.size === 0) return null;
-	let matchedStatus = null;
-
-	for (const href of linkHrefs) {
-		const status = statusLookup.get(href);
-		if (status && (!matchedStatus || status.priority < matchedStatus.priority)) {
-			matchedStatus = status;
+function bestStatusClassForCard(card, statusLookup) {
+	if (!card || !statusLookup || statusLookup.size === 0) return null;
+	let matched = null;
+	for (const status of statusLookup.values()) {
+		for (const link of linksForHref(status.normalized)) {
+			if (link !== card && !card.contains(link)) continue;
+			if (!matched || status.priority < matched.priority) matched = status;
 		}
 	}
-
-	return matchedStatus?.className || null;
-}
-
-function getElementLinkHrefSet(element) {
-	const links = element instanceof HTMLAnchorElement
-		? [element, ...element.querySelectorAll('a[href]')]
-		: Array.from(element.querySelectorAll('a[href]'));
-	const normalizedHrefs = new Set();
-
-	for (const link of links) {
-		const href = link.getAttribute('href') || link.href || '';
-		if (!href) continue;
-
-		const normalized = normalizeHrefForSearch(href);
-		if (/^https?:/.test(normalized)) {
-			normalizedHrefs.add(normalized);
-		}
-	}
-
-	return normalizedHrefs;
+	return matched?.className || null;
 }
 
 function elementMatchesBookmarkFallback(element, text, html, bookmark) {
@@ -1555,8 +1537,12 @@ function applyCachedLinkStatus(norm) {
 
 	const els = linksForHref(norm);
 	for (const el of els) {
-		if (hasStatusClass(el)) continue;
-		applyStatusClass(el, style.className);
+		if (!hasStatusClass(el)) applyStatusClass(el, style.className);
+		for (const card of closestConfiguredCards(el)) {
+			if (card !== el && !hasStatusClass(card)) {
+				applyStatusClass(card, style.className);
+			}
+		}
 	}
 }
 
