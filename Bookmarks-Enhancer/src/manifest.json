@@ -25,6 +25,7 @@
     "scripts": [
       "browser-polyfill.js",
       "utils.js",
+      "utilsSites.js",
       "backgroundScript.js"
     ]
   },

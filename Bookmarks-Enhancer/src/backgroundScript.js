@@ -922,6 +922,18 @@ function startClassPickerOnTab(tabId) {
 		}
 	}).then(results => throwIfScriptInjectionFailed(results, "arm class picker"));
 
+	const injectSitesUtils = () => browser.scripting.executeScript({
+		target: { tabId },
+		func: () => typeof mergeClassGroupIntoSites === "function"
+	}).then(results => {
+		throwIfScriptInjectionFailed(results, "check site utils");
+		if (results[0] && results[0].result) return results;
+		return browser.scripting.executeScript({
+			target: { tabId },
+			files: ["utilsSites.js"]
+		}).then(injected => throwIfScriptInjectionFailed(injected, "inject site utils"));
+	});
+
 	const injectPicker = () => browser.scripting.executeScript({
 		target: { tabId },
 		files: ["classPicker.js"]
@@ -940,10 +952,12 @@ function startClassPickerOnTab(tabId) {
 	}).then(results => throwIfScriptInjectionFailed(results, "start class picker"));
 
 	return armLaunchFlag()
+		.then(injectSitesUtils)
 		.then(injectPicker)
 		.then(startPicker)
 		.catch(error => {
-			return startPicker()
+			return injectSitesUtils()
+				.then(startPicker)
 				.catch(() => browser.tabs.sendMessage(tabId, { startClassPicker: true }))
 				.catch(() => {
 					onError(error);

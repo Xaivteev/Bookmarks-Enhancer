@@ -1,5 +1,6 @@
 // Shared with utils.js (normalizeHrefForSearch). Must stay at content-script top
 // level — not inside the install guard — or URL normalization throws ReferenceError.
+// Bookmark import/export helpers live in utilsSites.js and are not injected here.
 var urlRules = urlRules || [];
 var urlNormalizationCache = urlNormalizationCache || createUrlNormalizationCache();
 
