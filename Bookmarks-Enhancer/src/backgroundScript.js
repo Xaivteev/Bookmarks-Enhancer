@@ -189,6 +189,41 @@ browser.runtime.onMessage.addListener((message, sender, sendResponse) => {
 		return true;
 	}
 
+	if (message && message.matchDuplicateListingTitles) {
+		const candidates = Array.isArray(message.candidates) ? message.candidates : [];
+		ensureSettingsReady()
+			.then(() => ensureHostLinksReadyForHrefs(
+				candidates.map(candidate => candidate && candidate.href).filter(Boolean)
+			))
+			.then(() => sendResponse(matchDuplicateListingTitles(candidates)))
+			.catch(error => {
+				onError(error);
+				sendResponse({
+					ok: false,
+					hrefs: [],
+					error: String(error && error.message ? error.message : error)
+				});
+			});
+		return true;
+	}
+
+	if (message && message.matchDuplicatePageTitle) {
+		const url = message.url || (sender && sender.tab && sender.tab.url) || "";
+		const title = message.title || (sender && sender.tab && sender.tab.title) || "";
+		ensureSettingsReady()
+			.then(() => ensureHostLinksReadyForUrl(url))
+			.then(() => sendResponse(matchDuplicatePageTitle(url, title)))
+			.catch(error => {
+				onError(error);
+				sendResponse({
+					ok: false,
+					matches: [],
+					error: String(error && error.message ? error.message : error)
+				});
+			});
+		return true;
+	}
+
 	if (message && message.hrefs) {
 		const tabId = sender && sender.tab ? sender.tab.id : null;
 		const authoritative = !!(message.authoritative || message.mode === "authoritative");
@@ -327,7 +362,10 @@ let urlRules = [];
 let sites = [];
 let styleRules = DEFAULT_STYLE_RULES.map(rule => ({ ...rule }));
 let styleRuleById = new Map();
+let enableDuplicateWarning = false;
 let linkLookupBySite = new Map();
+let titleExactBySite = new Map();
+let titleEntriesBySite = new Map();
 let siteHostIndex = new Map();
 const urlNormalizationCache = createUrlNormalizationCache();
 let hostsLoaded = new Set();
@@ -376,6 +414,33 @@ function rebuildLinkLookupForHost(siteConfig) {
 		map.set(key, link);
 	}
 	linkLookupBySite.set(siteConfig.site, map);
+	rebuildTitleIndexForHost(siteConfig);
+}
+
+function rebuildTitleIndexForHost(siteConfig) {
+	if (!siteConfig?.site) return;
+	const exact = new Map();
+	const entries = [];
+	for (const link of siteConfig.links || []) {
+		if (!link?.url) continue;
+		const matchKey = hrefMatchKey(link.url);
+		if (!matchKey) continue;
+		const normalized = normalizeDuplicateTitle(link.title);
+		if (!normalized || isBoilerplateDuplicateLinkTitle(normalized)) continue;
+		const entry = {
+			url: link.url,
+			title: typeof link.title === "string" ? link.title : "",
+			style: typeof link.style === "string" ? link.style : "",
+			matchKey,
+			normalized
+		};
+		entries.push(entry);
+		const bucket = exact.get(normalized);
+		if (bucket) bucket.push(entry);
+		else exact.set(normalized, [entry]);
+	}
+	titleExactBySite.set(siteConfig.site, exact);
+	titleEntriesBySite.set(siteConfig.site, entries);
 }
 
 function rebuildLinkLookup() {
@@ -383,6 +448,8 @@ function rebuildLinkLookup() {
 	urlNormalizationCache.clear();
 	rebuildSiteHostIndex();
 	linkLookupBySite = new Map();
+	titleExactBySite = new Map();
+	titleEntriesBySite = new Map();
 
 	for (const siteConfig of sites) {
 		if (!siteConfig?.site || !hostsLoaded.has(siteConfig.site)) continue;
@@ -474,6 +541,10 @@ function ensureAllHostLinksReady() {
 	);
 }
 
+function applyDuplicateWarningSetting(value) {
+	enableDuplicateWarning = value === true;
+}
+
 function applyLoadedSites(nextSites, nextStyleRules, { rebuild = true } = {}) {
 	sites = Array.isArray(nextSites) ? nextSites : [];
 	styleRules = Array.isArray(nextStyleRules)
@@ -512,6 +583,7 @@ function maybeSplitStoredSiteLinks(result, loadedSites) {
 function loadSettingsFromFullStorage() {
 	return browser.storage.local.get(null).then(result => {
 		styleRules = migrateStyleRulesFromStorage(result);
+		applyDuplicateWarningSetting(result[STORAGE_KEYS.enableDuplicateWarning]);
 		return purgeLegacyStorage(result).then(migratedSites => {
 			markHostsLoaded(migratedSites);
 			applyLoadedSites(migratedSites, styleRules);
@@ -533,7 +605,11 @@ function loadSettings() {
 		}
 		styleRules = migrateStyleRulesFromStorage(meta);
 		hostsLoaded = new Set();
-		return purgeLegacyStorage(meta).then(migratedSites => {
+		return Promise.all([
+			purgeLegacyStorage(meta),
+			browser.storage.local.get(STORAGE_KEYS.enableDuplicateWarning)
+		]).then(([migratedSites, extra]) => {
+			applyDuplicateWarningSetting(extra[STORAGE_KEYS.enableDuplicateWarning]);
 			applyLoadedSites(migratedSites, styleRules);
 			return migratedSites;
 		});
@@ -767,6 +843,8 @@ function persistLoadedHostLinks(previousHosts) {
 		removeKeys.push(siteLinksStorageKey(host));
 		hostsLoaded.delete(host);
 		linkLookupBySite.delete(host);
+		titleExactBySite.delete(host);
+		titleEntriesBySite.delete(host);
 	}
 
 	if (removeKeys.some(Boolean)) pendingIgnoredSiteWrites += 1;
@@ -1419,6 +1497,10 @@ browser.storage.onChanged.addListener((changes, areaName) => {
 		shouldRefreshMenus = true;
 	}
 
+	if (Object.prototype.hasOwnProperty.call(changes, STORAGE_KEYS.enableDuplicateWarning)) {
+		applyDuplicateWarningSetting(changes[STORAGE_KEYS.enableDuplicateWarning].newValue);
+	}
+
 	for (const key of Object.keys(changes)) {
 		if (CONFIG_REFRESH_STORAGE_KEY_SET.has(key)) {
 			shouldRefreshTabs = true;
@@ -1489,6 +1571,84 @@ function searchhrefs(hrefs) {
 		statuses[normalized] = lookupLinkStyleForSite(normalized, lastSite) || "none";
 	}
 	return Promise.resolve({ statuses });
+}
+
+function matchDuplicateListingTitles(candidates) {
+	const hrefs = [];
+	if (!enableDuplicateWarning || !Array.isArray(candidates)) {
+		return { ok: true, hrefs };
+	}
+
+	const seen = new Set();
+	for (const candidate of candidates) {
+		const href = typeof candidate?.href === "string" ? candidate.href : "";
+		if (!href) continue;
+		let hostname = "";
+		try {
+			hostname = new URL(href).hostname;
+		} catch {
+			continue;
+		}
+		const siteConfig = matchingSiteConfig(hostname);
+		if (!siteConfig) continue;
+		const normalizedTitle = normalizeDuplicateTitle(candidate.title);
+		if (!normalizedTitle || isBoilerplateDuplicateLinkTitle(normalizedTitle)) continue;
+		const hits = titleExactBySite.get(siteConfig.site)?.get(normalizedTitle);
+		if (!hits || hits.length === 0) continue;
+		const pageKey = hrefMatchKey(href);
+		if (!hits.some(hit => hit.matchKey !== pageKey)) continue;
+		const normalizedHref = normalizeHrefForSearch(href);
+		if (!normalizedHref || seen.has(normalizedHref)) continue;
+		seen.add(normalizedHref);
+		hrefs.push(normalizedHref);
+	}
+	return { ok: true, hrefs };
+}
+
+function matchDuplicatePageTitle(url, title) {
+	if (!enableDuplicateWarning) return { ok: true, matches: [] };
+	if (!isValidHttpUrl(url) || lookupLinkStyle(url)) return { ok: true, matches: [] };
+	if (isGenericDuplicatePageTitle(title)) return { ok: true, matches: [] };
+
+	let hostname = "";
+	try {
+		hostname = new URL(url).hostname;
+	} catch {
+		return { ok: true, matches: [] };
+	}
+	const siteConfig = matchingSiteConfig(hostname);
+	if (!siteConfig) return { ok: true, matches: [] };
+
+	const query = normalizeDuplicateTitle(title);
+	if (!query) return { ok: true, matches: [] };
+	const pageKey = hrefMatchKey(url);
+	const entries = titleEntriesBySite.get(siteConfig.site) || [];
+	const scored = [];
+	for (const entry of entries) {
+		if (entry.matchKey === pageKey) continue;
+		const score = scoreDuplicateTitleFuzzy(query, entry.normalized);
+		if (score < DUPLICATE_TITLE_FUZZY_MIN_SCORE) continue;
+		scored.push({ score, entry });
+	}
+	scored.sort((a, b) =>
+		b.score - a.score ||
+		(a.entry.title || "").localeCompare(b.entry.title || "")
+	);
+
+	const matches = [];
+	const seenKeys = new Set();
+	for (const { entry } of scored) {
+		const key = entry.matchKey || entry.url;
+		if (!key || seenKeys.has(key)) continue;
+		seenKeys.add(key);
+		matches.push({
+			title: entry.title || entry.url,
+			url: entry.url,
+			look: getStyleRuleName(entry.style)
+		});
+		if (matches.length >= DUPLICATE_WARNING_MAX_MATCHES) break;
+	}
+	return { ok: true, matches };
 }
 
 browser.tabs.onUpdated.addListener((tabId, changeInfo, tab) => {

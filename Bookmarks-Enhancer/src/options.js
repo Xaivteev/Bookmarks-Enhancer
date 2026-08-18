@@ -226,9 +226,16 @@ function populateStyleSelect(select, selectedId = "blocked", { includeNone = fal
 function refreshAllStyleSelects() {
     cachedStyleRules = normalizeStyleRules(collectStyleRules());
     for (const select of document.querySelectorAll(
-        ".textRuleStyle, .savedLinkMove, .savedLinkGroupLook, .importBookmarkLook"
+        ".textRuleStyle, .savedLinkMove, .savedLinkGroupLook, .importBookmarkLook, #duplicateWarningStyleId"
     )) {
-        populateStyleSelect(select, select.value);
+        populateStyleSelect(
+            select,
+            select.value || (
+                select.id === "duplicateWarningStyleId"
+                    ? DEFAULT_DUPLICATE_WARNING_STYLE_ID
+                    : ""
+            )
+        );
     }
     for (const look of document.querySelectorAll(".importBookmarkLook")) {
         if (!look.value && look.options.length > 0) {
@@ -2521,6 +2528,9 @@ function findDomRulesReferencingStyle(styleId) {
             }
         }
     });
+    if (document.querySelector("#duplicateWarningStyleId")?.value === styleId) {
+        references.push("Potential Duplicate Warning listing look");
+    }
     return references;
 }
 
@@ -2542,6 +2552,10 @@ function findDanglingStyleReferences(styleRules, sites) {
                 `Text rule "${rule.text}" on ${siteConfig.site} uses missing style "${rule.style}"`
             );
         }
+    }
+    const warningStyleId = document.querySelector("#duplicateWarningStyleId")?.value;
+    if (warningStyleId && !styleIds.has(warningStyleId)) {
+        dangling.push(`Potential Duplicate Warning uses missing style "${warningStyleId}"`);
     }
     return dangling;
 }
@@ -2566,6 +2580,8 @@ function buildOptionsPayload() {
             enableTopBorder: document.querySelector("#enableTopBorder").checked,
             enableDeepSearch: document.querySelector("#enableDeepSearch").checked,
             enableToastNotifications: document.querySelector("#enableToastNotifications").checked,
+            enableDuplicateWarning: document.querySelector("#enableDuplicateWarning").checked,
+            duplicateWarningStyleId: document.querySelector("#duplicateWarningStyleId").value || "",
             [STYLE_RULE_STORAGE_KEY]: styleRules,
             ...buildSitesStorageWrites(sites)
         }
@@ -2594,7 +2610,9 @@ function getFormSnapshot() {
             general: {
                 enableTopBorder: document.querySelector("#enableTopBorder").checked,
                 enableDeepSearch: document.querySelector("#enableDeepSearch").checked,
-                enableToastNotifications: document.querySelector("#enableToastNotifications").checked
+                enableToastNotifications: document.querySelector("#enableToastNotifications").checked,
+                enableDuplicateWarning: document.querySelector("#enableDuplicateWarning").checked,
+                duplicateWarningStyleId: document.querySelector("#duplicateWarningStyleId").value || ""
             },
             styleRules: collectStyleRules(),
             siteDetail: isSiteDetailOpen() ? {
@@ -2874,6 +2892,8 @@ function persistOptionsFromForm({
                 enableTopBorder: formPayload.enableTopBorder,
                 enableDeepSearch: formPayload.enableDeepSearch,
                 enableToastNotifications: formPayload.enableToastNotifications,
+                enableDuplicateWarning: formPayload.enableDuplicateWarning,
+                duplicateWarningStyleId: formPayload.duplicateWarningStyleId,
                 [STYLE_RULE_STORAGE_KEY]: styleRules,
                 ...plan.writes
             };
@@ -2922,7 +2942,9 @@ function persistOptionsFromForm({
             applyLoadedConfiguration(saved.sites, saved.styleRules, {
                 enableTopBorder: saved.payload.enableTopBorder,
                 enableDeepSearch: saved.payload.enableDeepSearch,
-                enableToastNotifications: saved.payload.enableToastNotifications
+                enableToastNotifications: saved.payload.enableToastNotifications,
+                enableDuplicateWarning: saved.payload.enableDuplicateWarning,
+                duplicateWarningStyleId: saved.payload.duplicateWarningStyleId
             });
             applyOptionsLocationHash();
             suppressDirtyTracking = false;
@@ -2994,8 +3016,18 @@ function applyLoadedConfiguration(sites, styleRules, general = {}) {
         document.querySelector("#enableToastNotifications").checked =
             general.enableToastNotifications !== false;
     }
+    if (general.enableDuplicateWarning !== undefined) {
+        document.querySelector("#enableDuplicateWarning").checked =
+            !!general.enableDuplicateWarning;
+    }
 
     loadStyleRuleRows(styleRules);
+    if (general.duplicateWarningStyleId !== undefined) {
+        populateStyleSelect(
+            document.querySelector("#duplicateWarningStyleId"),
+            general.duplicateWarningStyleId || DEFAULT_DUPLICATE_WARNING_STYLE_ID
+        );
+    }
     sitesDraft = normalizeSites(sites, { preserveLinks: true });
     captureLoadedLinks(sitesDraft);
     selectedSiteIndex = -1;
@@ -3022,7 +3054,10 @@ function restoreOptions() {
                 applyLoadedConfiguration(sites, styleRules, {
                     enableTopBorder: !!result.enableTopBorder,
                     enableDeepSearch: !!result.enableDeepSearch,
-                    enableToastNotifications: result.enableToastNotifications !== false
+                    enableToastNotifications: result.enableToastNotifications !== false,
+                    enableDuplicateWarning: !!result.enableDuplicateWarning,
+                    duplicateWarningStyleId: result.duplicateWarningStyleId ||
+                        DEFAULT_DUPLICATE_WARNING_STYLE_ID
                 });
             });
         })
@@ -3152,7 +3187,9 @@ function exportToFile() {
                 styleRules: normalizeStyleRules(collectStyleRules()),
                 enableTopBorder: document.querySelector("#enableTopBorder").checked,
                 enableDeepSearch: document.querySelector("#enableDeepSearch").checked,
-                enableToastNotifications: document.querySelector("#enableToastNotifications").checked
+                enableToastNotifications: document.querySelector("#enableToastNotifications").checked,
+                enableDuplicateWarning: document.querySelector("#enableDuplicateWarning").checked,
+                duplicateWarningStyleId: document.querySelector("#duplicateWarningStyleId").value || ""
             }, null, 2);
             const blob = new Blob([json], { type: "application/json" });
             const url = URL.createObjectURL(blob);
@@ -3258,6 +3295,20 @@ function importFromJson(jsonString) {
         }
 
         if (
+            data.enableDuplicateWarning !== undefined &&
+            typeof data.enableDuplicateWarning !== "boolean"
+        ) {
+            throw new Error("Invalid enableDuplicateWarning");
+        }
+
+        if (
+            data.duplicateWarningStyleId !== undefined &&
+            typeof data.duplicateWarningStyleId !== "string"
+        ) {
+            throw new Error("Invalid duplicateWarningStyleId");
+        }
+
+        if (
             data.bookmarkRules !== undefined &&
             (
                 !Array.isArray(data.bookmarkRules) ||
@@ -3289,7 +3340,9 @@ function importFromJson(jsonString) {
         applyLoadedConfiguration(sites, styleRules, {
             enableDeepSearch: data.enableDeepSearch,
             enableTopBorder: data.enableTopBorder,
-            enableToastNotifications: data.enableToastNotifications
+            enableToastNotifications: data.enableToastNotifications,
+            enableDuplicateWarning: data.enableDuplicateWarning,
+            duplicateWarningStyleId: data.duplicateWarningStyleId
         });
         setSitesReady(true);
         return persistOptionsFromForm({

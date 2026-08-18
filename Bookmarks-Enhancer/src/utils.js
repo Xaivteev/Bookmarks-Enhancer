@@ -13,6 +13,8 @@ const STORAGE_KEYS = {
 	enableTopBorder: "enableTopBorder",
 	enableDeepSearch: "enableDeepSearch",
 	enableToastNotifications: "enableToastNotifications",
+	enableDuplicateWarning: "enableDuplicateWarning",
+	duplicateWarningStyleId: "duplicateWarningStyleId",
 	// Options UI only — not part of config export/import or page refresh.
 	hideGettingStarted: "hideGettingStarted",
 	linkedBookmarkFolderId: "linkedBookmarkFolderId"
@@ -56,7 +58,9 @@ const CONFIG_REFRESH_STORAGE_KEYS = [
 	STORAGE_KEYS.styleRules,
 	STORAGE_KEYS.enableTopBorder,
 	STORAGE_KEYS.enableDeepSearch,
-	STORAGE_KEYS.enableToastNotifications
+	STORAGE_KEYS.enableToastNotifications,
+	STORAGE_KEYS.enableDuplicateWarning,
+	STORAGE_KEYS.duplicateWarningStyleId
 ];
 
 const SHORTCUT_ICON_IDS = ["star", "x", "eye", "bookmark", "heart"];
@@ -715,4 +719,117 @@ function hrefMatchKeyFromNormalized(normalized) {
 
 function hrefMatchKey(href, explicitRules) {
 	return hrefMatchKeyFromNormalized(normalizeHrefForSearch(href, explicitRules));
+}
+
+const DEFAULT_DUPLICATE_WARNING_STYLE_ID = "seen";
+const DUPLICATE_WARNING_MAX_MATCHES = 3;
+const DUPLICATE_TITLE_FUZZY_MIN_SCORE = 0.55;
+const DUPLICATE_TITLE_STOPWORDS = new Set([
+	"a", "an", "and", "at", "by", "for", "from", "in", "into", "is", "it", "its",
+	"of", "on", "or", "the", "to", "with"
+]);
+const DUPLICATE_LINK_TITLE_BOILERPLATE = new Set([
+	"back", "buy", "click here", "comments", "continue", "delete", "download",
+	"edit", "follow", "here", "hide", "home", "like", "link", "listen", "log in",
+	"login", "more", "next", "open", "permalink", "play", "prev", "previous",
+	"read more", "register", "reply", "report", "save", "share", "shop",
+	"sign in", "sign up", "source", "subscribe", "unlike", "view", "watch"
+]);
+const DUPLICATE_PAGE_TITLE_GENERIC = new Set([
+	"404", "access denied", "error", "home", "just a moment", "just a moment...",
+	"loading", "log in", "login", "new tab", "page not found", "please wait",
+	"redirecting", "search", "sign in", "untitled"
+]);
+
+function normalizeDuplicateTitle(value) {
+	if (typeof value !== "string") return "";
+	const title = value.replace(/\s+/g, " ").trim().toLowerCase();
+	if (!title || isValidHttpUrl(title)) return "";
+	return title;
+}
+
+function isBoilerplateDuplicateLinkTitle(normalized) {
+	if (!normalized || normalized.length < 3) return true;
+	return DUPLICATE_LINK_TITLE_BOILERPLATE.has(normalized);
+}
+
+function isGenericDuplicatePageTitle(value) {
+	const normalized = normalizeDuplicateTitle(value);
+	if (!normalized || normalized.length < 4) return true;
+	if (DUPLICATE_PAGE_TITLE_GENERIC.has(normalized)) return true;
+	if (/^[a-z0-9.-]+\.[a-z]{2,}$/.test(normalized)) return true;
+	const stripped = stripDuplicateTitleSiteSuffix(normalized);
+	return DUPLICATE_PAGE_TITLE_GENERIC.has(stripped);
+}
+
+function stripDuplicateTitleSiteSuffix(normalized) {
+	if (!normalized) return "";
+	const parts = normalized.split(/\s+[\-|–—]\s+/);
+	if (parts.length < 2) return normalized;
+	const head = parts.slice(0, -1).join(" - ").trim();
+	const tail = parts[parts.length - 1];
+	if (!head || head.length < 4) return normalized;
+	if (tail.length > head.length || tail.length > 28) return normalized;
+	return head;
+}
+
+function duplicateTitleTokens(normalized) {
+	const tokens = [];
+	const seen = new Set();
+	for (const raw of String(normalized || "").split(/[^a-z0-9]+/)) {
+		if (raw.length < 2 || DUPLICATE_TITLE_STOPWORDS.has(raw) || seen.has(raw)) {
+			continue;
+		}
+		seen.add(raw);
+		tokens.push(raw);
+	}
+	return tokens;
+}
+
+function duplicateTitleTokenJaccard(aTokens, bTokens) {
+	if (!aTokens.length || !bTokens.length) return 0;
+	const bSet = new Set(bTokens);
+	let intersection = 0;
+	for (const token of aTokens) {
+		if (bSet.has(token)) intersection += 1;
+	}
+	const union = aTokens.length + bTokens.length - intersection;
+	return union ? intersection / union : 0;
+}
+
+function duplicateTitleContainmentScore(a, b) {
+	if (!a || !b) return 0;
+	const shorter = a.length <= b.length ? a : b;
+	const longer = a.length <= b.length ? b : a;
+	if (shorter.length < 8 || !longer.includes(shorter)) return 0;
+	return shorter.length / longer.length;
+}
+
+function scoreDuplicateTitleFuzzy(queryNormalized, candidateNormalized) {
+	if (!queryNormalized || !candidateNormalized) return 0;
+	const queryVariants = [queryNormalized];
+	const queryStripped = stripDuplicateTitleSiteSuffix(queryNormalized);
+	if (queryStripped && queryStripped !== queryNormalized) queryVariants.push(queryStripped);
+	const candidateVariants = [candidateNormalized];
+	const candidateStripped = stripDuplicateTitleSiteSuffix(candidateNormalized);
+	if (candidateStripped && candidateStripped !== candidateNormalized) {
+		candidateVariants.push(candidateStripped);
+	}
+
+	let best = 0;
+	for (const query of queryVariants) {
+		for (const candidate of candidateVariants) {
+			if (query === candidate) return 1;
+			best = Math.max(
+				best,
+				duplicateTitleContainmentScore(query, candidate),
+				duplicateTitleTokenJaccard(
+					duplicateTitleTokens(query),
+					duplicateTitleTokens(candidate)
+				)
+			);
+			if (best >= 1) return 1;
+		}
+	}
+	return best;
 }
