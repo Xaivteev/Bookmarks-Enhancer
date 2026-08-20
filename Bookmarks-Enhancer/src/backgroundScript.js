@@ -559,6 +559,23 @@ function ensureHostLinksReadyForUrl(url) {
 	}
 }
 
+function prefetchHostLinksForUrl(url) {
+	if (!url) return Promise.resolve();
+	return ensureSettingsReady()
+		.then(() => {
+			if (!getPageRunState(url).siteMatch) return;
+			return ensureHostLinksReadyForUrl(url);
+		})
+		.catch(() => {});
+}
+
+function prefetchHostLinksForTab(tabId) {
+	if (tabId == null) return Promise.resolve();
+	return browser.tabs.get(tabId)
+		.then(tab => prefetchHostLinksForUrl(tab && tab.url))
+		.catch(() => {});
+}
+
 function ensureHostLinksReadyForHrefs(hrefs) {
 	const siteKeys = new Set();
 	for (const href of hrefs || []) {
@@ -842,7 +859,9 @@ createStaticContextMenus();
 ensureSettingsReady().then(() => scheduleDeferredDynamicMenus()).catch(onError);
 browser.tabs.query({ currentWindow: true, active: true })
 	.then(tabs => {
-		if (tabs[0]) syncRevealHiddenMenuForTab(tabs[0].id);
+		if (!tabs[0]) return;
+		syncRevealHiddenMenuForTab(tabs[0].id);
+		prefetchHostLinksForUrl(tabs[0].url);
 	})
 	.catch(() => {});
 
@@ -1416,6 +1435,7 @@ function openOptionsForPage(pageUrl) {
 
 browser.tabs.onActivated.addListener(({ tabId }) => {
 	syncRevealHiddenMenuForTab(tabId);
+	prefetchHostLinksForTab(tabId);
 });
 
 browser.tabs.onUpdated.addListener((tabId, changeInfo, tab) => {
@@ -1788,6 +1808,7 @@ browser.tabs.onUpdated.addListener((tabId, changeInfo, tab) => {
 	ensureSettingsReady()
 		.then(() => {
 			if (!getPageRunState(url).runStyling) return;
+			prefetchHostLinksForUrl(url);
 			return sendTabMessage(tabId, { refresh: true, mode: "requery" });
 		})
 		.catch(() => {});
