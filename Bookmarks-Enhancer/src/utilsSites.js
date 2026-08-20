@@ -382,11 +382,108 @@ function siteLinksByHostFromSites(sites) {
 	return byHost;
 }
 
+const SITE_LINKS_DELTA_COMPACT_OPS = 20;
+const SITE_LINKS_DELTA_COMPACT_MS = 2000;
+
+function emptySiteLinksDelta() {
+	return { seq: 0, ops: [] };
+}
+
+function normalizeSiteLinksDeltaOp(op) {
+	if (!op || typeof op !== "object") return null;
+	const type = op.op === "remove" ? "remove" : op.op === "upsert" ? "upsert" : "";
+	if (!type) return null;
+	const url = typeof op.url === "string" ? op.url.trim() : "";
+	if (!url || !isValidHttpUrl(url)) return null;
+	if (type === "remove") return { op: "remove", url };
+	const saved = normalizeSavedLink({
+		url,
+		title: op.title,
+		style: op.style
+	});
+	if (!saved) return null;
+	return {
+		op: "upsert",
+		url: saved.url,
+		title: saved.title,
+		style: saved.style
+	};
+}
+
+function normalizeSiteLinksDelta(value) {
+	if (!value || typeof value !== "object" || Array.isArray(value)) {
+		return emptySiteLinksDelta();
+	}
+	const seq = Number.isInteger(value.seq) && value.seq >= 0 ? value.seq : 0;
+	const ops = [];
+	for (const op of Array.isArray(value.ops) ? value.ops : []) {
+		const normalized = normalizeSiteLinksDeltaOp(op);
+		if (normalized) ops.push(normalized);
+	}
+	return { seq, ops };
+}
+
+function applySiteLinksDeltaOps(links, ops) {
+	const next = Array.isArray(links) ? links.slice() : [];
+	for (const op of ops || []) {
+		const normalized = normalizeSiteLinksDeltaOp(op);
+		if (!normalized) continue;
+		const pageKey = hrefMatchKey(normalized.url);
+		if (!pageKey) continue;
+		const existingIndex = next.findIndex(link =>
+			link?.url && hrefMatchKey(link.url) === pageKey
+		);
+		if (normalized.op === "remove") {
+			if (existingIndex >= 0) next.splice(existingIndex, 1);
+			continue;
+		}
+		const saved = {
+			url: normalized.url,
+			title: normalized.title,
+			style: normalized.style
+		};
+		if (existingIndex >= 0) {
+			if (!saved.title) saved.title = next[existingIndex].title;
+			next[existingIndex] = saved;
+		} else {
+			next.push(saved);
+		}
+	}
+	return next;
+}
+
+function appendSiteLinksDeltaOp(delta, op) {
+	const current = normalizeSiteLinksDelta(delta);
+	const normalized = normalizeSiteLinksDeltaOp(op);
+	if (!normalized) return current;
+	const pageKey = hrefMatchKey(normalized.url);
+	const ops = pageKey
+		? current.ops.filter(existing => hrefMatchKey(existing.url) !== pageKey)
+		: current.ops.slice();
+	ops.push(normalized);
+	return {
+		seq: current.seq + 1,
+		ops
+	};
+}
+
+function siteLinksDeltasByHostFromStorageResult(result) {
+	const byHost = {};
+	if (!result || typeof result !== "object") return byHost;
+	for (const [key, value] of Object.entries(result)) {
+		const host = hostFromSiteLinksDeltaStorageKey(key);
+		if (!host) continue;
+		byHost[host] = normalizeSiteLinksDelta(value);
+	}
+	return byHost;
+}
+
 function siteLinkHostsFromStorageResult(result) {
 	const hosts = new Set();
 	if (!result || typeof result !== "object") return hosts;
 	for (const key of Object.keys(result)) {
-		const host = hostFromSiteLinksStorageKey(key);
+		const host = hostFromSiteLinksStorageKey(key) ||
+			hostFromSiteLinksDeltaStorageKey(key);
 		if (host) hosts.add(host);
 	}
 	const blob = result[STORAGE_KEYS.siteLinks];
@@ -417,6 +514,13 @@ function siteLinksByHostFromStorageResult(result) {
 			if (!host || Object.prototype.hasOwnProperty.call(byHost, host)) continue;
 			byHost[host] = Array.isArray(links) ? links : [];
 		}
+	}
+
+	const deltas = siteLinksDeltasByHostFromStorageResult(result);
+	for (const [host, delta] of Object.entries(deltas)) {
+		if (!host) continue;
+		found = true;
+		byHost[host] = applySiteLinksDeltaOps(byHost[host], delta.ops);
 	}
 
 	return found ? byHost : null;
@@ -460,6 +564,7 @@ function buildSitesStoragePlan(sites, { previousHosts = [] } = {}) {
 		[STORAGE_KEYS.sites]: (sites || []).map(siteConfigToStorageMeta).filter(Boolean)
 	};
 	const keepHosts = new Set();
+	const removeKeys = [STORAGE_KEYS.siteLinks];
 	for (const siteConfig of sites || []) {
 		const host = siteConfig?.site;
 		if (!host) continue;
@@ -467,12 +572,14 @@ function buildSitesStoragePlan(sites, { previousHosts = [] } = {}) {
 		writes[siteLinksStorageKey(host)] = Array.isArray(siteConfig.links)
 			? siteConfig.links
 			: [];
+		const deltaKey = siteLinksDeltaStorageKey(host);
+		if (deltaKey) removeKeys.push(deltaKey);
 	}
 
-	const removeKeys = [STORAGE_KEYS.siteLinks];
 	for (const host of previousHosts || []) {
 		if (!host || keepHosts.has(host)) continue;
 		removeKeys.push(siteLinksStorageKey(host));
+		removeKeys.push(siteLinksDeltaStorageKey(host));
 	}
 
 	return { writes, removeKeys };
@@ -494,10 +601,19 @@ function siteLinkStorageKeysForSites(sites) {
 		.filter(Boolean);
 }
 
+function siteLinkDeltaStorageKeysForSites(sites) {
+	return (sites || [])
+		.map(siteConfig => siteConfig?.site && siteLinksDeltaStorageKey(siteConfig.site))
+		.filter(Boolean);
+}
+
 function getStoredSitesAndLinks() {
 	return browser.storage.local.get([STORAGE_KEYS.sites, STORAGE_KEYS.siteLinks])
 		.then(meta => {
-			const extra = siteLinkStorageKeysForSites(meta.sites);
+			const extra = [
+				...siteLinkStorageKeysForSites(meta.sites),
+				...siteLinkDeltaStorageKeysForSites(meta.sites)
+			];
 			if (extra.length === 0) return meta;
 			return browser.storage.local.get(extra).then(links => Object.assign({}, meta, links));
 		});

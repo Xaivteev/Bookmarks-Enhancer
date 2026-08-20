@@ -374,8 +374,10 @@ const hostLoadPromises = new Map();
 let settingsReady = null;
 let settingsLoadGeneration = 0;
 let pendingIgnoredSiteWrites = 0;
-let persistSiteLinksTimer = null;
-let persistSiteLinksHosts = new Set();
+let compactSiteLinksTimer = null;
+const compactSiteLinksHosts = new Set();
+const siteLinksDeltasByHost = new Map();
+const hostLinkPersistTail = new Map();
 
 function lookupEntryStyle(entry) {
 	if (!entry) return null;
@@ -464,6 +466,25 @@ function markHostsLoaded(siteList) {
 	}
 }
 
+function rememberSiteLinksDeltasFromStorage(result) {
+	const byHost = siteLinksDeltasByHostFromStorageResult(result);
+	for (const [host, delta] of Object.entries(byHost)) {
+		if (host) siteLinksDeltasByHost.set(host, delta);
+	}
+}
+
+function clearSiteLinksDeltaState(host) {
+	if (!host) return;
+	siteLinksDeltasByHost.set(host, emptySiteLinksDelta());
+}
+
+function enqueueHostLinkPersist(host, task) {
+	const prev = hostLinkPersistTail.get(host) || Promise.resolve();
+	const next = prev.then(task, task);
+	hostLinkPersistTail.set(host, next.then(() => {}, () => {}));
+	return next;
+}
+
 function applyLoadedHostLinks(siteKey, links) {
 	const siteConfig = resolveSiteConfig(siteKey);
 	if (siteConfig) {
@@ -487,11 +508,28 @@ function loadHostLinksBatch(siteKeys) {
 		return waits.length ? Promise.all(waits) : Promise.resolve();
 	}
 
-	const keys = needed.map(siteLinksStorageKey).filter(Boolean);
+	const keys = [];
+	for (const siteKey of needed) {
+		const blobKey = siteLinksStorageKey(siteKey);
+		const deltaKey = siteLinksDeltaStorageKey(siteKey);
+		if (blobKey) keys.push(blobKey);
+		if (deltaKey) keys.push(deltaKey);
+	}
 	const batchPromise = browser.storage.local.get(keys)
 		.then(result => {
+			rememberSiteLinksDeltasFromStorage(result);
 			for (const siteKey of needed) {
-				applyLoadedHostLinks(siteKey, result[siteLinksStorageKey(siteKey)]);
+				if (!siteLinksDeltasByHost.has(siteKey)) {
+					siteLinksDeltasByHost.set(siteKey, emptySiteLinksDelta());
+				}
+				const delta = siteLinksDeltasByHost.get(siteKey);
+				applyLoadedHostLinks(
+					siteKey,
+					applySiteLinksDeltaOps(
+						result[siteLinksStorageKey(siteKey)],
+						delta.ops
+					)
+				);
 				hostLoadPromises.delete(siteKey);
 			}
 		})
@@ -575,6 +613,9 @@ function maybeSplitStoredSiteLinks(result, loadedSites) {
 			throw error;
 		})
 		.then(() => {
+			for (const siteConfig of loadedSites || []) {
+				if (siteConfig?.site) clearSiteLinksDeltaState(siteConfig.site);
+			}
 			scheduleConfigTabsRefresh();
 			return loadedSites;
 		});
@@ -586,6 +627,7 @@ function loadSettingsFromFullStorage() {
 		applyDuplicateWarningSetting(result[STORAGE_KEYS.enableDuplicateWarning]);
 		return purgeLegacyStorage(result).then(migratedSites => {
 			markHostsLoaded(migratedSites);
+			rememberSiteLinksDeltasFromStorage(result);
 			applyLoadedSites(migratedSites, styleRules);
 			return maybeSplitStoredSiteLinks(result, migratedSites).then(sitesAfter => {
 				if (sitesAfter && sitesAfter !== migratedSites) {
@@ -605,6 +647,7 @@ function loadSettings() {
 		}
 		styleRules = migrateStyleRulesFromStorage(meta);
 		hostsLoaded = new Set();
+		siteLinksDeltasByHost.clear();
 		return Promise.all([
 			purgeLegacyStorage(meta),
 			browser.storage.local.get(STORAGE_KEYS.enableDuplicateWarning)
@@ -829,53 +872,97 @@ function persistLoadedHostLinks(previousHosts) {
 		[STORAGE_KEYS.sites]: sites.map(siteConfigToStorageMeta).filter(Boolean)
 	};
 	const keepHosts = new Set();
+	const removeKeys = [STORAGE_KEYS.siteLinks];
 	for (const siteConfig of sites || []) {
 		const host = siteConfig?.site;
 		if (!host) continue;
 		keepHosts.add(host);
 		if (!hostsLoaded.has(host)) continue;
 		Object.assign(writes, buildHostLinksStorageWrite(host, siteConfig.links));
+		removeKeys.push(siteLinksDeltaStorageKey(host));
+		clearSiteLinksDeltaState(host);
 	}
 
-	const removeKeys = [STORAGE_KEYS.siteLinks];
 	for (const host of previousHosts || []) {
 		if (!host || keepHosts.has(host)) continue;
 		removeKeys.push(siteLinksStorageKey(host));
+		removeKeys.push(siteLinksDeltaStorageKey(host));
 		hostsLoaded.delete(host);
 		linkLookupBySite.delete(host);
 		titleExactBySite.delete(host);
 		titleEntriesBySite.delete(host);
+		siteLinksDeltasByHost.delete(host);
 	}
 
 	if (removeKeys.some(Boolean)) pendingIgnoredSiteWrites += 1;
 	return persistSitesStoragePlan({ writes, removeKeys });
 }
 
-function schedulePersistSiteLinks(host) {
-	if (host) persistSiteLinksHosts.add(host);
-	if (persistSiteLinksTimer) clearTimeout(persistSiteLinksTimer);
-	persistSiteLinksTimer = setTimeout(() => {
-		persistSiteLinksTimer = null;
-		const hosts = Array.from(persistSiteLinksHosts);
-		persistSiteLinksHosts.clear();
-		if (hosts.length === 0) return;
-
-		const writes = {};
+function scheduleCompactSiteLinks(host) {
+	if (host) compactSiteLinksHosts.add(host);
+	if (compactSiteLinksTimer) clearTimeout(compactSiteLinksTimer);
+	compactSiteLinksTimer = setTimeout(() => {
+		compactSiteLinksTimer = null;
+		const hosts = Array.from(compactSiteLinksHosts);
+		compactSiteLinksHosts.clear();
 		for (const nextHost of hosts) {
-			if (!hostsLoaded.has(nextHost)) continue;
-			Object.assign(writes, buildHostLinksStorageWrite(
-				nextHost,
-				sites.find(site => site.site === nextHost)?.links
-			));
+			enqueueHostLinkPersist(nextHost, () => compactSiteLinksForHost(nextHost))
+				.catch(onError);
 		}
-		if (Object.keys(writes).length === 0) return;
+	}, SITE_LINKS_DELTA_COMPACT_MS);
+}
 
+function compactSiteLinksForHost(host, { force = false } = {}) {
+	if (!host || !hostsLoaded.has(host)) return Promise.resolve();
+	const delta = siteLinksDeltasByHost.get(host);
+	if (!force && (!delta || !delta.ops.length)) return Promise.resolve();
+
+	const blobKey = siteLinksStorageKey(host);
+	const deltaKey = siteLinksDeltaStorageKey(host);
+	if (!blobKey) return Promise.resolve();
+	const links = sites.find(site => site.site === host)?.links || [];
+
+	pendingIgnoredSiteWrites += 1;
+	return browser.storage.local.set({ [blobKey]: links }).then(() => {
+		clearSiteLinksDeltaState(host);
+		if (!deltaKey) return;
 		pendingIgnoredSiteWrites += 1;
-		browser.storage.local.set(writes).catch(error => {
-			pendingIgnoredSiteWrites = Math.max(0, pendingIgnoredSiteWrites - 1);
-			onError(error);
+		return browser.storage.local.remove(deltaKey);
+	}).catch(error => {
+		pendingIgnoredSiteWrites = Math.max(0, pendingIgnoredSiteWrites - 1);
+		throw error;
+	});
+}
+
+function writeSiteLinkDelta(host, op, extraWrites = {}) {
+	if (!host) return Promise.resolve();
+	const deltaKey = siteLinksDeltaStorageKey(host);
+	if (!deltaKey) return Promise.resolve();
+	const current = siteLinksDeltasByHost.get(host) || emptySiteLinksDelta();
+	const nextDelta = appendSiteLinksDeltaOp(current, op);
+	siteLinksDeltasByHost.set(host, nextDelta);
+
+	pendingIgnoredSiteWrites += 1;
+	return browser.storage.local.set({
+		[deltaKey]: nextDelta,
+		...extraWrites
+	}).then(() => {
+		if (nextDelta.ops.length >= SITE_LINKS_DELTA_COMPACT_OPS) {
+			return compactSiteLinksForHost(host);
+		}
+		scheduleCompactSiteLinks(host);
+	}).catch(error => {
+		pendingIgnoredSiteWrites = Math.max(0, pendingIgnoredSiteWrites - 1);
+		siteLinksDeltasByHost.set(host, current);
+		return compactSiteLinksForHost(host, { force: true }).then(() => {
+			throw error;
 		});
-	}, 40);
+	});
+}
+
+function persistSiteLinkMutation(host, op, extraWrites = {}) {
+	if (!host || !op) return Promise.resolve();
+	return enqueueHostLinkPersist(host, () => writeSiteLinkDelta(host, op, extraWrites));
 }
 
 function addSelectionAsTextRule(selection, site, styleId) {
@@ -898,17 +985,9 @@ function addUrlToSiteList(url, title, styleId) {
 			host = "";
 		}
 		if (!host) return persistSites(sites, { rebuild: false });
-		pendingIgnoredSiteWrites += 1;
-		return browser.storage.local.set({
-			[STORAGE_KEYS.sites]: sites.map(siteConfigToStorageMeta).filter(Boolean),
-			...buildHostLinksStorageWrite(
-				host,
-				sites.find(site => site.site === host)?.links
-			)
-		}).then(() => sites).catch(error => {
-			pendingIgnoredSiteWrites = Math.max(0, pendingIgnoredSiteWrites - 1);
-			throw error;
-		});
+		return persistSiteLinkMutation(host, result.op, {
+			[STORAGE_KEYS.sites]: sites.map(siteConfigToStorageMeta).filter(Boolean)
+		}).then(() => sites);
 	});
 }
 
@@ -1114,6 +1193,7 @@ function applySavedLinkToMemory(url, title, styleId, { toggleOff = false } = {})
 		siteHostIndex.set(siteConfig.site, siteConfig);
 		hostsLoaded.add(siteConfig.site);
 		linkLookupBySite.set(siteConfig.site, new Map());
+		siteLinksDeltasByHost.set(siteConfig.site, emptySiteLinksDelta());
 	}
 	if (!Array.isArray(siteConfig.links)) siteConfig.links = [];
 
@@ -1131,7 +1211,11 @@ function applySavedLinkToMemory(url, title, styleId, { toggleOff = false } = {})
 		const idx = siteConfig.links.indexOf(existing);
 		if (idx >= 0) siteConfig.links.splice(idx, 1);
 		map.delete(pageKey);
-		return { ok: true, styleId: "" };
+		return {
+			ok: true,
+			styleId: "",
+			op: { op: "remove", url: existing.url || normalizeHrefForSearch(url) }
+		};
 	}
 
 	const savedTitle = normalizeSavedLinkTitle(title);
@@ -1140,7 +1224,16 @@ function applySavedLinkToMemory(url, title, styleId, { toggleOff = false } = {})
 		if (savedTitle) existing.title = savedTitle;
 		siteConfig.linkFolders = addLinkFolderId(siteConfig.linkFolders, styleId);
 		map.set(pageKey, existing);
-		return { ok: true, styleId };
+		return {
+			ok: true,
+			styleId,
+			op: {
+				op: "upsert",
+				url: existing.url || normalizeHrefForSearch(url),
+				title: existing.title,
+				style: styleId
+			}
+		};
 	}
 
 	const saved = {
@@ -1151,7 +1244,16 @@ function applySavedLinkToMemory(url, title, styleId, { toggleOff = false } = {})
 	siteConfig.links.push(saved);
 	siteConfig.linkFolders = addLinkFolderId(siteConfig.linkFolders, styleId);
 	map.set(pageKey, saved);
-	return { ok: true, styleId };
+	return {
+		ok: true,
+		styleId,
+		op: {
+			op: "upsert",
+			url: saved.url,
+			title: saved.title,
+			style: saved.style
+		}
+	};
 }
 
 function toggleLookShortcut(url, title, styleId, senderTabId) {
@@ -1178,7 +1280,7 @@ function toggleLookShortcut(url, title, styleId, senderTabId) {
 	const result = applySavedLinkToMemory(url, title, styleId, { toggleOff: true });
 	if (result.ok) {
 		notifyTabsHrefStatus(url, result.styleId, senderTabId);
-		schedulePersistSiteLinks(siteConfig.site);
+		persistSiteLinkMutation(siteConfig.site, result.op).catch(onError);
 	}
 	return result;
 }
@@ -1429,7 +1531,8 @@ function storageChangeHasSiteData(changes) {
 	return Object.keys(changes || {}).some(key =>
 		key === STORAGE_KEYS.sites ||
 		key === STORAGE_KEYS.siteLinks ||
-		isSiteLinksStorageKey(key)
+		isSiteLinksStorageKey(key) ||
+		isSiteLinksDeltaStorageKey(key)
 	);
 }
 
@@ -1453,6 +1556,8 @@ browser.storage.onChanged.addListener((changes, areaName) => {
 				}
 			}
 			const changedHosts = new Set();
+			const blobChangedHosts = new Set();
+			const nextDeltas = {};
 			if (changes[STORAGE_KEYS.siteLinks] &&
 				changes[STORAGE_KEYS.siteLinks].newValue &&
 				typeof changes[STORAGE_KEYS.siteLinks].newValue === "object" &&
@@ -1460,17 +1565,43 @@ browser.storage.onChanged.addListener((changes, areaName) => {
 			) {
 				Object.assign(nextLinks, changes[STORAGE_KEYS.siteLinks].newValue);
 				for (const host of Object.keys(changes[STORAGE_KEYS.siteLinks].newValue)) {
-					if (host) changedHosts.add(host);
+					if (host) {
+						changedHosts.add(host);
+						blobChangedHosts.add(host);
+					}
 				}
 			}
 			for (const [key, change] of Object.entries(changes)) {
 				const host = hostFromSiteLinksStorageKey(key);
-				if (!host) continue;
-				nextLinks[host] = Array.isArray(change.newValue) ? change.newValue : [];
-				changedHosts.add(host);
+				if (host) {
+					nextLinks[host] = Array.isArray(change.newValue) ? change.newValue : [];
+					changedHosts.add(host);
+					blobChangedHosts.add(host);
+					continue;
+				}
+				const deltaHost = hostFromSiteLinksDeltaStorageKey(key);
+				if (!deltaHost) continue;
+				changedHosts.add(deltaHost);
+				nextDeltas[deltaHost] = change.newValue;
+				siteLinksDeltasByHost.set(
+					deltaHost,
+					change.newValue == null
+						? emptySiteLinksDelta()
+						: normalizeSiteLinksDelta(change.newValue)
+				);
+			}
+			for (const host of blobChangedHosts) {
+				if (!Object.prototype.hasOwnProperty.call(nextDeltas, host)) {
+					siteLinksDeltasByHost.set(host, emptySiteLinksDelta());
+				}
+			}
+			const storageResult = storageResultFromSitesAndLinks(nextMeta, nextLinks);
+			for (const [host, value] of Object.entries(nextDeltas)) {
+				const deltaKey = siteLinksDeltaStorageKey(host);
+				if (deltaKey && value != null) storageResult[deltaKey] = value;
 			}
 			const loadedSites = loadSitesFromStorageResult(
-				storageResultFromSitesAndLinks(nextMeta, nextLinks),
+				storageResult,
 				{ preserveLinks: true }
 			);
 			const nextLoaded = new Set();

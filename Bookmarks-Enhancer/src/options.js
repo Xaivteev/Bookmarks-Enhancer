@@ -2712,13 +2712,16 @@ function isLinksOnlyStorageChange(changes) {
     const keys = Object.keys(changes);
     if (keys.length === 0) return false;
     const hasLinkKey = keys.some(key =>
-        key === STORAGE_KEYS.siteLinks || isSiteLinksStorageKey(key)
+        key === STORAGE_KEYS.siteLinks ||
+        isSiteLinksStorageKey(key) ||
+        isSiteLinksDeltaStorageKey(key)
     );
     if (!hasLinkKey) return false;
     return keys.every(key =>
         key === STORAGE_KEYS.siteLinks ||
         key === STORAGE_KEYS.sites ||
-        isSiteLinksStorageKey(key)
+        isSiteLinksStorageKey(key) ||
+        isSiteLinksDeltaStorageKey(key)
     );
 }
 
@@ -3147,6 +3150,7 @@ function initSaveLoadEvents() {
             CONFIG_REFRESH_STORAGE_KEYS.includes(key) ||
             key === STORAGE_KEYS.siteLinks ||
             isSiteLinksStorageKey(key) ||
+            isSiteLinksDeltaStorageKey(key) ||
             Object.values(LEGACY_STORAGE_KEYS).includes(key) ||
             key === STORAGE_KEYS.enableToastNotifications
         );

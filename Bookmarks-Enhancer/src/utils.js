@@ -37,6 +37,8 @@ const LEGACY_STORAGE_KEYS = {
 };
 
 const SITE_LINKS_KEY_PREFIX = "siteLinks:";
+// Per-host look-toggle / context-menu ops. Compacted into `siteLinks:` later.
+const SITE_LINKS_DELTA_KEY_PREFIX = "siteLinksDelta:";
 
 function siteLinksStorageKey(host) {
 	if (typeof host !== "string" || !host) return "";
@@ -51,6 +53,23 @@ function isSiteLinksStorageKey(key) {
 
 function hostFromSiteLinksStorageKey(key) {
 	return isSiteLinksStorageKey(key) ? key.slice(SITE_LINKS_KEY_PREFIX.length) : "";
+}
+
+function siteLinksDeltaStorageKey(host) {
+	if (typeof host !== "string" || !host) return "";
+	return SITE_LINKS_DELTA_KEY_PREFIX + host;
+}
+
+function isSiteLinksDeltaStorageKey(key) {
+	return typeof key === "string" &&
+		key.startsWith(SITE_LINKS_DELTA_KEY_PREFIX) &&
+		key.length > SITE_LINKS_DELTA_KEY_PREFIX.length;
+}
+
+function hostFromSiteLinksDeltaStorageKey(key) {
+	return isSiteLinksDeltaStorageKey(key)
+		? key.slice(SITE_LINKS_DELTA_KEY_PREFIX.length)
+		: "";
 }
 
 const CONFIG_REFRESH_STORAGE_KEYS = [
