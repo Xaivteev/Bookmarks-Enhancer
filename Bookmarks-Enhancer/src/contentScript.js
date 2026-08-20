@@ -1206,6 +1206,18 @@ function applyHrefStatusUpdates(statusUpdates) {
 		restyleConfiguredCard(card, statusLookup, matchingTextRules);
 	}
 	if (touchedPageUrl) syncPageTopBorder(statusLookup);
+
+	// Look-shortcut save/unsave of this page restyles its href; other listing
+	// titles are unchanged, so skip the title-similarity scan.
+	const onlyCurrentPage = touchedPageUrl &&
+		Object.keys(statusUpdates).every(href => href === pageHref);
+	if (onlyCurrentPage) {
+		if (pageHrefHasUrlMatch()) {
+			lastDuplicatePageToastKey = "";
+			hideDuplicateWarningToast();
+		}
+		return;
+	}
 	scheduleDuplicateWarningPass();
 }
 

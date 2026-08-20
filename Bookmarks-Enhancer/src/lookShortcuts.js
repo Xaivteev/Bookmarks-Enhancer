@@ -333,6 +333,24 @@ function applyLookShortcutState(state, href = location.href) {
 	renderLookShortcuts();
 }
 
+function applyLookShortcutStateFromStatusUpdates(statusUpdates) {
+	if (!statusUpdates || typeof statusUpdates !== "object") return;
+	let pageHref = "";
+	try {
+		pageHref = normalizeHrefForSearch(location.href);
+	} catch {
+		return;
+	}
+	if (!pageHref || !Object.prototype.hasOwnProperty.call(statusUpdates, pageHref)) {
+		return;
+	}
+	const status = statusUpdates[pageHref];
+	applyLookShortcutState({
+		url: location.href,
+		styleId: status && status !== "none" ? String(status) : ""
+	});
+}
+
 function refreshLookShortcutState() {
 	if (!isHttpPage() || !currentSiteConfig()) {
 		cachedPageUrl = location.href;
@@ -480,8 +498,12 @@ browser.runtime.onMessage.addListener(message => {
 		return;
 	}
 	if (!lookShortcutsArmed) return;
-	if (message.refresh || message.statusUpdates) {
+	if (message.refresh) {
 		refreshLookShortcutState();
+		return;
+	}
+	if (message.statusUpdates) {
+		applyLookShortcutStateFromStatusUpdates(message.statusUpdates);
 	}
 });
 
