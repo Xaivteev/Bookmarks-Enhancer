@@ -226,11 +226,9 @@ browser.runtime.onMessage.addListener((message, sender, sendResponse) => {
 	}
 
 	if (message && message.hrefs) {
-		const tabId = sender && sender.tab ? sender.tab.id : null;
-		const authoritative = !!(message.authoritative || message.mode === "authoritative");
 		ensureSettingsReady()
 			.then(() => ensureHostLinksReadyForHrefs(message.hrefs))
-			.then(() => searchhrefs(message.hrefs, tabId, { authoritative }))
+			.then(() => searchhrefs(message.hrefs))
 			.then(sendResponse)
 			.catch(error => {
 				onError(error);

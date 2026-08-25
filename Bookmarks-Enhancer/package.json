@@ -1,18 +1,18 @@
 {
   "name": "bookmarks-enhancer",
   "version": "1.0.0",
-  "main": "app.js",
+  "private": true,
+  "description": "Hides and highlights listing cards from an in-extension list of saved links and text rules.",
   "scripts": {
-    "test": "echo \"Error: no test specified\" && exit 1"
+    "lint": "eslint src",
+    "copy-polyfill": "node -e \"require('fs').copyFileSync('node_modules/webextension-polyfill/dist/browser-polyfill.js', 'src/browser-polyfill.js')\"",
+    "postinstall": "npm run copy-polyfill"
   },
   "keywords": [],
   "author": "",
   "license": "ISC",
-  "description": "",
   "devDependencies": {
-    "eslint": "^9.28.0"
-  },
-  "dependencies": {
+    "eslint": "^9.28.0",
     "webextension-polyfill": "^0.12.0"
   }
 }

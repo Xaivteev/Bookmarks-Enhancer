@@ -491,8 +491,8 @@ function migrateStyleRulesFromStorage(result) {
  * Sole site normalizer for the extension.
  * Strips scheme/path noise, lowercases, drops a leading "*." / trailing ".",
  * and removes a leading "www.".
- * All site storage and matching must go through this (via hostnameMatchesSite
- * when comparing a hostname to a configured site).
+ * All site storage and matching must go through this (via
+ * hostnameMatchesNormalized when comparing a hostname to a configured site).
  */
 const SITE_NORMALIZATION_CACHE_LIMIT = 500;
 const siteNormalizationCache = new Map();
@@ -526,14 +526,10 @@ function normalizeSite(site) {
 	return normalized;
 }
 
-/** @deprecated Alias of normalizeSite for older call sites. */
-function normalizeSiteForMatching(site) {
-	return normalizeSite(site);
-}
-
 /**
  * Returns true when normalizeSite(site) looks like a usable hostname or IPv4.
- * Used by options UI validation; matching still goes through hostnameMatchesSite.
+ * Used by options UI validation; matching still goes through
+ * hostnameMatchesNormalized after both sides are normalized.
  */
 function isPlausibleHostname(site) {
 	const normalized = normalizeSite(site);
@@ -551,29 +547,6 @@ function isPlausibleHostname(site) {
 		label.length <= 63 &&
 		/^[a-z0-9](?:[a-z0-9-]*[a-z0-9])?$/i.test(label)
 	);
-}
-
-function hostnameMatchesSite(hostname, site) {
-	return hostnameMatchesNormalized(normalizeSite(hostname), normalizeSite(site));
-}
-
-function getPageRunStateForUrl(url, sites) {
-	const idle = { siteMatch: false, runStyling: false, runShortcuts: false };
-	if (typeof url !== "string" || !/^https?:/i.test(url)) return idle;
-
-	let hostname = "";
-	try {
-		hostname = new URL(url).hostname;
-	} catch {
-		return idle;
-	}
-
-	const siteMatch = !!findMatchingSiteConfig(sites, hostname);
-	return {
-		siteMatch,
-		runShortcuts: siteMatch,
-		runStyling: siteMatch
-	};
 }
 
 /**

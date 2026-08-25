@@ -988,13 +988,6 @@ function sendUniqueHrefs(options = {}) {
 	requestBookmarkStatuses(newHrefs, options);
 }
 
-function sendAllHrefs() {
-	if (!searchSite) return;
-	buildLinkMap();
-	const allHrefs = Array.from(linkMap.keys());
-	requestBookmarkStatuses(allHrefs, { force: true });
-}
-
 // Soft re-resolve after background cleared this tab's statuses (navigate/load).
 // Re-asks even for hrefs previously recorded as soft misses.
 function performRequeryRefresh() {
