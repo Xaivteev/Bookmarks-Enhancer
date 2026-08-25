@@ -703,13 +703,6 @@ const REFRESH_TAB_STYLING_MENU_ID = "refreshTabStyling";
 const REFRESH_ALL_TABS_STYLING_MENU_ID = "refreshAllTabsStyling";
 const TOGGLE_REVEAL_HIDDEN_MENU_ID = "toggleRevealHidden";
 const OPEN_OPTIONS_MENU_ID = "openOptions";
-const LEGACY_LINK_MENU_IDS = [
-	"addLinkBlocked",
-	"addLinkFavorited",
-	"addTextFilter",
-	"addLinkToRuleFolderParent",
-	"addPageToRuleFolderParent"
-];
 let listStyleMenuIds = [];
 let textRuleMenuIds = [];
 
@@ -742,22 +735,11 @@ function createStaticContextMenus() {
 		}
 	];
 
-	browser.contextMenus.remove("authoritativeRefresh").catch(() => {});
-	for (const legacyId of LEGACY_LINK_MENU_IDS) {
-		browser.contextMenus.remove(legacyId).catch(() => {});
-	}
-
-	for (const definition of menuDefinitions) {
-		browser.contextMenus.remove(definition.id)
-			.catch(() => {})
-			.finally(() => {
-				try {
-					browser.contextMenus.create(definition);
-				} catch (e) {
-					console.error("Context menu creation failed", e);
-				}
-			});
-	}
+	return Promise.all(menuDefinitions.map(definition =>
+		Promise.resolve(browser.contextMenus.create(definition)).catch(error => {
+			console.error("Context menu creation failed", error);
+		})
+	));
 }
 
 function scheduleDeferredDynamicMenus() {
@@ -770,6 +752,18 @@ function scheduleDeferredDynamicMenus() {
 	} else {
 		setTimeout(run, 250);
 	}
+}
+
+function installContextMenus() {
+	listStyleMenuIds = [];
+	textRuleMenuIds = [];
+	return Promise.resolve(browser.contextMenus.removeAll())
+		.catch(() => {})
+		.then(() => createStaticContextMenus())
+		.then(() => Promise.all([
+			refreshTextRuleContextMenus(),
+			refreshSavedListContextMenus()
+		]));
 }
 
 function removeContextMenu(id) {
@@ -855,8 +849,10 @@ function refreshTextRuleContextMenus() {
 	}).catch(onError);
 }
 
-createStaticContextMenus();
-ensureSettingsReady().then(() => scheduleDeferredDynamicMenus()).catch(onError);
+browser.runtime.onInstalled.addListener(() => {
+	installContextMenus().catch(onError);
+});
+
 browser.tabs.query({ currentWindow: true, active: true })
 	.then(tabs => {
 		if (!tabs[0]) return;
