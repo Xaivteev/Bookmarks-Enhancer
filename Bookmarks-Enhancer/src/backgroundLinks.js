@@ -32,10 +32,6 @@ function loadUtilsSitesExtra() {
 	return utilsSitesExtraLoadPromise;
 }
 
-function onError(error) {
-	console.log(`Error: ${error}`);
-}
-
 let urlRules = [];
 let sites = [];
 let styleRules = DEFAULT_STYLE_RULES.map(rule => ({ ...rule }));
@@ -47,6 +43,7 @@ let titleEntriesBySite = new Map();
 let titleIndexReadyBySite = new Set();
 let siteHostIndex = new Map();
 const urlNormalizationCache = createUrlNormalizationCache();
+setHrefNormalizationContext(urlRules, urlNormalizationCache);
 let hostsLoaded = new Set();
 const hostLoadPromises = new Map();
 
@@ -148,6 +145,7 @@ function rebuildTitleIndexForHost(siteConfig) {
 function rebuildLinkLookup() {
 	urlRules = sitesToUrlRules(sites);
 	urlNormalizationCache.clear();
+	setHrefNormalizationContext(urlRules, urlNormalizationCache);
 	rebuildSiteHostIndex();
 	linkLookupBySite = new Map();
 	clearTitleIndexes();
@@ -398,6 +396,7 @@ function persistSites(nextSites, { includeLinks = true, rebuild = includeLinks }
 	if (rebuild) rebuildLinkLookup();
 	else {
 		urlRules = sitesToUrlRules(sites);
+		setHrefNormalizationContext(urlRules, urlNormalizationCache);
 		rebuildSiteHostIndex();
 	}
 
@@ -537,20 +536,7 @@ function addUrlToSiteList(url, title, styleId) {
 }
 
 function getPageRunState(url) {
-	const idle = { siteMatch: false, runStyling: false, runShortcuts: false };
-	if (typeof url !== "string" || !/^https?:/i.test(url)) return idle;
-	let hostname = "";
-	try {
-		hostname = new URL(url).hostname;
-	} catch {
-		return idle;
-	}
-	const siteMatch = !!matchingSiteConfig(hostname);
-	return {
-		siteMatch,
-		runShortcuts: siteMatch,
-		runStyling: siteMatch
-	};
+	return getPageRunStateForUrl(url, matchingSiteConfig);
 }
 
 function emptyActionPopupPageState() {

@@ -108,35 +108,16 @@ function showStylingIndicator(message, { busy = true } = {}) {
 	host.setAttribute("data-be-styling-indicator", "host");
 	host.setAttribute("role", "status");
 	host.setAttribute("aria-live", "polite");
-	host.style.cssText = [
-		"all: initial",
-		"position: fixed",
-		"z-index: 2147483646",
-		"right: 16px",
-		"bottom: 16px",
-		"pointer-events: none"
-	].join(";");
+	host.style.cssText = pageToastHostStyle("right");
 
 	const shadow = host.attachShadow({ mode: "open" });
 	const style = document.createElement("style");
-	style.textContent = `
-		:host {
-			display: block !important;
-		}
-		.toast {
-			display: flex;
-			align-items: flex-start;
-			gap: 8px;
-			max-width: min(320px, calc(100vw - 32px));
-			padding: 10px 12px;
-			border: 1px solid #475569;
-			border-radius: 8px;
-			background: #0f172a;
-			color: #f8fafc;
-			box-shadow: 0 10px 28px rgb(0 0 0 / 35%);
-			font: 13px/1.35 system-ui, -apple-system, sans-serif;
-			pointer-events: auto;
-		}
+	style.textContent = buildPageToastCss({
+		border: "#475569",
+		background: "#0f172a",
+		color: "#f8fafc",
+		maxWidth: "320px",
+		extra: `
 		.toast-main {
 			display: flex;
 			align-items: center;
@@ -161,35 +142,11 @@ function showStylingIndicator(message, { busy = true } = {}) {
 			flex: 1;
 			min-width: 0;
 		}
-		.dismiss {
-			display: inline-flex;
-			align-items: center;
-			justify-content: center;
-			flex: 0 0 auto;
-			width: 1.35rem;
-			height: 1.35rem;
-			margin: -0.1rem -0.2rem 0 0;
-			padding: 0;
-			border: 0;
-			border-radius: 4px;
-			background: transparent;
-			color: inherit;
-			font: 700 1rem/1 system-ui, -apple-system, sans-serif;
-			cursor: pointer;
-			opacity: 0.85;
-		}
-		.dismiss:hover {
-			background: rgb(255 255 255 / 14%);
-			opacity: 1;
-		}
-		.dismiss:focus-visible {
-			outline: 2px solid #f8fafc;
-			outline-offset: 1px;
-		}
 		@keyframes be-spin {
 			to { transform: rotate(360deg); }
 		}
-	`;
+		`
+	});
 
 	const toast = document.createElement("div");
 	toast.className = "toast";

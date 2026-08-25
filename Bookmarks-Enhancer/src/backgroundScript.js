@@ -75,11 +75,7 @@ browser.runtime.onMessage.addListener((message, sender, sendResponse) => {
 			.then(() => sendResponse(getPageRunState(url)))
 			.catch(error => {
 				onError(error);
-				sendResponse({
-					siteMatch: false,
-					runStyling: false,
-					runShortcuts: false
-				});
+				sendResponse(idlePageRunState());
 			});
 		return true;
 	}

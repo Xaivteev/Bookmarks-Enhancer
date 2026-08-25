@@ -41,6 +41,20 @@ const SITE_LINKS_KEY_PREFIX = "siteLinks:";
 // Per-host look-toggle / context-menu ops. Compacted into `siteLinks:` later.
 const SITE_LINKS_DELTA_KEY_PREFIX = "siteLinksDelta:";
 
+function onError(error) {
+	console.error(`Error: ${error}`);
+}
+
+function pluralize(value, singular, plural = `${singular}s`) {
+	return Number(value) === 1 ? singular : plural;
+}
+
+function formatCount(value, singular, plural) {
+	const formatted = Number(value).toLocaleString();
+	if (singular == null || singular === "") return formatted;
+	return `${formatted} ${pluralize(value, singular, plural)}`;
+}
+
 function siteLinksStorageKey(host) {
 	if (typeof host !== "string" || !host) return "";
 	return SITE_LINKS_KEY_PREFIX + host;
@@ -157,6 +171,34 @@ function findMatchingSiteConfig(sites, hostname) {
 		}
 	}
 	return best;
+}
+
+function idlePageRunState() {
+	return { siteMatch: false, runStyling: false, runShortcuts: false };
+}
+
+function pageRunStateFromMatch(siteMatch) {
+	const matched = !!siteMatch;
+	return {
+		siteMatch: matched,
+		runStyling: matched,
+		runShortcuts: matched
+	};
+}
+
+function getPageRunStateForUrl(url, matchSite) {
+	const idle = idlePageRunState();
+	if (typeof url !== "string" || !/^https?:/i.test(url)) return idle;
+	let hostname = "";
+	try {
+		hostname = new URL(url).hostname;
+	} catch {
+		return idle;
+	}
+	const siteMatch = typeof matchSite === "function"
+		? matchSite(hostname)
+		: findMatchingSiteConfig(matchSite, hostname);
+	return pageRunStateFromMatch(siteMatch);
 }
 
 function buildSiteHostIndex(sites) {
@@ -408,6 +450,72 @@ function shortcutIconSvgMarkup(iconId, { active = false, color = DEFAULT_SHORTCU
 	return `<svg viewBox="0 0 24 24" width="20" height="20" aria-hidden="true">${badge}<g transform="translate(12 12) scale(0.7) translate(-12 -12)">${glyph}</g></svg>`;
 }
 
+function pageToastHostStyle(side) {
+	const inset = side === "left" ? "left: 16px" : "right: 16px";
+	return [
+		"all: initial",
+		"position: fixed",
+		"z-index: 2147483646",
+		inset,
+		"bottom: 16px",
+		"pointer-events: none"
+	].join(";");
+}
+
+function buildPageToastCss({
+	border,
+	background,
+	color,
+	maxWidth = "320px",
+	extra = ""
+} = {}) {
+	return `
+		:host {
+			display: block !important;
+		}
+		.toast {
+			display: flex;
+			align-items: flex-start;
+			gap: 8px;
+			max-width: min(${maxWidth}, calc(100vw - 32px));
+			padding: 10px 12px;
+			border: 1px solid ${border};
+			border-radius: 8px;
+			background: ${background};
+			color: ${color};
+			box-shadow: 0 10px 28px rgb(0 0 0 / 35%);
+			font: 13px/1.35 system-ui, -apple-system, sans-serif;
+			pointer-events: auto;
+		}
+		.dismiss {
+			display: inline-flex;
+			align-items: center;
+			justify-content: center;
+			flex: 0 0 auto;
+			width: 1.35rem;
+			height: 1.35rem;
+			margin: -0.1rem -0.2rem 0 0;
+			padding: 0;
+			border: 0;
+			border-radius: 4px;
+			background: transparent;
+			color: inherit;
+			font: 700 1rem/1 system-ui, -apple-system, sans-serif;
+			cursor: pointer;
+			opacity: 0.85;
+		}
+		.dismiss:hover {
+			background: rgb(255 255 255 / 14%);
+			opacity: 1;
+		}
+		.dismiss:focus-visible {
+			outline: 2px solid ${color};
+			outline-offset: 1px;
+		}
+		${extra}
+	`;
+}
+
 function resolveStyleRuleShortcut(rule) {
 	const id = typeof rule?.id === "string" ? rule.id.trim() : "";
 	const defaults = DEFAULT_LOOK_SHORTCUTS[id];
@@ -550,26 +658,33 @@ function isPlausibleHostname(site) {
 }
 
 /**
- * Normalize URL for search/comparison
- * Applies URL rules to keep only specified parameters
- * Caches results with a shared LRU policy.
- *
- * Depends on: urlRules (array), urlNormalizationCache (Map from createUrlNormalizationCache)
- * These should be defined in the calling context
+ * Normalize URL for search/comparison.
+ * Pass `rules` and `cache`, or call setHrefNormalizationContext() from the
+ * owning script (background / content) so shared helpers can reuse them.
  */
 const URL_NORMALIZATION_CACHE_LIMIT = 2000;
+let hrefNormalizationRules = [];
+let hrefNormalizationCache = null;
 
 function createUrlNormalizationCache() {
 	return new Map();
 }
 
-function readUrlNormalizationCache(href) {
-	let cache = null;
-	try {
-		if (typeof urlNormalizationCache !== "undefined") cache = urlNormalizationCache;
-	} catch {
-		cache = null;
-	}
+function setHrefNormalizationContext(rules, cache) {
+	hrefNormalizationRules = Array.isArray(rules) ? rules : [];
+	hrefNormalizationCache = cache && typeof cache.get === "function" ? cache : null;
+}
+
+function resolveHrefNormalization(rules, cache) {
+	return {
+		rules: Array.isArray(rules) ? rules : hrefNormalizationRules,
+		cache: cache !== undefined
+			? (cache && typeof cache.get === "function" ? cache : null)
+			: hrefNormalizationCache
+	};
+}
+
+function readUrlNormalizationCache(cache, href) {
 	if (!cache || !cache.has(href)) return undefined;
 	const value = cache.get(href);
 	// Refresh LRU insertion order.
@@ -578,13 +693,7 @@ function readUrlNormalizationCache(href) {
 	return value;
 }
 
-function writeUrlNormalizationCache(href, entry) {
-	let cache = null;
-	try {
-		if (typeof urlNormalizationCache !== "undefined") cache = urlNormalizationCache;
-	} catch {
-		cache = null;
-	}
+function writeUrlNormalizationCache(cache, href, entry) {
 	if (!cache || typeof href !== "string") return;
 	if (cache.has(href)) {
 		cache.delete(href);
@@ -614,39 +723,28 @@ function hrefMatchKeyFromParts(host, pathname, search) {
 	return `${host}${path}${search || ""}`;
 }
 
-function writeNormalizedHrefCache(href, normalized, matchKey) {
+function writeNormalizedHrefCache(cache, href, normalized, matchKey) {
 	const entry = { normalized, matchKey };
-	writeUrlNormalizationCache(href, entry);
+	writeUrlNormalizationCache(cache, href, entry);
 	if (normalized && normalized !== href) {
-		writeUrlNormalizationCache(normalized, entry);
+		writeUrlNormalizationCache(cache, normalized, entry);
 	}
 }
 
-function getActiveUrlRules(explicitRules) {
-	if (Array.isArray(explicitRules)) return explicitRules;
+function normalizeHrefForSearch(href, rules, cache) {
+	const ctx = resolveHrefNormalization(rules, cache);
 	try {
-		if (typeof urlRules !== "undefined" && Array.isArray(urlRules)) {
-			return urlRules;
-		}
-	} catch {
-		// options page and other contexts may not declare urlRules
-	}
-	return [];
-}
-
-function normalizeHrefForSearch(href, explicitRules) {
-	try {
-		const cached = readUrlNormalizationCache(href);
-		if (cached !== undefined && explicitRules === undefined) {
+		const cached = readUrlNormalizationCache(ctx.cache, href);
+		if (cached !== undefined) {
 			const normalized = urlCacheNormalized(cached);
 			if (normalized !== undefined) return normalized;
 		}
 
-		const url = new URL(href, typeof window !== 'undefined' ? window.location.origin : undefined);
+		const url = new URL(href, typeof window !== "undefined" ? window.location.origin : undefined);
 		if (url.protocol !== "http:" && url.protocol !== "https:") return href;
 
 		const hostname = normalizeSite(url.hostname);
-		const rule = getActiveUrlRules(explicitRules).find(entry =>
+		const rule = ctx.rules.find(entry =>
 			hostnameMatchesNormalized(hostname, entry.site)
 		);
 
@@ -654,7 +752,7 @@ function normalizeHrefForSearch(href, explicitRules) {
 			const keptParams = new URLSearchParams();
 
 			const params = rule.keepParams
-				.split(',')
+				.split(",")
 				.map(p => p.trim())
 				.filter(Boolean);
 
@@ -669,8 +767,7 @@ function normalizeHrefForSearch(href, explicitRules) {
 			url.search = keptParams.toString()
 				? `?${keptParams.toString()}`
 				: "";
-		}
-		else {
+		} else {
 			url.search = "";
 		}
 		url.hash = "";
@@ -681,21 +778,18 @@ function normalizeHrefForSearch(href, explicitRules) {
 		}
 
 		const matchKey = hrefMatchKeyFromParts(hostname, url.pathname, url.search) || normalized;
-		if (explicitRules === undefined) {
-			writeNormalizedHrefCache(href, normalized, matchKey);
-		}
+		writeNormalizedHrefCache(ctx.cache, href, normalized, matchKey);
 		return normalized;
 	} catch {
-		if (explicitRules === undefined) {
-			writeNormalizedHrefCache(href, href, href);
-		}
+		writeNormalizedHrefCache(ctx.cache, href, href, href);
 		return href;
 	}
 }
 
-function hrefMatchKeyFromNormalized(normalized) {
+function hrefMatchKeyFromNormalized(normalized, cache) {
 	if (!normalized) return "";
-	const cached = readUrlNormalizationCache(normalized);
+	const ctx = resolveHrefNormalization(undefined, cache);
+	const cached = readUrlNormalizationCache(ctx.cache, normalized);
 	const cachedKey = urlCacheMatchKey(cached);
 	if (cachedKey) return cachedKey;
 
@@ -703,15 +797,19 @@ function hrefMatchKeyFromNormalized(normalized) {
 		const url = new URL(normalized);
 		const host = normalizeSite(url.hostname);
 		const matchKey = hrefMatchKeyFromParts(host, url.pathname, url.search) || normalized;
-		writeNormalizedHrefCache(normalized, normalized, matchKey);
+		writeNormalizedHrefCache(ctx.cache, normalized, normalized, matchKey);
 		return matchKey;
 	} catch {
 		return normalized;
 	}
 }
 
-function hrefMatchKey(href, explicitRules) {
-	return hrefMatchKeyFromNormalized(normalizeHrefForSearch(href, explicitRules));
+function hrefMatchKey(href, rules, cache) {
+	const ctx = resolveHrefNormalization(rules, cache);
+	return hrefMatchKeyFromNormalized(
+		normalizeHrefForSearch(href, ctx.rules, ctx.cache),
+		ctx.cache
+	);
 }
 
 const DEFAULT_DUPLICATE_WARNING_STYLE_ID = "seen";

@@ -1,8 +1,7 @@
-// Shared with utils.js (normalizeHrefForSearch). Must stay at content-script top
-// level — not inside the install guard — or URL normalization throws ReferenceError.
 // Bookmark import/export helpers live in utilsSitesExtra.js and are not injected here.
 var urlRules = urlRules || [];
 var urlNormalizationCache = urlNormalizationCache || createUrlNormalizationCache();
+setHrefNormalizationContext(urlRules, urlNormalizationCache);
 
 if (!globalThis.__beContentScriptInstalled) {
 globalThis.__beContentScriptInstalled = true;
@@ -72,10 +71,6 @@ function startContentScript() {
 
 startContentScript();
 
-function onError(error) {
-    console.log(`Error: ${error}`);
-}
-
 function refreshManagedClassNames() {
 	styleConfigById = new Map();
 	managedClassNames = [];
@@ -138,6 +133,7 @@ function applySitesConfig(item) {
 		linkFolders: Array.isArray(siteConfig?.linkFolders) ? siteConfig.linkFolders : []
 	})).filter(siteConfig => siteConfig.site);
 	urlRules = sitesToUrlRules(loadedSites);
+	setHrefNormalizationContext(urlRules, urlNormalizationCache);
 	preparedTextRules = preprocessTextRules(sitesToTextRules(loadedSites));
 	updateClassesForSearch();
 }

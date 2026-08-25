@@ -29,14 +29,6 @@ let searchGeneration = 0;
 let preferredAllSites = false;
 let searchFiltersOpen = false;
 
-function formatCount(value) {
-	return Number(value).toLocaleString();
-}
-
-function pluralize(value, singular, plural) {
-	return value === 1 ? singular : plural;
-}
-
 function setError(message) {
 	if (!errorEl) return;
 	if (!message) {

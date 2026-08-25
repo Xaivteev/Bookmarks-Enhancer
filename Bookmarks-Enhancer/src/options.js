@@ -552,10 +552,6 @@ function showRowValidationError(tabId, selector, message, actionLabel, extra = {
     });
 }
 
-function formatCount(count, singular, plural = `${singular}s`) {
-    return `${count} ${count === 1 ? singular : plural}`;
-}
-
 function siteSummary(siteConfig) {
     const groups = siteConfig.classGroups?.length || 0;
     const links = siteConfig.links?.length || 0;
