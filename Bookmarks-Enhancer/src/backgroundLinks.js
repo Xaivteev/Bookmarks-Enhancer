@@ -38,7 +38,6 @@ let styleRules = DEFAULT_STYLE_RULES.map(rule => ({ ...rule }));
 let styleRuleById = new Map();
 let enableDuplicateWarning = false;
 let linkLookupBySite = new Map();
-let titleExactBySite = new Map();
 let titleEntriesBySite = new Map();
 let titleIndexReadyBySite = new Set();
 let siteHostIndex = new Map();
@@ -98,13 +97,11 @@ function rebuildLinkLookupForHost(siteConfig) {
 function invalidateTitleIndexForHost(host) {
 	if (!host) return;
 	titleIndexReadyBySite.delete(host);
-	titleExactBySite.delete(host);
 	titleEntriesBySite.delete(host);
 }
 
 function clearTitleIndexes() {
 	titleIndexReadyBySite = new Set();
-	titleExactBySite = new Map();
 	titleEntriesBySite = new Map();
 }
 
@@ -117,7 +114,6 @@ function ensureTitleIndexForHost(siteConfig) {
 
 function rebuildTitleIndexForHost(siteConfig) {
 	if (!siteConfig?.site) return;
-	const exact = new Map();
 	const entries = [];
 	for (const link of siteConfig.links || []) {
 		if (!link?.url) continue;
@@ -125,19 +121,14 @@ function rebuildTitleIndexForHost(siteConfig) {
 		if (!matchKey) continue;
 		const normalized = normalizeDuplicateTitle(link.title);
 		if (!normalized || isBoilerplateDuplicateLinkTitle(normalized)) continue;
-		const entry = {
+		entries.push({
 			url: link.url,
 			title: typeof link.title === "string" ? link.title : "",
 			style: typeof link.style === "string" ? link.style : "",
 			matchKey,
 			normalized
-		};
-		entries.push(entry);
-		const bucket = exact.get(normalized);
-		if (bucket) bucket.push(entry);
-		else exact.set(normalized, [entry]);
+		});
 	}
-	titleExactBySite.set(siteConfig.site, exact);
 	titleEntriesBySite.set(siteConfig.site, entries);
 	titleIndexReadyBySite.add(siteConfig.site);
 }
@@ -908,39 +899,6 @@ function searchhrefs(hrefs) {
 		statuses[normalized] = lookupLinkStyleForSite(normalized, lastSite) || "none";
 	}
 	return Promise.resolve({ statuses });
-}
-
-function matchDuplicateListingTitles(candidates) {
-	const hrefs = [];
-	if (!enableDuplicateWarning || !Array.isArray(candidates)) {
-		return { ok: true, hrefs };
-	}
-
-	const seen = new Set();
-	for (const candidate of candidates) {
-		const href = typeof candidate?.href === "string" ? candidate.href : "";
-		if (!href) continue;
-		let hostname = "";
-		try {
-			hostname = new URL(href).hostname;
-		} catch {
-			continue;
-		}
-		const siteConfig = matchingSiteConfig(hostname);
-		if (!siteConfig) continue;
-		ensureTitleIndexForHost(siteConfig);
-		const normalizedTitle = normalizeDuplicateTitle(candidate.title);
-		if (!normalizedTitle || isBoilerplateDuplicateLinkTitle(normalizedTitle)) continue;
-		const hits = titleExactBySite.get(siteConfig.site)?.get(normalizedTitle);
-		if (!hits || hits.length === 0) continue;
-		const pageKey = hrefMatchKey(href);
-		if (!hits.some(hit => hit.matchKey !== pageKey)) continue;
-		const normalizedHref = normalizeHrefForSearch(href);
-		if (!normalizedHref || seen.has(normalizedHref)) continue;
-		seen.add(normalizedHref);
-		hrefs.push(normalizedHref);
-	}
-	return { ok: true, hrefs };
 }
 
 function matchDuplicatePageTitle(url, title) {

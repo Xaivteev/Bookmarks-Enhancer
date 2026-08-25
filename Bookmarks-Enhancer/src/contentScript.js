@@ -21,7 +21,6 @@ let enableTopBorder = false;
 let enableDeepSearch = false;
 let enableToastNotifications = true;
 let enableDuplicateWarning = false;
-let duplicateWarningStyleId = DEFAULT_DUPLICATE_WARNING_STYLE_ID;
 // Defaults only include built-in ids (blocked/favorited/seen). Custom UUID styles
 // arrive via storage — gate lookups until then so early requery cannot stick
 // positives in processedHrefs that applyBookmarkStyling silently skips.
@@ -38,8 +37,7 @@ const CONTENT_SETTINGS_KEYS = [
 	STORAGE_KEYS.enableTopBorder,
 	STORAGE_KEYS.enableDeepSearch,
 	STORAGE_KEYS.enableToastNotifications,
-	STORAGE_KEYS.enableDuplicateWarning,
-	STORAGE_KEYS.duplicateWarningStyleId
+	STORAGE_KEYS.enableDuplicateWarning
 ];
 
 function loadContentSettings() {
@@ -145,10 +143,6 @@ function applyLoadedSettings(item) {
 	enableDeepSearch = !!item[STORAGE_KEYS.enableDeepSearch];
 	enableToastNotifications = item[STORAGE_KEYS.enableToastNotifications] !== false;
 	enableDuplicateWarning = !!item[STORAGE_KEYS.enableDuplicateWarning];
-	duplicateWarningStyleId = typeof item[STORAGE_KEYS.duplicateWarningStyleId] === "string" &&
-		item[STORAGE_KEYS.duplicateWarningStyleId]
-		? item[STORAGE_KEYS.duplicateWarningStyleId]
-		: DEFAULT_DUPLICATE_WARNING_STYLE_ID;
 	applySitesConfig(item);
 	settingsLoaded = true;
 }
@@ -190,7 +184,6 @@ function stopPageProcessing() {
 		clearExtensionTopBorder();
 	}
 	clearDuplicateWarningPass();
-	clearDuplicateShowGrace();
 	hideDuplicateWarningToast();
 }
 
@@ -424,9 +417,11 @@ function invalidateUrlDependentCaches() {
 	}
 
 	clearDuplicateWarningPass();
-	clearDuplicateShowGrace();
-	duplicateStyledHrefs = new Set();
 	lastDuplicatePageToastKey = "";
+	lastPageTitleScanUrl = "";
+	lastPageTitleScanTitle = "";
+	pageTitleScanPendingUrl = "";
+	pageTitleScanPendingTitle = "";
 	hideDuplicateWarningToast();
 
 	removeStatusClasses(managedClassNames);
@@ -815,7 +810,7 @@ function performAuthoritativeRefresh(options = {}) {
 			}
 		}
 
-		applyBookmarkStyling(message, { forceDuplicate: true });
+		applyBookmarkStyling(message);
 
 		// Pick up any links added while the authoritative request was running.
 		sendUniqueHrefs({ rebuildMap: false });
@@ -825,7 +820,7 @@ function performAuthoritativeRefresh(options = {}) {
 	if (allHrefs.length === 0) {
 		stylingIndicatorUserDismissed = false;
 		showStylingResult(countStyledAndHiddenElements());
-		scheduleDuplicateWarningPass({ force: true });
+		scheduleDuplicateWarningPass();
 		if (showActionBusy) notifyRefreshBusyComplete(actionBusyGeneration);
 		return Promise.resolve();
 	}
@@ -955,8 +950,8 @@ function applyHrefStatusUpdates(statusUpdates) {
 	}
 	if (touchedPageUrl) syncPageTopBorder(statusLookup);
 
-	// Look-shortcut save/unsave of this page restyles its href; other listing
-	// titles are unchanged, so skip the title-similarity scan.
+	// Look-shortcut save/unsave of this page restyles its href only.
+	// Hide the toast if this URL is now saved; skip a full title rescan.
 	const onlyCurrentPage = touchedPageUrl &&
 		Object.keys(statusUpdates).every(href => href === pageHref);
 	if (onlyCurrentPage) {
@@ -969,7 +964,7 @@ function applyHrefStatusUpdates(statusUpdates) {
 	scheduleDuplicateWarningPass();
 }
 
-function applyBookmarkStyling(message, options = {}) {
+function applyBookmarkStyling(message) {
 	if (!searchSite) return;
 
 	const statuses = message && message.statuses && typeof message.statuses === "object"
@@ -1000,7 +995,7 @@ function applyBookmarkStyling(message, options = {}) {
 	applyCardStylesFromLinks(statusLookup);
 	applyDeepSearchToUnstyledCards(statusLookup);
 	applyTextFilters();
-	scheduleDuplicateWarningPass({ force: !!options.forceDuplicate });
+	scheduleDuplicateWarningPass();
 }
 
 function buildBookmarkStatusLookup(statuses) {
@@ -1364,7 +1359,6 @@ function onVisibilityChange() {
 	}
 	if (!pageWasHidden) return;
 	pageWasHidden = false;
-	noteTabBecameVisible();
 	scheduleVisibilityRescan();
 }
 
@@ -1376,7 +1370,6 @@ function onPageShow(event) {
 	// bfcache restore, or a background tab that becomes usable on show.
 	if (event.persisted || pageWasHidden) {
 		pageWasHidden = false;
-		noteTabBecameVisible();
 		scheduleVisibilityRescan();
 	}
 }
@@ -1388,10 +1381,7 @@ function onWindowFocus() {
 		pageWasHidden = true;
 		return;
 	}
-	if (pageWasHidden) {
-		pageWasHidden = false;
-		noteTabBecameVisible();
-	}
+	pageWasHidden = false;
 	scheduleVisibilityRescan();
 }
 

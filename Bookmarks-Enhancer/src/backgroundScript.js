@@ -198,24 +198,6 @@ browser.runtime.onMessage.addListener((message, sender, sendResponse) => {
 		return true;
 	}
 
-	if (message && message.matchDuplicateListingTitles) {
-		const candidates = Array.isArray(message.candidates) ? message.candidates : [];
-		ensureSettingsReady()
-			.then(() => ensureHostLinksReadyForHrefs(
-				candidates.map(candidate => candidate && candidate.href).filter(Boolean)
-			))
-			.then(() => sendResponse(matchDuplicateListingTitles(candidates)))
-			.catch(error => {
-				onError(error);
-				sendResponse({
-					ok: false,
-					hrefs: [],
-					error: String(error && error.message ? error.message : error)
-				});
-			});
-		return true;
-	}
-
 	if (message && message.matchDuplicatePageTitle) {
 		const url = message.url || (sender && sender.tab && sender.tab.url) || "";
 		const title = message.title || (sender && sender.tab && sender.tab.title) || "";

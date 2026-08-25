@@ -5,17 +5,14 @@ if (!globalThis.__beContentDuplicatesInstalled) {
 globalThis.__beContentDuplicatesInstalled = true;
 
 let duplicateWarningTimer = null;
-let duplicateWarningPassId = 0;
-const DUPLICATE_SHOW_GRACE_MS = 1500;
-let duplicateShowGraceUntil = 0;
-let duplicateShowGraceTimer = null;
-let duplicatePassDeferred = false;
-let duplicateStyledHrefs = new Set();
 let lastDuplicatePageToastKey = "";
+let lastPageTitleScanUrl = "";
+let lastPageTitleScanTitle = "";
+let pageTitleScanPendingUrl = "";
+let pageTitleScanPendingTitle = "";
 let duplicateWarningToastHost = null;
 let duplicateWarningToastHideTimer = null;
 
-const DUPLICATE_LISTING_CANDIDATE_LIMIT = 400;
 const DUPLICATE_WARNING_TOAST_DURATION_MS = 10000;
 const DUPLICATE_WARNING_TOAST_HOST_ID = "bookmarks-enhancer-duplicate-warning";
 
@@ -32,204 +29,94 @@ function pageHrefHasUrlMatch() {
 	}
 }
 
-function cardHasUrlMatchedLink(card) {
-	if (!card) return false;
-	for (const [href, status] of linkStatusMap) {
-		if (!status || status === "none") continue;
-		for (const link of linksForHref(href)) {
-			if (link === card || card.contains(link)) return true;
-		}
-	}
-	return false;
-}
-
-function listingLinkInUrlMatchedCard(link) {
-	for (const card of closestConfiguredCards(link)) {
-		if (cardHasUrlMatchedLink(card)) return true;
-	}
-	return false;
-}
-
 function clearDuplicateWarningPass() {
-	duplicateWarningPassId += 1;
 	if (duplicateWarningTimer) {
 		clearTimeout(duplicateWarningTimer);
 		duplicateWarningTimer = null;
 	}
 }
 
-function clearDuplicateShowGrace() {
-	duplicateShowGraceUntil = 0;
-	duplicatePassDeferred = false;
-	if (duplicateShowGraceTimer) {
-		clearTimeout(duplicateShowGraceTimer);
-		duplicateShowGraceTimer = null;
-	}
-}
-
-function armDuplicateGraceFlush() {
-	if (duplicateShowGraceTimer) return;
-	const delay = Math.max(0, duplicateShowGraceUntil - Date.now());
-	duplicateShowGraceTimer = setTimeout(() => {
-		duplicateShowGraceTimer = null;
-		duplicateShowGraceUntil = 0;
-		if (duplicatePassDeferred) scheduleDuplicateWarningPass();
-	}, delay);
-}
-
-function noteTabBecameVisible() {
-	const hadPendingPass = !!duplicateWarningTimer;
-	clearDuplicateWarningPass();
-	if (duplicateShowGraceTimer) {
-		clearTimeout(duplicateShowGraceTimer);
-		duplicateShowGraceTimer = null;
-	}
-	duplicateShowGraceUntil = Date.now() + DUPLICATE_SHOW_GRACE_MS;
-	if (hadPendingPass) duplicatePassDeferred = true;
-	if (duplicatePassDeferred) armDuplicateGraceFlush();
-}
-
-function scheduleDuplicateWarningPass(options = {}) {
+function scheduleDuplicateWarningPass() {
 	if (!enableDuplicateWarning) {
-		duplicatePassDeferred = false;
-		clearDuplicateListingLooks();
 		hideDuplicateWarningToast();
 		return;
 	}
-	const force = !!options.force;
-	const graceActive = Date.now() < duplicateShowGraceUntil;
-	if (!force && (pendingStatusHrefs.size > 0 || graceActive)) {
-		duplicatePassDeferred = true;
-		if (graceActive) armDuplicateGraceFlush();
-		return;
-	}
 	if (duplicateWarningTimer) return;
-	duplicatePassDeferred = false;
 	duplicateWarningTimer = setTimeout(() => {
 		duplicateWarningTimer = null;
 		runDuplicateWarningPass();
 	}, 80);
 }
 
+function rememberPageTitleScan(url, title) {
+	lastPageTitleScanUrl = url;
+	lastPageTitleScanTitle = title;
+	if (pageTitleScanPendingUrl === url && pageTitleScanPendingTitle === title) {
+		pageTitleScanPendingUrl = "";
+		pageTitleScanPendingTitle = "";
+	}
+}
+
+function clearPageTitleScanPending(url, title) {
+	if (pageTitleScanPendingUrl === url && pageTitleScanPendingTitle === title) {
+		pageTitleScanPendingUrl = "";
+		pageTitleScanPendingTitle = "";
+	}
+}
+
+function pageTitleScanAlreadyDone(url, title) {
+	return url === lastPageTitleScanUrl && title === lastPageTitleScanTitle;
+}
+
+function pageTitleScanInFlight(url, title) {
+	return url === pageTitleScanPendingUrl && title === pageTitleScanPendingTitle;
+}
+
 function runDuplicateWarningPass() {
 	if (!enableDuplicateWarning || !searchSite) {
-		clearDuplicateListingLooks();
 		hideDuplicateWarningToast();
 		return;
 	}
-	const passId = ++duplicateWarningPassId;
-	const urlGeneration = urlCacheGeneration;
-	matchDuplicateListingTitles(passId, urlGeneration);
-	matchDuplicatePageTitle(passId, urlGeneration);
+	matchDuplicatePageTitle(urlCacheGeneration);
 }
 
-function collectDuplicateListingCandidates() {
-	const candidates = [];
-	for (const href of linkMap.keys()) {
-		if (hrefHasUrlMatch(href)) continue;
-		for (const link of linksForHref(href)) {
-			if (listingLinkInUrlMatchedCard(link)) continue;
-			const title = (link.textContent || "").replace(/\s+/g, " ").trim();
-			const normalized = normalizeDuplicateTitle(title);
-			if (!normalized || isBoilerplateDuplicateLinkTitle(normalized)) continue;
-			candidates.push({ href, title });
-			if (candidates.length >= DUPLICATE_LISTING_CANDIDATE_LIMIT) return candidates;
-		}
-	}
-	return candidates;
-}
-
-function clearDuplicateLookFromHref(href) {
-	if (hrefHasUrlMatch(href)) return;
-	for (const link of linksForHref(href)) {
-		if (managedClassNames.length) link.classList.remove(...managedClassNames);
-		for (const card of closestConfiguredCards(link)) {
-			if (cardHasUrlMatchedLink(card)) continue;
-			if (managedClassNames.length) card.classList.remove(...managedClassNames);
-		}
-	}
-}
-
-function clearDuplicateListingLooks() {
-	for (const href of duplicateStyledHrefs) {
-		clearDuplicateLookFromHref(href);
-	}
-	duplicateStyledHrefs = new Set();
-}
-
-function applyDuplicateListingMatches(matchedHrefs) {
-	const style = getStyleConfigById(duplicateWarningStyleId);
-	const next = new Set(Array.isArray(matchedHrefs) ? matchedHrefs : []);
-	for (const href of duplicateStyledHrefs) {
-		if (next.has(href)) continue;
-		clearDuplicateLookFromHref(href);
-	}
-	if (!style) {
-		duplicateStyledHrefs = new Set();
-		return;
-	}
-
-	const applied = new Set();
-	for (const href of next) {
-		if (hrefHasUrlMatch(href)) continue;
-		let styledAny = false;
-		for (const link of linksForHref(href)) {
-			if (listingLinkInUrlMatchedCard(link)) continue;
-			const title = (link.textContent || "").replace(/\s+/g, " ").trim();
-			const normalized = normalizeDuplicateTitle(title);
-			if (!normalized || isBoilerplateDuplicateLinkTitle(normalized)) continue;
-			applyStatusClass(link, style.className);
-			styledAny = true;
-			for (const card of closestConfiguredCards(link)) {
-				if (cardHasUrlMatchedLink(card) || hasStatusClass(card)) continue;
-				applyStatusClass(card, style.className);
-			}
-		}
-		if (styledAny) applied.add(href);
-	}
-	duplicateStyledHrefs = applied;
-}
-
-function matchDuplicateListingTitles(passId, urlGeneration) {
-	const candidates = collectDuplicateListingCandidates();
-	if (candidates.length === 0) {
-		clearDuplicateListingLooks();
-		return;
-	}
-	browser.runtime.sendMessage({
-		matchDuplicateListingTitles: true,
-		candidates
-	}).then(result => {
-		if (passId !== duplicateWarningPassId) return;
-		if (urlGeneration !== urlCacheGeneration) return;
-		if (!enableDuplicateWarning) return;
-		if (!result || result.ok === false) return;
-		applyDuplicateListingMatches(result.hrefs);
-	}).catch(() => {});
-}
-
-function matchDuplicatePageTitle(passId, urlGeneration) {
-	if (pageHrefHasUrlMatch()) {
-		lastDuplicatePageToastKey = "";
-		hideDuplicateWarningToast();
-		return;
-	}
+function matchDuplicatePageTitle(urlGeneration) {
 	const url = location.href;
 	const title = document.title || "";
-	if (isGenericDuplicatePageTitle(title)) {
+
+	if (pageHrefHasUrlMatch()) {
 		lastDuplicatePageToastKey = "";
+		rememberPageTitleScan(url, title);
 		hideDuplicateWarningToast();
 		return;
 	}
+	if (isGenericDuplicatePageTitle(title)) {
+		lastDuplicatePageToastKey = "";
+		rememberPageTitleScan(url, title);
+		hideDuplicateWarningToast();
+		return;
+	}
+	// Same URL+title already scanned (or in flight): skip the fuzzy pass.
+	// New tabs, reloads, and SPA URL/title changes are not skipped.
+	if (pageTitleScanAlreadyDone(url, title) || pageTitleScanInFlight(url, title)) {
+		return;
+	}
+
+	pageTitleScanPendingUrl = url;
+	pageTitleScanPendingTitle = title;
 	browser.runtime.sendMessage({
 		matchDuplicatePageTitle: true,
 		url,
 		title
 	}).then(result => {
-		if (passId !== duplicateWarningPassId) return;
-		if (urlGeneration !== urlCacheGeneration) return;
+		if (urlGeneration !== urlCacheGeneration) {
+			clearPageTitleScanPending(url, title);
+			return;
+		}
+		rememberPageTitleScan(url, title);
 		if (!enableDuplicateWarning) return;
 		if (location.href !== url) return;
+		if ((document.title || "") !== title) return;
 		if (pageHrefHasUrlMatch()) {
 			hideDuplicateWarningToast();
 			return;
@@ -244,7 +131,9 @@ function matchDuplicatePageTitle(passId, urlGeneration) {
 		if (toastKey === lastDuplicatePageToastKey) return;
 		lastDuplicatePageToastKey = toastKey;
 		showDuplicateWarningToast(matches);
-	}).catch(() => {});
+	}).catch(() => {
+		clearPageTitleScanPending(url, title);
+	});
 }
 
 function hideDuplicateWarningToast() {
