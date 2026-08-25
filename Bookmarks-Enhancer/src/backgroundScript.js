@@ -366,6 +366,7 @@ let enableDuplicateWarning = false;
 let linkLookupBySite = new Map();
 let titleExactBySite = new Map();
 let titleEntriesBySite = new Map();
+let titleIndexReadyBySite = new Set();
 let siteHostIndex = new Map();
 const urlNormalizationCache = createUrlNormalizationCache();
 let hostsLoaded = new Set();
@@ -416,6 +417,26 @@ function rebuildLinkLookupForHost(siteConfig) {
 		map.set(key, link);
 	}
 	linkLookupBySite.set(siteConfig.site, map);
+	invalidateTitleIndexForHost(siteConfig.site);
+}
+
+function invalidateTitleIndexForHost(host) {
+	if (!host) return;
+	titleIndexReadyBySite.delete(host);
+	titleExactBySite.delete(host);
+	titleEntriesBySite.delete(host);
+}
+
+function clearTitleIndexes() {
+	titleIndexReadyBySite = new Set();
+	titleExactBySite = new Map();
+	titleEntriesBySite = new Map();
+}
+
+function ensureTitleIndexForHost(siteConfig) {
+	if (!enableDuplicateWarning || !siteConfig?.site) return;
+	if (titleIndexReadyBySite.has(siteConfig.site)) return;
+	if (!hostsLoaded.has(siteConfig.site)) return;
 	rebuildTitleIndexForHost(siteConfig);
 }
 
@@ -443,6 +464,7 @@ function rebuildTitleIndexForHost(siteConfig) {
 	}
 	titleExactBySite.set(siteConfig.site, exact);
 	titleEntriesBySite.set(siteConfig.site, entries);
+	titleIndexReadyBySite.add(siteConfig.site);
 }
 
 function rebuildLinkLookup() {
@@ -450,8 +472,7 @@ function rebuildLinkLookup() {
 	urlNormalizationCache.clear();
 	rebuildSiteHostIndex();
 	linkLookupBySite = new Map();
-	titleExactBySite = new Map();
-	titleEntriesBySite = new Map();
+	clearTitleIndexes();
 
 	for (const siteConfig of sites) {
 		if (!siteConfig?.site || !hostsLoaded.has(siteConfig.site)) continue;
@@ -598,6 +619,7 @@ function ensureAllHostLinksReady() {
 
 function applyDuplicateWarningSetting(value) {
 	enableDuplicateWarning = value === true;
+	if (!enableDuplicateWarning) clearTitleIndexes();
 }
 
 function applyLoadedSites(nextSites, nextStyleRules, { rebuild = true } = {}) {
@@ -904,8 +926,7 @@ function persistLoadedHostLinks(previousHosts) {
 		removeKeys.push(siteLinksDeltaStorageKey(host));
 		hostsLoaded.delete(host);
 		linkLookupBySite.delete(host);
-		titleExactBySite.delete(host);
-		titleEntriesBySite.delete(host);
+		invalidateTitleIndexForHost(host);
 		siteLinksDeltasByHost.delete(host);
 	}
 
@@ -1226,6 +1247,7 @@ function applySavedLinkToMemory(url, title, styleId, { toggleOff = false } = {})
 		const idx = siteConfig.links.indexOf(existing);
 		if (idx >= 0) siteConfig.links.splice(idx, 1);
 		map.delete(pageKey);
+		invalidateTitleIndexForHost(siteConfig.site);
 		return {
 			ok: true,
 			styleId: "",
@@ -1239,6 +1261,7 @@ function applySavedLinkToMemory(url, title, styleId, { toggleOff = false } = {})
 		if (savedTitle) existing.title = savedTitle;
 		siteConfig.linkFolders = addLinkFolderId(siteConfig.linkFolders, styleId);
 		map.set(pageKey, existing);
+		invalidateTitleIndexForHost(siteConfig.site);
 		return {
 			ok: true,
 			styleId,
@@ -1259,6 +1282,7 @@ function applySavedLinkToMemory(url, title, styleId, { toggleOff = false } = {})
 	siteConfig.links.push(saved);
 	siteConfig.linkFolders = addLinkFolderId(siteConfig.linkFolders, styleId);
 	map.set(pageKey, saved);
+	invalidateTitleIndexForHost(siteConfig.site);
 	return {
 		ok: true,
 		styleId,
@@ -1738,6 +1762,7 @@ function matchDuplicateListingTitles(candidates) {
 		}
 		const siteConfig = matchingSiteConfig(hostname);
 		if (!siteConfig) continue;
+		ensureTitleIndexForHost(siteConfig);
 		const normalizedTitle = normalizeDuplicateTitle(candidate.title);
 		if (!normalizedTitle || isBoilerplateDuplicateLinkTitle(normalizedTitle)) continue;
 		const hits = titleExactBySite.get(siteConfig.site)?.get(normalizedTitle);
@@ -1765,6 +1790,7 @@ function matchDuplicatePageTitle(url, title) {
 	}
 	const siteConfig = matchingSiteConfig(hostname);
 	if (!siteConfig) return { ok: true, matches: [] };
+	ensureTitleIndexForHost(siteConfig);
 
 	const query = normalizeDuplicateTitle(title);
 	if (!query) return { ok: true, matches: [] };
