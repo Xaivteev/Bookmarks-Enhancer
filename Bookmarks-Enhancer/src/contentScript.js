@@ -265,7 +265,7 @@ let linkMap = new Map(); // normalizedHref -> [link elements]
 let linkStatusMap = new Map(); // normalizedHref -> status string
 let processedHrefs = new Set(); // positive resolutions only
 // Soft "none" results — skipped on ordinary scans to avoid message spam, cleared
-// on requery / visibility / authoritative so folder re-checks can recover.
+// on requery / warmup / authoritative so later folder re-checks can recover.
 let softMissHrefs = new Set();
 let pendingStatusHrefs = new Set(); // in-flight lookups; not yet successfully processed
 let urlCacheGeneration = 0;
@@ -692,6 +692,21 @@ function invalidateTextFilterCache() {
 	removeStatusClasses(managedClassNames);
 }
 
+function flushLookupRetriesNow() {
+	if (lookupRetryTimer) {
+		clearTimeout(lookupRetryTimer);
+		lookupRetryTimer = null;
+	}
+	if (lookupRetryHrefs.size === 0) return;
+	const batch = Array.from(lookupRetryHrefs);
+	lookupRetryHrefs = new Set();
+	for (const href of batch) {
+		softMissHrefs.delete(href);
+		pendingStatusHrefs.delete(href);
+	}
+	requestBookmarkStatuses(batch, { force: true });
+}
+
 function scheduleLookupRetry(hrefs) {
 	if (!hrefs || !hrefs.length) return;
 	for (const href of hrefs) {
@@ -703,13 +718,7 @@ function scheduleLookupRetry(hrefs) {
 	lookupRetryAttempt += 1;
 	lookupRetryTimer = setTimeout(() => {
 		lookupRetryTimer = null;
-		const batch = Array.from(lookupRetryHrefs);
-		lookupRetryHrefs = new Set();
-		for (const href of batch) {
-			softMissHrefs.delete(href);
-			pendingStatusHrefs.delete(href);
-		}
-		requestBookmarkStatuses(batch, { force: true });
+		flushLookupRetriesNow();
 	}, delay);
 }
 
@@ -801,7 +810,7 @@ function requestBookmarkStatuses(hrefs, options = {}) {
 							sawPositive = true;
 						}
 					} else {
-						// Soft miss — retry on requery / visibility / index-ready.
+						// Soft miss — retry on requery / warmup / index-ready.
 						softMissHrefs.add(href);
 						processedHrefs.delete(href);
 						linkStatusMap.delete(href);
@@ -1591,6 +1600,8 @@ function applyCachedLinkStatus(norm) {
 }
 
 function scheduleVisibilityRescan() {
+	if (!searchSite) return;
+	if (lookupRetryHrefs.size === 0) return;
 	if (visibilityRescanTimer) return;
 	visibilityRescanTimer = setTimeout(() => {
 		visibilityRescanTimer = null;
@@ -1601,10 +1612,10 @@ function scheduleVisibilityRescan() {
 function performVisibilityRescan() {
 	if (!searchSite) return;
 	if (document.visibilityState === "hidden") return;
-
-	// Retry soft misses: a prior pass may have resolved before the folder index
-	// was complete. Background re-checks the folder map cheaply.
-	clearSoftMissesAndRescan();
+	// Cmd-Tab / window focus is not a reason to re-ask every unmatched URL.
+	// Lookups already wait for the host list; flush only failed requests
+	// whose retry timer may have been throttled while hidden.
+	flushLookupRetriesNow();
 }
 
 function onVisibilityChange() {
@@ -1636,7 +1647,6 @@ function onWindowFocus() {
 		pageWasHidden = true;
 		return;
 	}
-	if (softMissHrefs.size === 0 && lookupRetryHrefs.size === 0) return;
 	scheduleVisibilityRescan();
 }
 
@@ -2003,8 +2013,8 @@ function initProcessing() {
 	startMutationObserver();
 	scheduleWarmupRescan();
 
-	// Background tabs often finish the first scan while still hidden; rescan
-	// once when the user first focuses the tab.
+	// Background tabs can finish the first scan while still hidden; remember
+	// that so a later focus can flush failed lookups (not every miss).
 	if (document.visibilityState === "hidden") {
 		pageWasHidden = true;
 	}
