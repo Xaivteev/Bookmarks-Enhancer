@@ -1,6 +1,7 @@
 /**
  * Content-script-safe helpers shared with background and options.
- * Site storage, bookmark import/export, and legacy migration live in utilsSites.js.
+ * Site storage, bookmark import/export, and legacy migration live in
+ * utilsSites.js / utilsSitesExtra.js.
  */
 
 const STORAGE_KEYS = {

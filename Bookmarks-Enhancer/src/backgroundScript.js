@@ -1,4 +1,5 @@
 ﻿const CONTENT_SCRIPT_FILES = ["browser-polyfill.js", "utils.js", "contentScript.js", "lookShortcuts.js"];
+const CLASS_PICKER_SITE_UTILS_FILES = ["utilsSites.js", "utilsSitesPicker.js"];
 
 const DEFAULT_ACTION_TITLE = "Bookmarks Enhancer";
 const ACTION_BUSY_TIMEOUT_MS = 60000;
@@ -354,6 +355,36 @@ function setRevealHiddenOnTab(tabId, enabled) {
 		});
 }
 
+let utilsSitesExtraLoadPromise = null;
+
+function loadUtilsSitesExtra() {
+	if (globalThis.__beUtilsSitesExtraLoaded) return Promise.resolve();
+	if (utilsSitesExtraLoadPromise) return utilsSitesExtraLoadPromise;
+	if (typeof importScripts === "function") {
+		importScripts("utilsSitesExtra.js");
+		globalThis.__beUtilsSitesExtraLoaded = true;
+		return Promise.resolve();
+	}
+	if (typeof document === "undefined") {
+		return Promise.reject(new Error("Cannot load site migration helpers"));
+	}
+	utilsSitesExtraLoadPromise = new Promise((resolve, reject) => {
+		const script = document.createElement("script");
+		script.src = browser.runtime.getURL("utilsSitesExtra.js");
+		script.onload = () => {
+			globalThis.__beUtilsSitesExtraLoaded = true;
+			utilsSitesExtraLoadPromise = null;
+			resolve();
+		};
+		script.onerror = () => {
+			utilsSitesExtraLoadPromise = null;
+			reject(new Error("Failed to load site migration helpers"));
+		};
+		(document.head || document.documentElement).appendChild(script);
+	});
+	return utilsSitesExtraLoadPromise;
+}
+
 function onError(error) {
 	console.log(`Error: ${error}`);
 }
@@ -661,7 +692,7 @@ function maybeSplitStoredSiteLinks(result, loadedSites) {
 }
 
 function loadSettingsFromFullStorage() {
-	return browser.storage.local.get(null).then(result => {
+	return loadUtilsSitesExtra().then(() => browser.storage.local.get(null).then(result => {
 		styleRules = migrateStyleRulesFromStorage(result);
 		applyDuplicateWarningSetting(result[STORAGE_KEYS.enableDuplicateWarning]);
 		return purgeLegacyStorage(result).then(migratedSites => {
@@ -676,7 +707,7 @@ function loadSettingsFromFullStorage() {
 				return sitesAfter;
 			});
 		});
-	});
+	}));
 }
 
 function loadSettings() {
@@ -687,14 +718,13 @@ function loadSettings() {
 		styleRules = migrateStyleRulesFromStorage(meta);
 		hostsLoaded = new Set();
 		siteLinksDeltasByHost.clear();
-		return Promise.all([
-			purgeLegacyStorage(meta),
-			browser.storage.local.get(STORAGE_KEYS.enableDuplicateWarning)
-		]).then(([migratedSites, extra]) => {
-			applyDuplicateWarningSetting(extra[STORAGE_KEYS.enableDuplicateWarning]);
-			applyLoadedSites(migratedSites, styleRules);
-			return migratedSites;
-		});
+		return browser.storage.local.get(STORAGE_KEYS.enableDuplicateWarning)
+			.then(extra => {
+				applyDuplicateWarningSetting(extra[STORAGE_KEYS.enableDuplicateWarning]);
+				const loadedSites = loadSitesFromStorageResult(meta, { preserveLinks: true });
+				applyLoadedSites(loadedSites, styleRules);
+				return loadedSites;
+			});
 	});
 }
 
@@ -1389,7 +1419,7 @@ function startClassPickerOnTab(tabId) {
 		if (results[0] && results[0].result) return results;
 		return browser.scripting.executeScript({
 			target: { tabId },
-			files: ["utilsSites.js"]
+			files: CLASS_PICKER_SITE_UTILS_FILES
 		}).then(injected => throwIfScriptInjectionFailed(injected, "inject site utils"));
 	});
 
