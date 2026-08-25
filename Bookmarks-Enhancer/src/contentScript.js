@@ -174,6 +174,7 @@ function stopPageProcessing() {
 	pendingAddedOffset = 0;
 	pendingObservedHrefs = new Set();
 	pendingObservedTextElements = new Set();
+	pendingMutationCards = new Set();
 	if (mutationDebounceTimer) {
 		clearTimeout(mutationDebounceTimer);
 		mutationDebounceTimer = null;
@@ -269,6 +270,7 @@ let urlCacheGeneration = 0;
 let observer = null;
 let pendingObservedHrefs = new Set();
 let pendingObservedTextElements = new Set();
+let pendingMutationCards = new Set();
 let pendingAddedNodes = [];
 let pendingAddedOffset = 0;
 let mutationFrameId = 0;
@@ -405,6 +407,7 @@ function invalidateUrlDependentCaches() {
 	pendingStatusHrefs = new Set();
 	pendingObservedHrefs = new Set();
 	pendingObservedTextElements = new Set();
+	pendingMutationCards = new Set();
 	pendingAddedNodes = [];
 	pendingAddedOffset = 0;
 	if (mutationFrameId) {
@@ -678,8 +681,17 @@ function buildLinkMap() {
 	}
 }
 
+function resolvedAnchorHref(link) {
+	if (!link || (link.tagName !== "A" && link.tagName !== "AREA")) return "";
+	// Ignore anchors with no href. .href still reflects the document URL in that case.
+	const attr = link.getAttribute("href");
+	if (attr == null || attr === "") return "";
+	// Prefer the browser-resolved URL so relative listing hrefs match saved links.
+	return link.href || attr;
+}
+
 function collectLink(link) {
-	const href = link.getAttribute('href') || link.href || '';
+	const href = resolvedAnchorHref(link);
 	if (!href) return null;
 	let normalized;
 	try {
@@ -1032,6 +1044,7 @@ function applyBookmarkStyling(message) {
 	applyCardStylesFromConfiguredClasses(statusLookup);
 	applyDeepSearchToUnstyledCards(statusLookup);
 	applyTextFilters();
+	flushPendingMutationCards();
 	scheduleDuplicateWarningPass();
 }
 
@@ -1094,12 +1107,14 @@ function collectAnchorsForCard(element) {
 	const seen = new Set();
 	const add = node => {
 		if (!(node instanceof HTMLAnchorElement) || seen.has(node)) return;
+		if (!resolvedAnchorHref(node)) return;
 		seen.add(node);
 		anchors.push(node);
 	};
 	if (element instanceof HTMLAnchorElement) add(element);
-	if (typeof element.querySelectorAll === "function") {
-		for (const link of element.querySelectorAll("a[href]")) add(link);
+	if (typeof element.getElementsByTagName === "function") {
+		const list = element.getElementsByTagName("a");
+		for (let i = 0; i < list.length; i++) add(list[i]);
 	}
 	let node = element.parentElement;
 	while (node) {
@@ -1115,15 +1130,8 @@ function collectAnchorsForCard(element) {
 function getElementLinkHrefSet(element) {
 	const normalizedHrefs = new Set();
 	for (const link of collectAnchorsForCard(element)) {
-		const href = link.getAttribute("href") || link.href || "";
-		if (!href) continue;
-		let normalized;
-		try {
-			normalized = normalizeHrefForSearch(href);
-		} catch {
-			continue;
-		}
-		if (/^https?:/.test(normalized)) normalizedHrefs.add(normalized);
+		const normalized = collectLink(link);
+		if (normalized) normalizedHrefs.add(normalized);
 	}
 	return normalizedHrefs;
 }
@@ -1171,7 +1179,7 @@ function bestStatusClassForCard(card, statusLookup) {
 	let matched = null;
 	for (const status of statusLookup.values()) {
 		for (const link of linksForHref(status.normalized)) {
-			if (link !== card && !card.contains(link)) continue;
+			if (link !== card && !card.contains(link) && !link.contains(card)) continue;
 			if (!matched || status.priority < matched.priority) matched = status;
 		}
 	}
@@ -1301,34 +1309,50 @@ function compactPendingAddedNodes() {
 	pendingAddedOffset = 0;
 }
 
+function cardMatchesClassGroup(node, classGroup) {
+	if (!node?.classList) return false;
+	const requiredClasses = classGroup.split(/\s+/).filter(Boolean);
+	return requiredClasses.length > 0 &&
+		requiredClasses.every(className => node.classList.contains(className));
+}
+
 function queueObservedTextElements(node) {
-	if (!classesForSearch.length) return;
+	if (!classesForSearch.length || !(node instanceof Element)) return;
 	for (const classGroup of classesForSearch) {
-		const requiredClasses = classGroup.split(/\s+/).filter(Boolean);
-		if (
-			requiredClasses.length &&
-			node.classList &&
-			requiredClasses.every(className => node.classList.contains(className))
-		) {
+		if (cardMatchesClassGroup(node, classGroup)) {
 			pendingObservedTextElements.add(node);
 		}
 		if (typeof node.getElementsByClassName !== "function") continue;
 		const found = node.getElementsByClassName(classGroup);
 		for (const el of found) pendingObservedTextElements.add(el);
 	}
+	// New <a> tags are often inserted into a card that already exists.
+	// Walk ancestors so those cards get the same restyle pass as a refresh.
+	let ancestor = node.parentElement;
+	while (ancestor && ancestor !== document.documentElement && ancestor !== document.body) {
+		for (const classGroup of classesForSearch) {
+			if (cardMatchesClassGroup(ancestor, classGroup)) {
+				pendingObservedTextElements.add(ancestor);
+			}
+		}
+		ancestor = ancestor.parentElement;
+	}
+}
+
+function collectAnchorsFromSubtree(node) {
+	const anchors = [];
+	if (node instanceof HTMLAnchorElement) anchors.push(node);
+	if (typeof node.getElementsByTagName === "function") {
+		const list = node.getElementsByTagName("a");
+		for (let i = 0; i < list.length; i++) anchors.push(list[i]);
+	}
+	return anchors;
 }
 
 function collectObservedNode(node, collectCardTargets) {
-	if (node instanceof HTMLAnchorElement) {
-		const norm = collectLink(node);
+	for (const link of collectAnchorsFromSubtree(node)) {
+		const norm = collectLink(link);
 		if (norm) pendingObservedHrefs.add(norm);
-	}
-	if (typeof node.querySelectorAll === "function") {
-		const links = node.querySelectorAll("a[href]");
-		for (const link of links) {
-			const norm = collectLink(link);
-			if (norm) pendingObservedHrefs.add(norm);
-		}
 	}
 	if (collectCardTargets) queueObservedTextElements(node);
 }
@@ -1402,31 +1426,59 @@ function restyleObservedCards(cards, statusLookup) {
 	}
 }
 
+function flushPendingMutationCards() {
+	if (pendingMutationCards.size === 0) return;
+	const cards = [];
+	for (const card of pendingMutationCards) {
+		if (card.isConnected) cards.push(card);
+	}
+	pendingMutationCards = new Set();
+	restyleObservedCards(cards, buildBookmarkStatusLookup(positiveStatusesFromLinkMap()));
+}
+
+function harvestHrefsFromObservedCards(cards, hrefSet) {
+	for (const card of cards) {
+		if (!card?.isConnected) continue;
+		pendingMutationCards.add(card);
+		for (const link of collectAnchorsForCard(card)) {
+			const norm = collectLink(link);
+			if (norm) hrefSet.add(norm);
+		}
+	}
+}
+
 function processObservedHrefs() {
-	const hrefs = Array.from(pendingObservedHrefs);
-	pendingObservedHrefs = new Set();
 	const observedCards = Array.from(pendingObservedTextElements);
 	pendingObservedTextElements = new Set();
+	const hrefSet = pendingObservedHrefs;
+	pendingObservedHrefs = new Set();
 	mutationDebounceTimer = null;
+
+	harvestHrefsFromObservedCards(observedCards, hrefSet);
+	const hrefs = Array.from(hrefSet);
 
 	const statusLookup = buildBookmarkStatusLookup(positiveStatusesFromLinkMap());
 	const matchingTextRules = getMatchingTextRules();
 	const hrefsToRequest = [];
+	let waitingOnLookup = false;
 	for (const norm of hrefs) {
 		if (linkStatusMap.has(norm)) {
 			applyCachedLinkStatus(norm, statusLookup, matchingTextRules);
+			continue;
 		}
-		if (
-			!processedHrefs.has(norm) &&
-			!softMissHrefs.has(norm) &&
-			!pendingStatusHrefs.has(norm)
-		) {
-			hrefsToRequest.push(norm);
-		}
+		waitingOnLookup = true;
+		if (pendingStatusHrefs.has(norm)) continue;
+		// First paint may have marked these as misses before the card existed.
+		// Mutation-discovered hrefs get one more lookup.
+		softMissHrefs.delete(norm);
+		hrefsToRequest.push(norm);
 	}
 
 	restyleObservedCards(observedCards, statusLookup);
-	requestBookmarkStatuses(hrefsToRequest);
+	if (!waitingOnLookup) {
+		pendingMutationCards = new Set();
+	}
+	requestBookmarkStatuses(hrefsToRequest, { force: true });
 	scheduleDuplicateWarningPass();
 }
 
