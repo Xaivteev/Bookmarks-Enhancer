@@ -39,6 +39,7 @@ let styleRuleById = new Map();
 let enableDuplicateWarning = false;
 let linkLookupBySite = new Map();
 let titleEntriesBySite = new Map();
+let titleTokenIndexBySite = new Map();
 let titleIndexReadyBySite = new Set();
 let siteHostIndex = new Map();
 const urlNormalizationCache = createUrlNormalizationCache();
@@ -98,11 +99,13 @@ function invalidateTitleIndexForHost(host) {
 	if (!host) return;
 	titleIndexReadyBySite.delete(host);
 	titleEntriesBySite.delete(host);
+	titleTokenIndexBySite.delete(host);
 }
 
 function clearTitleIndexes() {
 	titleIndexReadyBySite = new Set();
 	titleEntriesBySite = new Map();
+	titleTokenIndexBySite = new Map();
 }
 
 function ensureTitleIndexForHost(siteConfig) {
@@ -115,12 +118,14 @@ function ensureTitleIndexForHost(siteConfig) {
 function rebuildTitleIndexForHost(siteConfig) {
 	if (!siteConfig?.site) return;
 	const entries = [];
+	const tokenIndex = new Map();
 	for (const link of siteConfig.links || []) {
 		if (!link?.url) continue;
 		const matchKey = hrefMatchKey(link.url);
 		if (!matchKey) continue;
 		const normalized = normalizeDuplicateTitle(link.title);
 		if (!normalized || isBoilerplateDuplicateLinkTitle(normalized)) continue;
+		const entryIndex = entries.length;
 		entries.push({
 			url: link.url,
 			title: typeof link.title === "string" ? link.title : "",
@@ -128,9 +133,54 @@ function rebuildTitleIndexForHost(siteConfig) {
 			matchKey,
 			normalized
 		});
+		for (const token of duplicateTitleIndexTokens(normalized)) {
+			const bucket = tokenIndex.get(token);
+			if (bucket) bucket.push(entryIndex);
+			else tokenIndex.set(token, [entryIndex]);
+		}
 	}
 	titleEntriesBySite.set(siteConfig.site, entries);
+	titleTokenIndexBySite.set(siteConfig.site, tokenIndex);
 	titleIndexReadyBySite.add(siteConfig.site);
+}
+
+function collectDuplicateTitleCandidates(siteKey, queryNormalized) {
+	const entries = titleEntriesBySite.get(siteKey) || [];
+	if (entries.length === 0) return entries;
+	const tokenIndex = titleTokenIndexBySite.get(siteKey);
+	if (!tokenIndex || tokenIndex.size === 0) return entries;
+
+	const variants = [queryNormalized];
+	const queryStripped = stripDuplicateTitleSiteSuffix(queryNormalized);
+	if (queryStripped && queryStripped !== queryNormalized) variants.push(queryStripped);
+
+	let hasContentTokens = false;
+	const candidateIndexes = new Set();
+	for (const variant of variants) {
+		const tokens = duplicateTitleTokens(variant);
+		if (tokens.length === 0) continue;
+		hasContentTokens = true;
+		const need = duplicateTitleMinSharedTokens(tokens.length);
+		const counts = new Map();
+		for (const token of tokens) {
+			const posting = tokenIndex.get(token);
+			if (!posting) continue;
+			for (const idx of posting) {
+				counts.set(idx, (counts.get(idx) || 0) + 1);
+			}
+		}
+		for (const [idx, shared] of counts) {
+			if (shared >= need) candidateIndexes.add(idx);
+		}
+	}
+	if (!hasContentTokens) return entries;
+
+	const candidates = [];
+	for (const idx of candidateIndexes) {
+		const entry = entries[idx];
+		if (entry) candidates.push(entry);
+	}
+	return candidates;
 }
 
 function rebuildLinkLookup() {
@@ -919,7 +969,7 @@ function matchDuplicatePageTitle(url, title) {
 	const query = normalizeDuplicateTitle(title);
 	if (!query) return { ok: true, matches: [] };
 	const pageKey = hrefMatchKey(url);
-	const entries = titleEntriesBySite.get(siteConfig.site) || [];
+	const entries = collectDuplicateTitleCandidates(siteConfig.site, query);
 	const scored = [];
 	for (const entry of entries) {
 		if (entry.matchKey === pageKey) continue;

@@ -811,7 +811,7 @@ function hrefMatchKey(href, rules, cache) {
 }
 
 const DUPLICATE_WARNING_MAX_MATCHES = 3;
-const DUPLICATE_TITLE_FUZZY_MIN_SCORE = 0.55;
+const DUPLICATE_TITLE_FUZZY_MIN_SCORE = 0.7;
 const DUPLICATE_TITLE_STOPWORDS = new Set([
 	"a", "an", "and", "at", "by", "for", "from", "in", "into", "is", "it", "its",
 	"of", "on", "or", "the", "to", "with"
@@ -872,6 +872,24 @@ function duplicateTitleTokens(normalized) {
 		tokens.push(raw);
 	}
 	return tokens;
+}
+
+function duplicateTitleIndexTokens(normalized) {
+	const tokens = duplicateTitleTokens(normalized);
+	const stripped = stripDuplicateTitleSiteSuffix(normalized);
+	if (!stripped || stripped === normalized) return tokens;
+	const seen = new Set(tokens);
+	for (const token of duplicateTitleTokens(stripped)) {
+		if (seen.has(token)) continue;
+		seen.add(token);
+		tokens.push(token);
+	}
+	return tokens;
+}
+
+function duplicateTitleMinSharedTokens(queryTokenCount, threshold = DUPLICATE_TITLE_FUZZY_MIN_SCORE) {
+	if (queryTokenCount <= 0) return 0;
+	return Math.max(1, Math.ceil(threshold * queryTokenCount));
 }
 
 function duplicateTitleTokenJaccard(aTokens, bTokens) {
