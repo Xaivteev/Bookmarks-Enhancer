@@ -10,6 +10,8 @@ const STORAGE_KEYS = {
 	// deserialize tens of thousands of URLs on settings changes.
 	// Legacy blob of all hosts' links. Migrated to per-host `siteLinks:` keys.
 	siteLinks: "siteLinksByHost",
+	// Compact per-host href→style index for restore styling. Titles stay in
+	// `siteLinks:` and are loaded only for duplicates / options / search.
 	styleRules: "styleRules",
 	enableTopBorder: "enableTopBorder",
 	enableDeepSearch: "enableDeepSearch",
@@ -39,6 +41,8 @@ const LEGACY_STORAGE_KEYS = {
 const SITE_LINKS_KEY_PREFIX = "siteLinks:";
 // Per-host look-toggle / context-menu ops. Compacted into `siteLinks:` later.
 const SITE_LINKS_DELTA_KEY_PREFIX = "siteLinksDelta:";
+// Per-host [url, styleId] pairs. Restore lookups must not read `siteLinks:`.
+const SITE_STYLES_KEY_PREFIX = "siteStyles:";
 
 function onError(error) {
 	console.error(`Error: ${error}`);
@@ -84,6 +88,21 @@ function hostFromSiteLinksDeltaStorageKey(key) {
 	return isSiteLinksDeltaStorageKey(key)
 		? key.slice(SITE_LINKS_DELTA_KEY_PREFIX.length)
 		: "";
+}
+
+function siteStylesStorageKey(host) {
+	if (typeof host !== "string" || !host) return "";
+	return SITE_STYLES_KEY_PREFIX + host;
+}
+
+function isSiteStylesStorageKey(key) {
+	return typeof key === "string" &&
+		key.startsWith(SITE_STYLES_KEY_PREFIX) &&
+		key.length > SITE_STYLES_KEY_PREFIX.length;
+}
+
+function hostFromSiteStylesStorageKey(key) {
+	return isSiteStylesStorageKey(key) ? key.slice(SITE_STYLES_KEY_PREFIX.length) : "";
 }
 
 const CONFIG_REFRESH_STORAGE_KEYS = [

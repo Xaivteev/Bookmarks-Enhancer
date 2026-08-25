@@ -98,7 +98,7 @@ browser.runtime.onMessage.addListener((message, sender, sendResponse) => {
 		const title = message.title || (sender && sender.tab && sender.tab.title) || "";
 		const tabId = sender && sender.tab ? sender.tab.id : null;
 		ensureSettingsReady()
-			.then(() => ensureHostLinksReadyForUrl(url))
+			.then(() => ensureHostRecordsReadyForUrl(url))
 			.then(() => toggleLookShortcut(url, title, styleId, tabId))
 			.then(sendResponse)
 			.catch(error => {
@@ -181,7 +181,7 @@ browser.runtime.onMessage.addListener((message, sender, sendResponse) => {
 		ensureSettingsReady()
 			.then(() => message.allSites
 				? ensureAllHostLinksReady()
-				: ensureHostLinksReady(message.host)
+				: ensureHostRecordsReady(message.host)
 			)
 			.then(() => sendResponse(searchActionPopupLinks(message)))
 			.catch(error => {
@@ -203,7 +203,13 @@ browser.runtime.onMessage.addListener((message, sender, sendResponse) => {
 		const title = message.title || (sender && sender.tab && sender.tab.title) || "";
 		ensureSettingsReady()
 			.then(() => ensureHostLinksReadyForUrl(url))
-			.then(() => sendResponse(matchDuplicatePageTitle(url, title)))
+			.then(() => {
+				if (!enableDuplicateWarning || lookupLinkStyle(url) || isGenericDuplicatePageTitle(title)) {
+					return matchDuplicatePageTitle(url, title);
+				}
+				return ensureHostRecordsReadyForUrl(url).then(() => matchDuplicatePageTitle(url, title));
+			})
+			.then(sendResponse)
 			.catch(error => {
 				onError(error);
 				sendResponse({
@@ -723,7 +729,8 @@ function storageChangeHasSiteData(changes) {
 		key === STORAGE_KEYS.sites ||
 		key === STORAGE_KEYS.siteLinks ||
 		isSiteLinksStorageKey(key) ||
-		isSiteLinksDeltaStorageKey(key)
+		isSiteLinksDeltaStorageKey(key) ||
+		isSiteStylesStorageKey(key)
 	);
 }
 
@@ -742,7 +749,7 @@ browser.storage.onChanged.addListener((changes, areaName) => {
 				: sites.map(siteConfigToStorageMeta);
 			const nextLinks = {};
 			for (const siteConfig of sites) {
-				if (siteConfig?.site && hostsLoaded.has(siteConfig.site)) {
+				if (siteConfig?.site && hostsRecordsLoaded.has(siteConfig.site)) {
 					nextLinks[siteConfig.site] = siteConfig.links || [];
 				}
 			}
@@ -770,6 +777,7 @@ browser.storage.onChanged.addListener((changes, areaName) => {
 					blobChangedHosts.add(host);
 					continue;
 				}
+				if (hostFromSiteStylesStorageKey(key)) continue;
 				const deltaHost = hostFromSiteLinksDeltaStorageKey(key);
 				if (!deltaHost) continue;
 				changedHosts.add(deltaHost);
@@ -795,14 +803,19 @@ browser.storage.onChanged.addListener((changes, areaName) => {
 				storageResult,
 				{ preserveLinks: true }
 			);
-			const nextLoaded = new Set();
+			const nextRecords = new Set();
+			const nextStyles = new Set();
 			for (const siteConfig of loadedSites) {
 				if (!siteConfig?.site) continue;
-				if (hostsLoaded.has(siteConfig.site) || changedHosts.has(siteConfig.site)) {
-					nextLoaded.add(siteConfig.site);
+				if (hostsRecordsLoaded.has(siteConfig.site) || changedHosts.has(siteConfig.site)) {
+					nextRecords.add(siteConfig.site);
+					nextStyles.add(siteConfig.site);
+				} else if (hostsStyleLoaded.has(siteConfig.site)) {
+					nextStyles.add(siteConfig.site);
 				}
 			}
-			hostsLoaded = nextLoaded;
+			hostsRecordsLoaded = nextRecords;
+			hostsStyleLoaded = nextStyles;
 			applyLoadedSites(loadedSites, styleRules);
 			if (changes[STORAGE_KEYS.sites]) {
 				shouldRefreshTabs = true;

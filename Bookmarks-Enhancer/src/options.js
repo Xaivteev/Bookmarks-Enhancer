@@ -2697,14 +2697,16 @@ function isLinksOnlyStorageChange(changes) {
     const hasLinkKey = keys.some(key =>
         key === STORAGE_KEYS.siteLinks ||
         isSiteLinksStorageKey(key) ||
-        isSiteLinksDeltaStorageKey(key)
+        isSiteLinksDeltaStorageKey(key) ||
+        isSiteStylesStorageKey(key)
     );
     if (!hasLinkKey) return false;
     return keys.every(key =>
         key === STORAGE_KEYS.siteLinks ||
         key === STORAGE_KEYS.sites ||
         isSiteLinksStorageKey(key) ||
-        isSiteLinksDeltaStorageKey(key)
+        isSiteLinksDeltaStorageKey(key) ||
+        isSiteStylesStorageKey(key)
     );
 }
 
@@ -3124,6 +3126,7 @@ function initSaveLoadEvents() {
             key === STORAGE_KEYS.siteLinks ||
             isSiteLinksStorageKey(key) ||
             isSiteLinksDeltaStorageKey(key) ||
+            isSiteStylesStorageKey(key) ||
             Object.values(LEGACY_STORAGE_KEYS).includes(key) ||
             key === STORAGE_KEYS.enableToastNotifications
         );

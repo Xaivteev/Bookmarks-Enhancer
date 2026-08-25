@@ -254,6 +254,86 @@ function applySiteLinksDeltaOps(links, ops) {
 }
 
 
+function compactStylePairsFromLinks(links) {
+	const pairs = [];
+	const seen = new Set();
+	for (const link of links || []) {
+		if (!link?.url) continue;
+		const style = typeof link.style === "string" ? link.style.trim() : "";
+		if (!style) continue;
+		const key = hrefMatchKey(link.url);
+		if (!key || seen.has(key)) continue;
+		seen.add(key);
+		pairs.push([link.url, style]);
+	}
+	return pairs;
+}
+
+
+function normalizeStyleIndexPairs(value) {
+	if (!Array.isArray(value)) return null;
+	const pairs = [];
+	const seen = new Set();
+	for (const item of value) {
+		let url = "";
+		let style = "";
+		if (Array.isArray(item) && item.length >= 2) {
+			url = typeof item[0] === "string" ? item[0].trim() : "";
+			style = typeof item[1] === "string" ? item[1].trim() : "";
+		} else if (item && typeof item === "object") {
+			url = typeof item.url === "string" ? item.url.trim()
+				: (typeof item.u === "string" ? item.u.trim() : "");
+			style = typeof item.style === "string" ? item.style.trim()
+				: (typeof item.s === "string" ? item.s.trim() : "");
+		}
+		if (!url || !style || !isValidHttpUrl(url)) continue;
+		const key = hrefMatchKey(url);
+		if (!key || seen.has(key)) continue;
+		seen.add(key);
+		pairs.push([url, style]);
+	}
+	return pairs;
+}
+
+
+function applyStylePairsDeltaOps(pairs, ops) {
+	const next = Array.isArray(pairs) ? pairs.slice() : [];
+	for (const op of ops || []) {
+		const normalized = normalizeSiteLinksDeltaOp(op);
+		if (!normalized) continue;
+		const pageKey = hrefMatchKey(normalized.url);
+		if (!pageKey) continue;
+		const existingIndex = next.findIndex(pair =>
+			pair?.[0] && hrefMatchKey(pair[0]) === pageKey
+		);
+		if (normalized.op === "remove") {
+			if (existingIndex >= 0) next.splice(existingIndex, 1);
+			continue;
+		}
+		const style = typeof normalized.style === "string" ? normalized.style.trim() : "";
+		if (!style) continue;
+		const pair = [normalized.url, style];
+		if (existingIndex >= 0) next[existingIndex] = pair;
+		else next.push(pair);
+	}
+	return next;
+}
+
+
+function styleLookupMapFromPairs(pairs) {
+	const map = new Map();
+	for (const pair of pairs || []) {
+		const url = pair?.[0];
+		const style = pair?.[1];
+		if (!url || !style) continue;
+		const key = hrefMatchKey(url);
+		if (!key || map.has(key)) continue;
+		map.set(key, style);
+	}
+	return map;
+}
+
+
 function appendSiteLinksDeltaOp(delta, op) {
 	const current = normalizeSiteLinksDelta(delta);
 	const normalized = normalizeSiteLinksDeltaOp(op);
@@ -287,7 +367,8 @@ function siteLinkHostsFromStorageResult(result) {
 	if (!result || typeof result !== "object") return hosts;
 	for (const key of Object.keys(result)) {
 		const host = hostFromSiteLinksStorageKey(key) ||
-			hostFromSiteLinksDeltaStorageKey(key);
+			hostFromSiteLinksDeltaStorageKey(key) ||
+			hostFromSiteStylesStorageKey(key);
 		if (host) hosts.add(host);
 	}
 	const blob = result[STORAGE_KEYS.siteLinks];
@@ -381,6 +462,10 @@ function buildSitesStoragePlan(sites, { previousHosts = [] } = {}) {
 		writes[siteLinksStorageKey(host)] = Array.isArray(siteConfig.links)
 			? siteConfig.links
 			: [];
+		const stylesKey = siteStylesStorageKey(host);
+		if (stylesKey) {
+			writes[stylesKey] = compactStylePairsFromLinks(siteConfig.links);
+		}
 		const deltaKey = siteLinksDeltaStorageKey(host);
 		if (deltaKey) removeKeys.push(deltaKey);
 	}
@@ -389,6 +474,7 @@ function buildSitesStoragePlan(sites, { previousHosts = [] } = {}) {
 		if (!host || keepHosts.has(host)) continue;
 		removeKeys.push(siteLinksStorageKey(host));
 		removeKeys.push(siteLinksDeltaStorageKey(host));
+		removeKeys.push(siteStylesStorageKey(host));
 	}
 
 	return { writes, removeKeys };
@@ -404,6 +490,21 @@ function buildHostLinksStorageWrite(host, links) {
 	const key = siteLinksStorageKey(host);
 	if (!key) return {};
 	return { [key]: Array.isArray(links) ? links : [] };
+}
+
+
+function buildHostStylesStorageWrite(host, links) {
+	const key = siteStylesStorageKey(host);
+	if (!key) return {};
+	return { [key]: compactStylePairsFromLinks(links) };
+}
+
+
+function buildHostLinkIndexStorageWrite(host, links) {
+	return {
+		...buildHostLinksStorageWrite(host, links),
+		...buildHostStylesStorageWrite(host, links)
+	};
 }
 
 
