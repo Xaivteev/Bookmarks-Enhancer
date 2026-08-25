@@ -733,7 +733,10 @@ function sendUniqueHrefs(options = {}) {
 // Re-asks even for hrefs previously recorded as soft misses.
 function performRequeryRefresh() {
 	if (!searchSite) return;
-	if (initScanHref === location.href) return;
+	// Skip a duplicate scan only when this URL already got positive looks.
+	// A first pass that ran before the style index was ready leaves only
+	// soft misses; tabs.onUpdated must be allowed to ask again.
+	if (initScanHref === location.href && processedHrefs.size > 0) return;
 	initScanHref = location.href;
 
 	buildLinkMap();

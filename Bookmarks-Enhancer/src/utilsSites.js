@@ -331,9 +331,12 @@ function styleLookupMapFromPairs(pairs) {
 		const url = pair?.[0];
 		const style = pair?.[1];
 		if (!url || !style) continue;
-		const key = styleIndexPairKey(url);
-		if (!key || map.has(key)) continue;
-		map.set(key, style);
+		const matchKey = styleIndexPairKey(url);
+		if (matchKey && !map.has(matchKey)) map.set(matchKey, style);
+		if (isValidHttpUrl(url)) {
+			const normalized = normalizeHrefForSearch(url);
+			if (normalized && !map.has(normalized)) map.set(normalized, style);
+		}
 	}
 	return map;
 }

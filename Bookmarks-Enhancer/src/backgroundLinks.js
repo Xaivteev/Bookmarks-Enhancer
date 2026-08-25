@@ -86,15 +86,23 @@ function rebuildSiteHostIndex() {
 	siteHostIndex = buildSiteHostIndex(sites);
 }
 
+function rememberStyleLookup(map, url, style) {
+	if (!style || !url) return;
+	const matchKey = hrefMatchKey(url) || (isValidHttpUrl(url) ? "" : url);
+	if (matchKey && !map.has(matchKey)) map.set(matchKey, style);
+	if (isValidHttpUrl(url)) {
+		const normalized = normalizeHrefForSearch(url);
+		if (normalized && !map.has(normalized)) map.set(normalized, style);
+	}
+}
+
 function rebuildStyleLookupForHost(siteConfig) {
 	if (!siteConfig?.site) return;
 	const map = new Map();
 	for (const link of siteConfig.links || []) {
 		if (!link?.url) continue;
-		const key = hrefMatchKey(link.url);
-		if (!key || map.has(key)) continue;
 		const style = lookupEntryStyle(link);
-		if (style) map.set(key, style);
+		if (style) rememberStyleLookup(map, link.url, style);
 	}
 	linkLookupBySite.set(siteConfig.site, map);
 	hostStylePairsBySite.set(siteConfig.site, compactStylePairsFromLinks(siteConfig.links));
@@ -359,7 +367,9 @@ function loadHostStylesBatch(siteKeys) {
 	const waits = [];
 	const needed = [];
 	for (const siteKey of unique) {
-		if (hostsStyleLoaded.has(siteKey)) continue;
+		if (hostsStyleLoaded.has(siteKey) && (hostLookupHasEntries(siteKey) || hostsRecordsLoaded.has(siteKey))) {
+			continue;
+		}
 		const recordsPending = hostRecordLoadPromises.get(siteKey);
 		if (recordsPending) {
 			waits.push(recordsPending);
@@ -385,7 +395,7 @@ function loadHostStylesBatch(siteKeys) {
 			rememberSiteLinksDeltasFromStorage(result);
 			const missing = [];
 			for (const siteKey of needed) {
-				if (hostsRecordsLoaded.has(siteKey) || hostsStyleLoaded.has(siteKey)) {
+				if (hostsRecordsLoaded.has(siteKey) || (hostsStyleLoaded.has(siteKey) && hostLookupHasEntries(siteKey))) {
 					hostStyleLoadPromises.delete(siteKey);
 					continue;
 				}
@@ -395,11 +405,17 @@ function loadHostStylesBatch(siteKeys) {
 				const delta = siteLinksDeltasByHost.get(siteKey);
 				const rawPairs = result[siteStylesStorageKey(siteKey)];
 				const pairs = normalizeStyleIndexPairs(rawPairs);
-				if (!pairs || (Array.isArray(rawPairs) && rawPairs.length > 0 && pairs.length === 0)) {
+				// Missing or empty compact index: load full records instead of
+				// treating [] as "this host has no saved looks".
+				if (!pairs || pairs.length === 0) {
 					missing.push(siteKey);
 					continue;
 				}
 				applyLoadedHostStyles(siteKey, pairs, delta.ops);
+				if ((linkLookupBySite.get(siteKey)?.size || 0) === 0) {
+					missing.push(siteKey);
+					continue;
+				}
 				hostStyleLoadPromises.delete(siteKey);
 			}
 			if (missing.length === 0) return;
@@ -421,11 +437,21 @@ function loadHostStylesBatch(siteKeys) {
 	return Promise.all([...waits, batchPromise]);
 }
 
+function hostLookupHasEntries(siteKey) {
+	return (linkLookupBySite.get(siteKey)?.size || 0) > 0;
+}
+
 function ensureHostStylesReady(host) {
 	const siteConfig = resolveSiteConfig(host);
 	if (!siteConfig) return Promise.resolve();
-	if (hostsStyleLoaded.has(siteConfig.site)) return Promise.resolve();
-	return loadHostStylesBatch([siteConfig.site]);
+	const siteKey = siteConfig.site;
+	if (hostsStyleLoaded.has(siteKey) && (hostLookupHasEntries(siteKey) || hostsRecordsLoaded.has(siteKey))) {
+		return Promise.resolve();
+	}
+	return loadHostStylesBatch([siteKey]).then(() => {
+		if (hostLookupHasEntries(siteKey) || hostsRecordsLoaded.has(siteKey)) return;
+		return loadHostRecordsBatch([siteKey]);
+	});
 }
 
 function ensureHostRecordsReady(host) {
@@ -483,7 +509,14 @@ function ensureHostLinksReadyForHrefs(hrefs) {
 			// Skip invalid hrefs; searchhrefs will ignore them too.
 		}
 	}
-	return loadHostStylesBatch(Array.from(siteKeys));
+	const keys = Array.from(siteKeys);
+	return loadHostStylesBatch(keys).then(() => {
+		const needRecords = keys.filter(siteKey =>
+			!hostLookupHasEntries(siteKey) && !hostsRecordsLoaded.has(siteKey)
+		);
+		if (needRecords.length === 0) return;
+		return loadHostRecordsBatch(needRecords);
+	});
 }
 
 function ensureAllHostLinksReady() {
@@ -1075,10 +1108,19 @@ function invalidateLinkCaches() {
 }
 
 function lookupLinkStyleForSite(normalizedHref, siteConfig) {
-	if (!siteConfig) return null;
-	return lookupEntryStyle(
-		linkLookupBySite.get(siteConfig.site)?.get(hrefMatchKeyFromNormalized(normalizedHref))
-	);
+	if (!siteConfig || !normalizedHref) return null;
+	const map = linkLookupBySite.get(siteConfig.site);
+	if (!map || map.size === 0) return null;
+	const matchKey = hrefMatchKeyFromNormalized(normalizedHref);
+	const fromMatchKey = matchKey ? map.get(matchKey) : undefined;
+	if (fromMatchKey != null) return lookupEntryStyle(fromMatchKey);
+	const fromNormalized = map.get(normalizedHref);
+	if (fromNormalized != null) return lookupEntryStyle(fromNormalized);
+	const rebuilt = hrefMatchKey(normalizedHref);
+	if (rebuilt && rebuilt !== matchKey) {
+		return lookupEntryStyle(map.get(rebuilt));
+	}
+	return null;
 }
 
 function lookupLinkStyle(href) {
@@ -1120,9 +1162,9 @@ function searchhrefs(hrefs) {
 			lastSite = findSiteConfigByNormalizedHost(siteHostIndex, host);
 			haveLastHost = true;
 		}
-		// Keep the content-script's original key so card styling can find
-		// the same hrefs it put in linkMap, even if re-normalization differs.
-		statuses[href] = lookupLinkStyleForSite(normalized, lastSite) || "none";
+		const style = lookupLinkStyleForSite(normalized, lastSite)
+			|| lookupLinkStyleForSite(href, lastSite);
+		statuses[href] = style || "none";
 	}
 	return Promise.resolve({ statuses });
 }
