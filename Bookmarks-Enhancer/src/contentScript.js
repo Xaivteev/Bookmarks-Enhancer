@@ -273,6 +273,7 @@ let pendingAddedNodes = [];
 let pendingAddedOffset = 0;
 let mutationFrameId = 0;
 let mutationDebounceTimer = null;
+const linkNormalizedKey = new WeakMap();
 let originalBodyBorderTop = null;
 let visibilityListenersAttached = false;
 let pageWasHidden = typeof document !== "undefined" && document.visibilityState === "hidden";
@@ -687,8 +688,20 @@ function collectLink(link) {
 
 	if (!/^https?:/.test(normalized)) return null;
 
+	const previous = linkNormalizedKey.get(link);
+	if (previous && previous !== normalized) {
+		const previousList = linkMap.get(previous);
+		if (previousList) {
+			const index = previousList.indexOf(link);
+			if (index >= 0) previousList.splice(index, 1);
+			if (previousList.length === 0) linkMap.delete(previous);
+		}
+	}
+	linkNormalizedKey.set(link, normalized);
+
 	if (!linkMap.has(normalized)) linkMap.set(normalized, []);
-	linkMap.get(normalized).push(link);
+	const list = linkMap.get(normalized);
+	if (!list.includes(link)) list.push(link);
 	return normalized;
 }
 
@@ -1070,7 +1083,6 @@ function applyCardStylesFromConfiguredClasses(statusLookup) {
 	if (!classesForSearch.length || !statusLookup || statusLookup.size === 0) return;
 	for (const classGroup of classesForSearch) {
 		for (const element of document.getElementsByClassName(classGroup)) {
-			if (hasStatusClass(element)) continue;
 			const matchedClassName = findStatusClassFromLinks(element, statusLookup);
 			if (matchedClassName) applyStatusClass(element, matchedClassName);
 		}
@@ -1306,7 +1318,7 @@ function queueObservedTextElements(node) {
 	}
 }
 
-function collectObservedNode(node, collectTextTargets) {
+function collectObservedNode(node, collectCardTargets) {
 	if (node instanceof HTMLAnchorElement) {
 		const norm = collectLink(node);
 		if (norm) pendingObservedHrefs.add(norm);
@@ -1318,13 +1330,17 @@ function collectObservedNode(node, collectTextTargets) {
 			if (norm) pendingObservedHrefs.add(norm);
 		}
 	}
-	if (collectTextTargets) queueObservedTextElements(node);
+	if (collectCardTargets) queueObservedTextElements(node);
 }
 
 function startMutationObserver() {
 	if (observer) return;
 	observer = new MutationObserver(mutations => {
 		for (const record of mutations) {
+			if (record.type === "attributes") {
+				enqueueObservedAddedNode(record.target);
+				continue;
+			}
 			const nodes = record.addedNodes;
 			for (let i = 0; i < nodes.length; i++) {
 				enqueueObservedAddedNode(nodes[i]);
@@ -1334,7 +1350,9 @@ function startMutationObserver() {
 	});
 	observer.observe(document.documentElement || document.body, {
 		childList: true,
-		subtree: true
+		subtree: true,
+		attributes: true,
+		attributeFilter: ["href"]
 	});
 }
 
@@ -1345,8 +1363,7 @@ function scheduleObservedMutationFrame() {
 
 function processObservedMutationFrame() {
 	mutationFrameId = 0;
-	const collectTextTargets = classesForSearch.length > 0 &&
-		getMatchingTextRules().length > 0;
+	const collectCardTargets = classesForSearch.length > 0;
 	const started = performance.now();
 
 	while (pendingAddedOffset < pendingAddedNodes.length) {
@@ -1354,7 +1371,7 @@ function processObservedMutationFrame() {
 			scheduleObservedMutationFrame();
 			break;
 		}
-		collectObservedNode(pendingAddedNodes[pendingAddedOffset], collectTextTargets);
+		collectObservedNode(pendingAddedNodes[pendingAddedOffset], collectCardTargets);
 		pendingAddedOffset += 1;
 	}
 
@@ -1375,24 +1392,29 @@ function scheduleObservedHrefProcessing() {
 	mutationDebounceTimer = setTimeout(processObservedHrefs, mutationDebounceDelay);
 }
 
+function restyleObservedCards(cards, statusLookup) {
+	if (!cards || cards.length === 0) return;
+	const lookup = statusLookup || buildBookmarkStatusLookup(positiveStatusesFromLinkMap());
+	const matchingTextRules = getMatchingTextRules();
+	for (const card of cards) {
+		if (!card?.isConnected) continue;
+		restyleConfiguredCard(card, lookup, matchingTextRules);
+	}
+}
+
 function processObservedHrefs() {
 	const hrefs = Array.from(pendingObservedHrefs);
 	pendingObservedHrefs = new Set();
-	const textElements = Array.from(pendingObservedTextElements);
+	const observedCards = Array.from(pendingObservedTextElements);
 	pendingObservedTextElements = new Set();
 	mutationDebounceTimer = null;
 
-	if (textElements.length > 0) {
-		applyTextRulesTo(
-			textElements.filter(el => el.isConnected && !hasStatusClass(el)),
-			getMatchingTextRules()
-		);
-	}
-
+	const statusLookup = buildBookmarkStatusLookup(positiveStatusesFromLinkMap());
+	const matchingTextRules = getMatchingTextRules();
 	const hrefsToRequest = [];
 	for (const norm of hrefs) {
 		if (linkStatusMap.has(norm)) {
-			applyCachedLinkStatus(norm);
+			applyCachedLinkStatus(norm, statusLookup, matchingTextRules);
 		}
 		if (
 			!processedHrefs.has(norm) &&
@@ -1403,23 +1425,24 @@ function processObservedHrefs() {
 		}
 	}
 
+	restyleObservedCards(observedCards, statusLookup);
 	requestBookmarkStatuses(hrefsToRequest);
 	scheduleDuplicateWarningPass();
 }
 
-function applyCachedLinkStatus(norm) {
+function applyCachedLinkStatus(norm, statusLookup, matchingTextRules) {
 	const status = linkStatusMap.get(norm);
 	if (!status || status === "none") return;
 	const style = getStyleConfigById(status);
 	if (!style) return;
 
+	const lookup = statusLookup || buildBookmarkStatusLookup(positiveStatusesFromLinkMap());
+	const textRules = matchingTextRules === undefined ? getMatchingTextRules() : matchingTextRules;
 	const els = linksForHref(norm);
 	for (const el of els) {
-		if (!hasStatusClass(el)) applyStatusClass(el, style.className);
+		applyStatusClass(el, style.className);
 		for (const card of closestConfiguredCards(el)) {
-			if (card !== el && !hasStatusClass(card)) {
-				applyStatusClass(card, style.className);
-			}
+			restyleConfiguredCard(card, lookup, textRules);
 		}
 	}
 }

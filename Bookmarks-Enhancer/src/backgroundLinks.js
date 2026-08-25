@@ -86,13 +86,23 @@ function rebuildSiteHostIndex() {
 	siteHostIndex = buildSiteHostIndex(sites);
 }
 
-function rememberStyleLookup(map, url, style) {
-	if (!style || !url) return;
+function rememberStyleLookup(map, url, style, { overwrite = false } = {}) {
+	if (!map || !style || !url) return;
 	const matchKey = hrefMatchKey(url) || (isValidHttpUrl(url) ? "" : url);
-	if (matchKey && !map.has(matchKey)) map.set(matchKey, style);
+	if (matchKey && (overwrite || !map.has(matchKey))) map.set(matchKey, style);
 	if (isValidHttpUrl(url)) {
 		const normalized = normalizeHrefForSearch(url);
-		if (normalized && !map.has(normalized)) map.set(normalized, style);
+		if (normalized && (overwrite || !map.has(normalized))) map.set(normalized, style);
+	}
+}
+
+function forgetStyleLookup(map, url) {
+	if (!map || !url) return;
+	const matchKey = hrefMatchKey(url) || (isValidHttpUrl(url) ? "" : url);
+	if (matchKey) map.delete(matchKey);
+	if (isValidHttpUrl(url)) {
+		const normalized = normalizeHrefForSearch(url);
+		if (normalized) map.delete(normalized);
 	}
 }
 
@@ -224,9 +234,13 @@ function rebuildLinkLookup() {
 		if (hostsRecordsLoaded.has(siteConfig.site)) {
 			rebuildStyleLookupForHost(siteConfig);
 		} else if (hostsStyleLoaded.has(siteConfig.site)) {
+			const pendingOps = siteLinksDeltasByHost.get(siteConfig.site)?.ops;
 			rebuildStyleLookupFromPairs(
 				siteConfig.site,
-				hostStylePairsBySite.get(siteConfig.site)
+				applyStylePairsDeltaOps(
+					hostStylePairsBySite.get(siteConfig.site),
+					pendingOps
+				)
 			);
 		}
 	}
@@ -810,7 +824,11 @@ function collectActionPopupSiteState(url) {
 
 	const siteConfig = host ? matchingSiteConfig(host) : null;
 	const styleCount = siteConfig
-		? (linkLookupBySite.get(siteConfig.site)?.size || (siteConfig.links || []).length)
+		? (
+			hostsRecordsLoaded.has(siteConfig.site)
+				? (siteConfig.links || []).length
+				: (hostStylePairsBySite.get(siteConfig.site)?.length || 0)
+		)
 		: 0;
 	return {
 		restricted: false,
@@ -989,7 +1007,8 @@ function applySavedLinkToMemory(url, title, styleId, { toggleOff = false } = {})
 
 	if (toggleOff && existingStyle === styleId) {
 		if (existingIndex >= 0) siteConfig.links.splice(existingIndex, 1);
-		map.delete(pageKey);
+		forgetStyleLookup(map, existing?.url || url);
+		forgetStyleLookup(map, url);
 		invalidateTitleIndexForHost(siteConfig.site);
 		return {
 			ok: true,
@@ -1003,7 +1022,7 @@ function applySavedLinkToMemory(url, title, styleId, { toggleOff = false } = {})
 		existing.style = styleId;
 		if (savedTitle) existing.title = savedTitle;
 		siteConfig.linkFolders = addLinkFolderId(siteConfig.linkFolders, styleId);
-		map.set(pageKey, styleId);
+		rememberStyleLookup(map, existing.url || url, styleId, { overwrite: true });
 		invalidateTitleIndexForHost(siteConfig.site);
 		return {
 			ok: true,
@@ -1024,7 +1043,7 @@ function applySavedLinkToMemory(url, title, styleId, { toggleOff = false } = {})
 	};
 	siteConfig.links.push(saved);
 	siteConfig.linkFolders = addLinkFolderId(siteConfig.linkFolders, styleId);
-	map.set(pageKey, styleId);
+	rememberStyleLookup(map, saved.url, styleId, { overwrite: true });
 	invalidateTitleIndexForHost(siteConfig.site);
 	return {
 		ok: true,
