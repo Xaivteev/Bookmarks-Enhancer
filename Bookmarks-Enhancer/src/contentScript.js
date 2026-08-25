@@ -194,6 +194,7 @@ function stopPageProcessing() {
 		clearExtensionTopBorder();
 	}
 	clearDuplicateWarningPass();
+	clearDuplicateShowGrace();
 	hideDuplicateWarningToast();
 }
 
@@ -290,6 +291,10 @@ let warmupPendingRetries = 0;
 let initScanHref = "";
 let duplicateWarningTimer = null;
 let duplicateWarningPassId = 0;
+const DUPLICATE_SHOW_GRACE_MS = 1500;
+let duplicateShowGraceUntil = 0;
+let duplicateShowGraceTimer = null;
+let duplicatePassDeferred = false;
 let duplicateStyledHrefs = new Set();
 let lastDuplicatePageToastKey = "";
 let duplicateWarningToastHost = null;
@@ -680,6 +685,7 @@ function invalidateUrlDependentCaches() {
 	}
 
 	clearDuplicateWarningPass();
+	clearDuplicateShowGrace();
 	duplicateStyledHrefs = new Set();
 	lastDuplicatePageToastKey = "";
 	hideDuplicateWarningToast();
@@ -831,6 +837,7 @@ function requestBookmarkStatuses(hrefs, options = {}) {
 		})
 		.finally(() => {
 			if (showLoading) endStylingIndicator(countStyledAndHiddenElements());
+			scheduleDuplicateWarningPass();
 		});
 }
 
@@ -1076,7 +1083,7 @@ function performAuthoritativeRefresh(options = {}) {
 			}
 		}
 
-		applyBookmarkStyling(message);
+		applyBookmarkStyling(message, { forceDuplicate: true });
 
 		// Pick up any links added while the authoritative request was running.
 		sendUniqueHrefs({ rebuildMap: false });
@@ -1086,7 +1093,7 @@ function performAuthoritativeRefresh(options = {}) {
 	if (allHrefs.length === 0) {
 		stylingIndicatorUserDismissed = false;
 		showStylingResult(countStyledAndHiddenElements());
-		scheduleDuplicateWarningPass();
+		scheduleDuplicateWarningPass({ force: true });
 		if (showActionBusy) notifyRefreshBusyComplete(actionBusyGeneration);
 		return Promise.resolve();
 	}
@@ -1230,7 +1237,7 @@ function applyHrefStatusUpdates(statusUpdates) {
 	scheduleDuplicateWarningPass();
 }
 
-function applyBookmarkStyling(message) {
+function applyBookmarkStyling(message, options = {}) {
 	if (!searchSite) return;
 
 	const statuses = message && message.statuses && typeof message.statuses === "object"
@@ -1261,7 +1268,7 @@ function applyBookmarkStyling(message) {
 	applyCardStylesFromLinks(statusLookup);
 	applyDeepSearchToUnstyledCards(statusLookup);
 	applyTextFilters();
-	scheduleDuplicateWarningPass();
+	scheduleDuplicateWarningPass({ force: !!options.forceDuplicate });
 }
 
 function buildBookmarkStatusLookup(statuses) {
@@ -1625,6 +1632,7 @@ function onVisibilityChange() {
 	}
 	if (!pageWasHidden) return;
 	pageWasHidden = false;
+	noteTabBecameVisible();
 	scheduleVisibilityRescan();
 }
 
@@ -1636,6 +1644,7 @@ function onPageShow(event) {
 	// bfcache restore, or a background tab that becomes usable on show.
 	if (event.persisted || pageWasHidden) {
 		pageWasHidden = false;
+		noteTabBecameVisible();
 		scheduleVisibilityRescan();
 	}
 }
@@ -1646,6 +1655,10 @@ function onWindowFocus() {
 	if (document.visibilityState === "hidden") {
 		pageWasHidden = true;
 		return;
+	}
+	if (pageWasHidden) {
+		pageWasHidden = false;
+		noteTabBecameVisible();
 	}
 	scheduleVisibilityRescan();
 }
@@ -1701,13 +1714,53 @@ function clearDuplicateWarningPass() {
 	}
 }
 
-function scheduleDuplicateWarningPass() {
+function clearDuplicateShowGrace() {
+	duplicateShowGraceUntil = 0;
+	duplicatePassDeferred = false;
+	if (duplicateShowGraceTimer) {
+		clearTimeout(duplicateShowGraceTimer);
+		duplicateShowGraceTimer = null;
+	}
+}
+
+function armDuplicateGraceFlush() {
+	if (duplicateShowGraceTimer) return;
+	const delay = Math.max(0, duplicateShowGraceUntil - Date.now());
+	duplicateShowGraceTimer = setTimeout(() => {
+		duplicateShowGraceTimer = null;
+		duplicateShowGraceUntil = 0;
+		if (duplicatePassDeferred) scheduleDuplicateWarningPass();
+	}, delay);
+}
+
+function noteTabBecameVisible() {
+	const hadPendingPass = !!duplicateWarningTimer;
+	clearDuplicateWarningPass();
+	if (duplicateShowGraceTimer) {
+		clearTimeout(duplicateShowGraceTimer);
+		duplicateShowGraceTimer = null;
+	}
+	duplicateShowGraceUntil = Date.now() + DUPLICATE_SHOW_GRACE_MS;
+	if (hadPendingPass) duplicatePassDeferred = true;
+	if (duplicatePassDeferred) armDuplicateGraceFlush();
+}
+
+function scheduleDuplicateWarningPass(options = {}) {
 	if (!enableDuplicateWarning) {
+		duplicatePassDeferred = false;
 		clearDuplicateListingLooks();
 		hideDuplicateWarningToast();
 		return;
 	}
+	const force = !!options.force;
+	const graceActive = Date.now() < duplicateShowGraceUntil;
+	if (!force && (pendingStatusHrefs.size > 0 || graceActive)) {
+		duplicatePassDeferred = true;
+		if (graceActive) armDuplicateGraceFlush();
+		return;
+	}
 	if (duplicateWarningTimer) return;
+	duplicatePassDeferred = false;
 	duplicateWarningTimer = setTimeout(() => {
 		duplicateWarningTimer = null;
 		runDuplicateWarningPass();
