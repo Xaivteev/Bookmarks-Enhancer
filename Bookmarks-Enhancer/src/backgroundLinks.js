@@ -38,18 +38,14 @@ let styleRules = DEFAULT_STYLE_RULES.map(rule => ({ ...rule }));
 let styleRuleById = new Map();
 let enableDuplicateWarning = false;
 let linkLookupBySite = new Map();
-let hostStylePairsBySite = new Map();
-let titleExactBySite = new Map();
 let titleEntriesBySite = new Map();
 let titleTokenIndexBySite = new Map();
 let titleIndexReadyBySite = new Set();
 let siteHostIndex = new Map();
 const urlNormalizationCache = createUrlNormalizationCache();
 setHrefNormalizationContext(urlRules, urlNormalizationCache);
-let hostsStyleLoaded = new Set();
-let hostsRecordsLoaded = new Set();
-const hostStyleLoadPromises = new Map();
-const hostRecordLoadPromises = new Map();
+let hostsLoaded = new Set();
+const hostLoadPromises = new Map();
 
 let settingsReady = null;
 let settingsLoadGeneration = 0;
@@ -86,56 +82,28 @@ function rebuildSiteHostIndex() {
 	siteHostIndex = buildSiteHostIndex(sites);
 }
 
-function rememberStyleLookup(map, url, style, { overwrite = false } = {}) {
-	if (!map || !style || !url) return;
-	const matchKey = hrefMatchKey(url) || (isValidHttpUrl(url) ? "" : url);
-	if (matchKey && (overwrite || !map.has(matchKey))) map.set(matchKey, style);
-	if (isValidHttpUrl(url)) {
-		const normalized = normalizeHrefForSearch(url);
-		if (normalized && (overwrite || !map.has(normalized))) map.set(normalized, style);
-	}
-}
-
-function forgetStyleLookup(map, url) {
-	if (!map || !url) return;
-	const matchKey = hrefMatchKey(url) || (isValidHttpUrl(url) ? "" : url);
-	if (matchKey) map.delete(matchKey);
-	if (isValidHttpUrl(url)) {
-		const normalized = normalizeHrefForSearch(url);
-		if (normalized) map.delete(normalized);
-	}
-}
-
-function rebuildStyleLookupForHost(siteConfig) {
+function rebuildLinkLookupForHost(siteConfig) {
 	if (!siteConfig?.site) return;
 	const map = new Map();
 	for (const link of siteConfig.links || []) {
 		if (!link?.url) continue;
-		const style = lookupEntryStyle(link);
-		if (style) rememberStyleLookup(map, link.url, style);
+		const key = hrefMatchKey(link.url);
+		if (!key || map.has(key)) continue;
+		map.set(key, link);
 	}
 	linkLookupBySite.set(siteConfig.site, map);
-	hostStylePairsBySite.set(siteConfig.site, compactStylePairsFromLinks(siteConfig.links));
-}
-
-function rebuildStyleLookupFromPairs(host, pairs) {
-	if (!host) return;
-	const nextPairs = Array.isArray(pairs) ? pairs : [];
-	hostStylePairsBySite.set(host, nextPairs);
-	linkLookupBySite.set(host, styleLookupMapFromPairs(nextPairs));
+	invalidateTitleIndexForHost(siteConfig.site);
 }
 
 function invalidateTitleIndexForHost(host) {
 	if (!host) return;
 	titleIndexReadyBySite.delete(host);
-	titleExactBySite.delete(host);
 	titleEntriesBySite.delete(host);
 	titleTokenIndexBySite.delete(host);
 }
 
 function clearTitleIndexes() {
 	titleIndexReadyBySite = new Set();
-	titleExactBySite = new Map();
 	titleEntriesBySite = new Map();
 	titleTokenIndexBySite = new Map();
 }
@@ -143,14 +111,13 @@ function clearTitleIndexes() {
 function ensureTitleIndexForHost(siteConfig) {
 	if (!enableDuplicateWarning || !siteConfig?.site) return;
 	if (titleIndexReadyBySite.has(siteConfig.site)) return;
-	if (!hostsRecordsLoaded.has(siteConfig.site)) return;
+	if (!hostsLoaded.has(siteConfig.site)) return;
 	rebuildTitleIndexForHost(siteConfig);
 }
 
 function rebuildTitleIndexForHost(siteConfig) {
 	if (!siteConfig?.site) return;
 	const entries = [];
-	const exact = new Map();
 	const tokenIndex = new Map();
 	for (const link of siteConfig.links || []) {
 		if (!link?.url) continue;
@@ -159,25 +126,20 @@ function rebuildTitleIndexForHost(siteConfig) {
 		const normalized = normalizeDuplicateTitle(link.title);
 		if (!normalized || isBoilerplateDuplicateLinkTitle(normalized)) continue;
 		const entryIndex = entries.length;
-		const entry = {
+		entries.push({
 			url: link.url,
 			title: typeof link.title === "string" ? link.title : "",
 			style: typeof link.style === "string" ? link.style : "",
 			matchKey,
 			normalized
-		};
-		entries.push(entry);
-		const bucket = exact.get(normalized);
-		if (bucket) bucket.push(entry);
-		else exact.set(normalized, [entry]);
+		});
 		for (const token of duplicateTitleIndexTokens(normalized)) {
-			const posting = tokenIndex.get(token);
-			if (posting) posting.push(entryIndex);
+			const bucket = tokenIndex.get(token);
+			if (bucket) bucket.push(entryIndex);
 			else tokenIndex.set(token, [entryIndex]);
 		}
 	}
 	titleEntriesBySite.set(siteConfig.site, entries);
-	titleExactBySite.set(siteConfig.site, exact);
 	titleTokenIndexBySite.set(siteConfig.site, tokenIndex);
 	titleIndexReadyBySite.add(siteConfig.site);
 }
@@ -230,40 +192,16 @@ function rebuildLinkLookup() {
 	clearTitleIndexes();
 
 	for (const siteConfig of sites) {
-		if (!siteConfig?.site) continue;
-		if (hostsRecordsLoaded.has(siteConfig.site)) {
-			rebuildStyleLookupForHost(siteConfig);
-		} else if (hostsStyleLoaded.has(siteConfig.site)) {
-			const pendingOps = siteLinksDeltasByHost.get(siteConfig.site)?.ops;
-			rebuildStyleLookupFromPairs(
-				siteConfig.site,
-				applyStylePairsDeltaOps(
-					hostStylePairsBySite.get(siteConfig.site),
-					pendingOps
-				)
-			);
-		}
+		if (!siteConfig?.site || !hostsLoaded.has(siteConfig.site)) continue;
+		rebuildLinkLookupForHost(siteConfig);
 	}
 }
 
 function markHostsLoaded(siteList) {
-	hostsStyleLoaded = new Set();
-	hostsRecordsLoaded = new Set();
+	hostsLoaded = new Set();
 	for (const siteConfig of siteList || []) {
-		if (!siteConfig?.site) continue;
-		hostsStyleLoaded.add(siteConfig.site);
-		hostsRecordsLoaded.add(siteConfig.site);
+		if (siteConfig?.site) hostsLoaded.add(siteConfig.site);
 	}
-}
-
-function forgetHostIndexes(host) {
-	if (!host) return;
-	hostsStyleLoaded.delete(host);
-	hostsRecordsLoaded.delete(host);
-	linkLookupBySite.delete(host);
-	hostStylePairsBySite.delete(host);
-	invalidateTitleIndexForHost(host);
-	siteLinksDeltasByHost.delete(host);
 }
 
 function rememberSiteLinksDeltasFromStorage(result) {
@@ -285,54 +223,22 @@ function enqueueHostLinkPersist(host, task) {
 	return next;
 }
 
-function applyLoadedHostStyles(siteKey, pairs, ops) {
-	if (hostsRecordsLoaded.has(siteKey)) return;
-	const nextPairs = applyStylePairsDeltaOps(pairs, ops);
-	rebuildStyleLookupFromPairs(siteKey, nextPairs);
-	hostsStyleLoaded.add(siteKey);
-}
-
-function applyLoadedHostRecords(siteKey, links) {
+function applyLoadedHostLinks(siteKey, links) {
 	const siteConfig = resolveSiteConfig(siteKey);
 	if (siteConfig) {
 		siteConfig.links = Array.isArray(links) ? links : [];
-		rebuildStyleLookupForHost(siteConfig);
-	} else {
-		rebuildStyleLookupFromPairs(siteKey, compactStylePairsFromLinks(links));
+		rebuildLinkLookupForHost(siteConfig);
 	}
-	hostsStyleLoaded.add(siteKey);
-	hostsRecordsLoaded.add(siteKey);
-	invalidateTitleIndexForHost(siteKey);
+	hostsLoaded.add(siteKey);
 }
 
-function scheduleWriteHostStyles(host) {
-	if (!host) return;
-	enqueueHostLinkPersist(host, () => {
-		const stylesKey = siteStylesStorageKey(host);
-		if (!stylesKey) return Promise.resolve();
-		let pairs = null;
-		if (hostsRecordsLoaded.has(host)) {
-			const links = sites.find(site => site.site === host)?.links;
-			pairs = compactStylePairsFromLinks(links);
-		} else if (hostsStyleLoaded.has(host)) {
-			pairs = hostStylePairsBySite.get(host) || [];
-		}
-		if (!pairs) return Promise.resolve();
-		pendingIgnoredSiteWrites += 1;
-		return browser.storage.local.set({ [stylesKey]: pairs }).catch(error => {
-			pendingIgnoredSiteWrites = Math.max(0, pendingIgnoredSiteWrites - 1);
-			throw error;
-		});
-	}).catch(onError);
-}
-
-function loadHostRecordsBatch(siteKeys) {
+function loadHostLinksBatch(siteKeys) {
 	const unique = Array.from(new Set((siteKeys || []).filter(Boolean)));
 	const waits = [];
 	const needed = [];
 	for (const siteKey of unique) {
-		if (hostsRecordsLoaded.has(siteKey)) continue;
-		const pending = hostRecordLoadPromises.get(siteKey);
+		if (hostsLoaded.has(siteKey)) continue;
+		const pending = hostLoadPromises.get(siteKey);
 		if (pending) waits.push(pending);
 		else needed.push(siteKey);
 	}
@@ -355,141 +261,37 @@ function loadHostRecordsBatch(siteKeys) {
 					siteLinksDeltasByHost.set(siteKey, emptySiteLinksDelta());
 				}
 				const delta = siteLinksDeltasByHost.get(siteKey);
-				applyLoadedHostRecords(
+				applyLoadedHostLinks(
 					siteKey,
 					applySiteLinksDeltaOps(
 						result[siteLinksStorageKey(siteKey)],
 						delta.ops
 					)
 				);
-				hostRecordLoadPromises.delete(siteKey);
+				hostLoadPromises.delete(siteKey);
 			}
 		})
 		.catch(error => {
-			for (const siteKey of needed) hostRecordLoadPromises.delete(siteKey);
+			for (const siteKey of needed) hostLoadPromises.delete(siteKey);
 			throw error;
 		});
 
 	for (const siteKey of needed) {
-		hostRecordLoadPromises.set(siteKey, batchPromise);
+		hostLoadPromises.set(siteKey, batchPromise);
 	}
 	return Promise.all([...waits, batchPromise]);
-}
-
-function loadHostStylesBatch(siteKeys) {
-	const unique = Array.from(new Set((siteKeys || []).filter(Boolean)));
-	const waits = [];
-	const needed = [];
-	for (const siteKey of unique) {
-		if (hostsStyleLoaded.has(siteKey) && (hostLookupHasEntries(siteKey) || hostsRecordsLoaded.has(siteKey))) {
-			continue;
-		}
-		const recordsPending = hostRecordLoadPromises.get(siteKey);
-		if (recordsPending) {
-			waits.push(recordsPending);
-			continue;
-		}
-		const pending = hostStyleLoadPromises.get(siteKey);
-		if (pending) waits.push(pending);
-		else needed.push(siteKey);
-	}
-	if (needed.length === 0) {
-		return waits.length ? Promise.all(waits) : Promise.resolve();
-	}
-
-	const keys = [];
-	for (const siteKey of needed) {
-		const stylesKey = siteStylesStorageKey(siteKey);
-		const deltaKey = siteLinksDeltaStorageKey(siteKey);
-		if (stylesKey) keys.push(stylesKey);
-		if (deltaKey) keys.push(deltaKey);
-	}
-	const batchPromise = browser.storage.local.get(keys)
-		.then(result => {
-			rememberSiteLinksDeltasFromStorage(result);
-			const missing = [];
-			for (const siteKey of needed) {
-				if (hostsRecordsLoaded.has(siteKey) || (hostsStyleLoaded.has(siteKey) && hostLookupHasEntries(siteKey))) {
-					hostStyleLoadPromises.delete(siteKey);
-					continue;
-				}
-				if (!siteLinksDeltasByHost.has(siteKey)) {
-					siteLinksDeltasByHost.set(siteKey, emptySiteLinksDelta());
-				}
-				const delta = siteLinksDeltasByHost.get(siteKey);
-				const rawPairs = result[siteStylesStorageKey(siteKey)];
-				const pairs = normalizeStyleIndexPairs(rawPairs);
-				// Missing or empty compact index: load full records instead of
-				// treating [] as "this host has no saved looks".
-				if (!pairs || pairs.length === 0) {
-					missing.push(siteKey);
-					continue;
-				}
-				applyLoadedHostStyles(siteKey, pairs, delta.ops);
-				if ((linkLookupBySite.get(siteKey)?.size || 0) === 0) {
-					missing.push(siteKey);
-					continue;
-				}
-				hostStyleLoadPromises.delete(siteKey);
-			}
-			if (missing.length === 0) return;
-			return loadHostRecordsBatch(missing).then(() => {
-				for (const siteKey of missing) {
-					hostStyleLoadPromises.delete(siteKey);
-					scheduleWriteHostStyles(siteKey);
-				}
-			});
-		})
-		.catch(error => {
-			for (const siteKey of needed) hostStyleLoadPromises.delete(siteKey);
-			throw error;
-		});
-
-	for (const siteKey of needed) {
-		hostStyleLoadPromises.set(siteKey, batchPromise);
-	}
-	return Promise.all([...waits, batchPromise]);
-}
-
-function hostLookupHasEntries(siteKey) {
-	return (linkLookupBySite.get(siteKey)?.size || 0) > 0;
-}
-
-function ensureHostStylesReady(host) {
-	const siteConfig = resolveSiteConfig(host);
-	if (!siteConfig) return Promise.resolve();
-	const siteKey = siteConfig.site;
-	if (hostsStyleLoaded.has(siteKey) && (hostLookupHasEntries(siteKey) || hostsRecordsLoaded.has(siteKey))) {
-		return Promise.resolve();
-	}
-	return loadHostStylesBatch([siteKey]).then(() => {
-		if (hostLookupHasEntries(siteKey) || hostsRecordsLoaded.has(siteKey)) return;
-		return loadHostRecordsBatch([siteKey]);
-	});
-}
-
-function ensureHostRecordsReady(host) {
-	const siteConfig = resolveSiteConfig(host);
-	if (!siteConfig) return Promise.resolve();
-	if (hostsRecordsLoaded.has(siteConfig.site)) return Promise.resolve();
-	return loadHostRecordsBatch([siteConfig.site]);
 }
 
 function ensureHostLinksReady(host) {
-	return ensureHostStylesReady(host);
+	const siteConfig = resolveSiteConfig(host);
+	if (!siteConfig) return Promise.resolve();
+	if (hostsLoaded.has(siteConfig.site)) return Promise.resolve();
+	return loadHostLinksBatch([siteConfig.site]);
 }
 
 function ensureHostLinksReadyForUrl(url) {
 	try {
-		return ensureHostStylesReady(new URL(url).hostname);
-	} catch {
-		return Promise.resolve();
-	}
-}
-
-function ensureHostRecordsReadyForUrl(url) {
-	try {
-		return ensureHostRecordsReady(new URL(url).hostname);
+		return ensureHostLinksReady(new URL(url).hostname);
 	} catch {
 		return Promise.resolve();
 	}
@@ -523,18 +325,11 @@ function ensureHostLinksReadyForHrefs(hrefs) {
 			// Skip invalid hrefs; searchhrefs will ignore them too.
 		}
 	}
-	const keys = Array.from(siteKeys);
-	return loadHostStylesBatch(keys).then(() => {
-		const needRecords = keys.filter(siteKey =>
-			!hostLookupHasEntries(siteKey) && !hostsRecordsLoaded.has(siteKey)
-		);
-		if (needRecords.length === 0) return;
-		return loadHostRecordsBatch(needRecords);
-	});
+	return loadHostLinksBatch(Array.from(siteKeys));
 }
 
 function ensureAllHostLinksReady() {
-	return loadHostRecordsBatch(
+	return loadHostLinksBatch(
 		(sites || []).map(siteConfig => siteConfig?.site).filter(Boolean)
 	);
 }
@@ -607,9 +402,7 @@ function loadSettings() {
 			return loadSettingsFromFullStorage();
 		}
 		styleRules = migrateStyleRulesFromStorage(meta);
-		hostsStyleLoaded = new Set();
-		hostsRecordsLoaded = new Set();
-		hostStylePairsBySite.clear();
+		hostsLoaded = new Set();
 		siteLinksDeltasByHost.clear();
 		return browser.storage.local.get(STORAGE_KEYS.enableDuplicateWarning)
 			.then(extra => {
@@ -670,9 +463,10 @@ function persistLoadedHostLinks(previousHosts) {
 		const host = siteConfig?.site;
 		if (!host) continue;
 		keepHosts.add(host);
-		if (!hostsRecordsLoaded.has(host)) continue;
-		Object.assign(writes, buildHostLinkIndexStorageWrite(host, siteConfig.links));
+		if (!hostsLoaded.has(host)) continue;
+		Object.assign(writes, buildHostLinksStorageWrite(host, siteConfig.links));
 		removeKeys.push(siteLinksDeltaStorageKey(host));
+		removeKeys.push(siteStylesStorageKey(host));
 		clearSiteLinksDeltaState(host);
 	}
 
@@ -681,7 +475,10 @@ function persistLoadedHostLinks(previousHosts) {
 		removeKeys.push(siteLinksStorageKey(host));
 		removeKeys.push(siteLinksDeltaStorageKey(host));
 		removeKeys.push(siteStylesStorageKey(host));
-		forgetHostIndexes(host);
+		hostsLoaded.delete(host);
+		linkLookupBySite.delete(host);
+		invalidateTitleIndexForHost(host);
+		siteLinksDeltasByHost.delete(host);
 	}
 
 	if (removeKeys.some(Boolean)) pendingIgnoredSiteWrites += 1;
@@ -703,7 +500,7 @@ function scheduleCompactSiteLinks(host) {
 }
 
 function compactSiteLinksForHost(host, { force = false } = {}) {
-	if (!host || !hostsRecordsLoaded.has(host)) return Promise.resolve();
+	if (!host || !hostsLoaded.has(host)) return Promise.resolve();
 	const delta = siteLinksDeltasByHost.get(host);
 	if (!force && (!delta || !delta.ops.length)) return Promise.resolve();
 
@@ -713,13 +510,12 @@ function compactSiteLinksForHost(host, { force = false } = {}) {
 	const links = sites.find(site => site.site === host)?.links || [];
 
 	pendingIgnoredSiteWrites += 1;
-	return browser.storage.local.set({
-		...buildHostLinkIndexStorageWrite(host, links)
-	}).then(() => {
+	return browser.storage.local.set({ [blobKey]: links }).then(() => {
 		clearSiteLinksDeltaState(host);
-		if (!deltaKey) return;
+		const leftover = [deltaKey, siteStylesStorageKey(host)].filter(Boolean);
+		if (leftover.length === 0) return;
 		pendingIgnoredSiteWrites += 1;
-		return browser.storage.local.remove(deltaKey);
+		return browser.storage.local.remove(leftover);
 	}).catch(error => {
 		pendingIgnoredSiteWrites = Math.max(0, pendingIgnoredSiteWrites - 1);
 		throw error;
@@ -766,7 +562,7 @@ function addSelectionAsTextRule(selection, site, styleId) {
 }
 
 function addUrlToSiteList(url, title, styleId) {
-	return ensureHostRecordsReadyForUrl(url).then(() => {
+	return ensureHostLinksReadyForUrl(url).then(() => {
 		const result = applySavedLinkToMemory(url, title, styleId, { toggleOff: false });
 		if (!result.ok) return sites;
 		notifyTabsHrefStatus(url, result.styleId);
@@ -823,19 +619,12 @@ function collectActionPopupSiteState(url) {
 	}
 
 	const siteConfig = host ? matchingSiteConfig(host) : null;
-	const styleCount = siteConfig
-		? (
-			hostsRecordsLoaded.has(siteConfig.site)
-				? (siteConfig.links || []).length
-				: (hostStylePairsBySite.get(siteConfig.site)?.length || 0)
-		)
-		: 0;
 	return {
 		restricted: false,
 		host: siteConfig ? siteConfig.site : host,
 		siteMatch: !!siteConfig,
 		classGroupCount: siteConfig ? (siteConfig.classGroups || []).length : 0,
-		savedLinkCount: styleCount,
+		savedLinkCount: siteConfig ? (siteConfig.links || []).length : 0,
 		lookCount: siteConfig ? (siteConfig.linkFolders || []).length : 0
 	};
 }
@@ -977,10 +766,8 @@ function applySavedLinkToMemory(url, title, styleId, { toggleOff = false } = {})
 		siteConfig = ensured.siteConfig;
 		if (!siteConfig) return { ok: false, styleId: "" };
 		siteHostIndex.set(siteConfig.site, siteConfig);
-		hostsStyleLoaded.add(siteConfig.site);
-		hostsRecordsLoaded.add(siteConfig.site);
+		hostsLoaded.add(siteConfig.site);
 		linkLookupBySite.set(siteConfig.site, new Map());
-		hostStylePairsBySite.set(siteConfig.site, []);
 		siteLinksDeltasByHost.set(siteConfig.site, emptySiteLinksDelta());
 	}
 	if (!Array.isArray(siteConfig.links)) siteConfig.links = [];
@@ -994,35 +781,25 @@ function applySavedLinkToMemory(url, title, styleId, { toggleOff = false } = {})
 		linkLookupBySite.set(siteConfig.site, map);
 	}
 
-	let existingIndex = -1;
-	for (let i = 0; i < siteConfig.links.length; i++) {
-		const link = siteConfig.links[i];
-		if (link?.url && hrefMatchKey(link.url) === pageKey) {
-			existingIndex = i;
-			break;
-		}
-	}
-	const existing = existingIndex >= 0 ? siteConfig.links[existingIndex] : null;
-	const existingStyle = map.get(pageKey) || lookupEntryStyle(existing);
-
-	if (toggleOff && existingStyle === styleId) {
-		if (existingIndex >= 0) siteConfig.links.splice(existingIndex, 1);
-		forgetStyleLookup(map, existing?.url || url);
-		forgetStyleLookup(map, url);
+	const existing = map.get(pageKey);
+	if (toggleOff && existing && lookupEntryStyle(existing) === styleId) {
+		const idx = siteConfig.links.indexOf(existing);
+		if (idx >= 0) siteConfig.links.splice(idx, 1);
+		map.delete(pageKey);
 		invalidateTitleIndexForHost(siteConfig.site);
 		return {
 			ok: true,
 			styleId: "",
-			op: { op: "remove", url: existing?.url || normalizeHrefForSearch(url) }
+			op: { op: "remove", url: existing.url || normalizeHrefForSearch(url) }
 		};
 	}
 
 	const savedTitle = normalizeSavedLinkTitle(title);
-	if (existing) {
+	if (existing && typeof existing === "object") {
 		existing.style = styleId;
 		if (savedTitle) existing.title = savedTitle;
 		siteConfig.linkFolders = addLinkFolderId(siteConfig.linkFolders, styleId);
-		rememberStyleLookup(map, existing.url || url, styleId, { overwrite: true });
+		map.set(pageKey, existing);
 		invalidateTitleIndexForHost(siteConfig.site);
 		return {
 			ok: true,
@@ -1043,7 +820,7 @@ function applySavedLinkToMemory(url, title, styleId, { toggleOff = false } = {})
 	};
 	siteConfig.links.push(saved);
 	siteConfig.linkFolders = addLinkFolderId(siteConfig.linkFolders, styleId);
-	rememberStyleLookup(map, saved.url, styleId, { overwrite: true });
+	map.set(pageKey, saved);
 	invalidateTitleIndexForHost(siteConfig.site);
 	return {
 		ok: true,
@@ -1127,19 +904,10 @@ function invalidateLinkCaches() {
 }
 
 function lookupLinkStyleForSite(normalizedHref, siteConfig) {
-	if (!siteConfig || !normalizedHref) return null;
-	const map = linkLookupBySite.get(siteConfig.site);
-	if (!map || map.size === 0) return null;
-	const matchKey = hrefMatchKeyFromNormalized(normalizedHref);
-	const fromMatchKey = matchKey ? map.get(matchKey) : undefined;
-	if (fromMatchKey != null) return lookupEntryStyle(fromMatchKey);
-	const fromNormalized = map.get(normalizedHref);
-	if (fromNormalized != null) return lookupEntryStyle(fromNormalized);
-	const rebuilt = hrefMatchKey(normalizedHref);
-	if (rebuilt && rebuilt !== matchKey) {
-		return lookupEntryStyle(map.get(rebuilt));
-	}
-	return null;
+	if (!siteConfig) return null;
+	return lookupEntryStyle(
+		linkLookupBySite.get(siteConfig.site)?.get(hrefMatchKeyFromNormalized(normalizedHref))
+	);
 }
 
 function lookupLinkStyle(href) {
@@ -1181,9 +949,7 @@ function searchhrefs(hrefs) {
 			lastSite = findSiteConfigByNormalizedHost(siteHostIndex, host);
 			haveLastHost = true;
 		}
-		const style = lookupLinkStyleForSite(normalized, lastSite)
-			|| lookupLinkStyleForSite(href, lastSite);
-		statuses[href] = style || "none";
+		statuses[href] = lookupLinkStyleForSite(normalized, lastSite) || "none";
 	}
 	return Promise.resolve({ statuses });
 }
