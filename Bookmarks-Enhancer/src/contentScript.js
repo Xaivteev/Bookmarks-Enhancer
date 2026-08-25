@@ -119,13 +119,20 @@ function updateClassesForSearch() {
 	classesForSearch = getConfiguredClassGroups(sitesToSearchPairs(matchingSites));
 }
 
+function classGroupsFromSiteConfig(siteConfig) {
+	const raw = siteConfig?.classGroups;
+	if (Array.isArray(raw)) return raw;
+	if (typeof raw === "string") return raw.split(",");
+	return [];
+}
+
 function applySitesConfig(item) {
 	const raw = Array.isArray(item?.[STORAGE_KEYS.sites])
 		? item[STORAGE_KEYS.sites]
 		: (Array.isArray(item?.sites) ? item.sites : []);
 	loadedSites = raw.map(siteConfig => ({
 		site: siteConfig?.site || "",
-		classGroups: Array.isArray(siteConfig?.classGroups) ? siteConfig.classGroups : [],
+		classGroups: classGroupsFromSiteConfig(siteConfig),
 		keepParams: typeof siteConfig?.keepParams === "string" ? siteConfig.keepParams : "",
 		textRules: Array.isArray(siteConfig?.textRules) ? siteConfig.textRules : [],
 		linkFolders: Array.isArray(siteConfig?.linkFolders) ? siteConfig.linkFolders : []
@@ -862,11 +869,22 @@ function closestConfiguredCards(element) {
 			node = node.parentElement;
 		}
 	}
+	// Configured class is often on an inner wrapper inside a listing <a>.
+	if (typeof element.getElementsByClassName === "function") {
+		for (const classGroup of classesForSearch) {
+			for (const nested of element.getElementsByClassName(classGroup)) {
+				if (!seen.has(nested)) {
+					seen.add(nested);
+					cards.push(nested);
+				}
+			}
+		}
+	}
 	return cards;
 }
 
 function restyleConfiguredCard(card, statusLookup, matchingTextRules) {
-	let matchedClassName = bestStatusClassForCard(card, statusLookup);
+	let matchedClassName = findStatusClassFromLinks(card, statusLookup);
 	if (enableDeepSearch && !matchedClassName) {
 		const text = card.textContent || "";
 		const html = card.innerHTML || "";
@@ -967,6 +985,8 @@ function applyHrefStatusUpdates(statusUpdates) {
 function applyBookmarkStyling(message) {
 	if (!searchSite) return;
 
+	injectBookmarkStyles();
+
 	const statuses = message && message.statuses && typeof message.statuses === "object"
 		? message.statuses
 		: {};
@@ -993,6 +1013,7 @@ function applyBookmarkStyling(message) {
 
 	applyPageTopBorder(statusLookup);
 	applyCardStylesFromLinks(statusLookup);
+	applyCardStylesFromConfiguredClasses(statusLookup);
 	applyDeepSearchToUnstyledCards(statusLookup);
 	applyTextFilters();
 	scheduleDuplicateWarningPass();
@@ -1005,11 +1026,11 @@ function buildBookmarkStatusLookup(statuses) {
 		const style = getStyleConfigById(status);
 		if (!style) continue;
 
-		let path;
+		let path = "";
 		try {
 			path = new URL(normalized).pathname;
 		} catch {
-			continue;
+			path = "";
 		}
 
 		statusLookup.set(normalized, {
@@ -1040,6 +1061,73 @@ function applyCardStylesFromLinks(statusLookup) {
 	for (const [card, status] of cardBest) {
 		applyStatusClass(card, status.className);
 	}
+}
+
+function applyCardStylesFromConfiguredClasses(statusLookup) {
+	if (!classesForSearch.length || !statusLookup || statusLookup.size === 0) return;
+	for (const classGroup of classesForSearch) {
+		for (const element of document.getElementsByClassName(classGroup)) {
+			if (hasStatusClass(element)) continue;
+			const matchedClassName = findStatusClassFromLinks(element, statusLookup);
+			if (matchedClassName) applyStatusClass(element, matchedClassName);
+		}
+	}
+}
+
+function collectAnchorsForCard(element) {
+	const anchors = [];
+	const seen = new Set();
+	const add = node => {
+		if (!(node instanceof HTMLAnchorElement) || seen.has(node)) return;
+		seen.add(node);
+		anchors.push(node);
+	};
+	if (element instanceof HTMLAnchorElement) add(element);
+	if (typeof element.querySelectorAll === "function") {
+		for (const link of element.querySelectorAll("a[href]")) add(link);
+	}
+	let node = element.parentElement;
+	while (node) {
+		if (node instanceof HTMLAnchorElement) {
+			add(node);
+			break;
+		}
+		node = node.parentElement;
+	}
+	return anchors;
+}
+
+function getElementLinkHrefSet(element) {
+	const normalizedHrefs = new Set();
+	for (const link of collectAnchorsForCard(element)) {
+		const href = link.getAttribute("href") || link.href || "";
+		if (!href) continue;
+		let normalized;
+		try {
+			normalized = normalizeHrefForSearch(href);
+		} catch {
+			continue;
+		}
+		if (/^https?:/.test(normalized)) normalizedHrefs.add(normalized);
+	}
+	return normalizedHrefs;
+}
+
+function findStatusClassFromLinks(element, statusLookup) {
+	if (!element || !statusLookup || statusLookup.size === 0) return null;
+	let matched = bestStatusClassForCard(element, statusLookup);
+	if (matched) return matched;
+
+	const linkHrefs = getElementLinkHrefSet(element);
+	if (linkHrefs.size === 0) return null;
+	let matchedStatus = null;
+	for (const href of linkHrefs) {
+		const status = statusLookup.get(href);
+		if (status && (!matchedStatus || status.priority < matchedStatus.priority)) {
+			matchedStatus = status;
+		}
+	}
+	return matchedStatus?.className || null;
 }
 
 function applyDeepSearchToUnstyledCards(statusLookup) {

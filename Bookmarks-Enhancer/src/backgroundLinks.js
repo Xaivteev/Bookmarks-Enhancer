@@ -393,8 +393,9 @@ function loadHostStylesBatch(siteKeys) {
 					siteLinksDeltasByHost.set(siteKey, emptySiteLinksDelta());
 				}
 				const delta = siteLinksDeltasByHost.get(siteKey);
-				const pairs = normalizeStyleIndexPairs(result[siteStylesStorageKey(siteKey)]);
-				if (!pairs) {
+				const rawPairs = result[siteStylesStorageKey(siteKey)];
+				const pairs = normalizeStyleIndexPairs(rawPairs);
+				if (!pairs || (Array.isArray(rawPairs) && rawPairs.length > 0 && pairs.length === 0)) {
 					missing.push(siteKey);
 					continue;
 				}
@@ -1119,7 +1120,9 @@ function searchhrefs(hrefs) {
 			lastSite = findSiteConfigByNormalizedHost(siteHostIndex, host);
 			haveLastHost = true;
 		}
-		statuses[normalized] = lookupLinkStyleForSite(normalized, lastSite) || "none";
+		// Keep the content-script's original key so card styling can find
+		// the same hrefs it put in linkMap, even if re-normalization differs.
+		statuses[href] = lookupLinkStyleForSite(normalized, lastSite) || "none";
 	}
 	return Promise.resolve({ statuses });
 }

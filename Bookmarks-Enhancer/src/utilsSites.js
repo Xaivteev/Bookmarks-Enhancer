@@ -254,6 +254,11 @@ function applySiteLinksDeltaOps(links, ops) {
 }
 
 
+function styleIndexPairKey(url) {
+	if (!url) return "";
+	return isValidHttpUrl(url) ? (hrefMatchKey(url) || "") : url;
+}
+
 function compactStylePairsFromLinks(links) {
 	const pairs = [];
 	const seen = new Set();
@@ -261,7 +266,7 @@ function compactStylePairsFromLinks(links) {
 		if (!link?.url) continue;
 		const style = typeof link.style === "string" ? link.style.trim() : "";
 		if (!style) continue;
-		const key = hrefMatchKey(link.url);
+		const key = styleIndexPairKey(link.url);
 		if (!key || seen.has(key)) continue;
 		seen.add(key);
 		pairs.push([link.url, style]);
@@ -286,8 +291,8 @@ function normalizeStyleIndexPairs(value) {
 			style = typeof item.style === "string" ? item.style.trim()
 				: (typeof item.s === "string" ? item.s.trim() : "");
 		}
-		if (!url || !style || !isValidHttpUrl(url)) continue;
-		const key = hrefMatchKey(url);
+		if (!url || !style) continue;
+		const key = styleIndexPairKey(url);
 		if (!key || seen.has(key)) continue;
 		seen.add(key);
 		pairs.push([url, style]);
@@ -326,7 +331,7 @@ function styleLookupMapFromPairs(pairs) {
 		const url = pair?.[0];
 		const style = pair?.[1];
 		if (!url || !style) continue;
-		const key = hrefMatchKey(url);
+		const key = styleIndexPairKey(url);
 		if (!key || map.has(key)) continue;
 		map.set(key, style);
 	}
