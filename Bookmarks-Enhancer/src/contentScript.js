@@ -1018,7 +1018,6 @@ function applyBookmarkStyling(message) {
 	const statuses = message && message.statuses && typeof message.statuses === "object"
 		? message.statuses
 		: {};
-	const statusLookup = buildBookmarkStatusLookup(statuses);
 
 	for (const [normalized, status] of Object.entries(statuses)) {
 		if (status && status !== "none" && getStyleConfigById(status)) {
@@ -1031,6 +1030,10 @@ function applyBookmarkStyling(message) {
 			processedHrefs.delete(normalized);
 		}
 	}
+
+	// Style from every resolved look, not only this batch. Mutations otherwise
+	// restyle new cards against the first-paint match set and miss new URLs.
+	const statusLookup = buildBookmarkStatusLookup(positiveStatusesFromLinkMap());
 
 	for (const [normalized, status] of statusLookup) {
 		const elements = linksForHref(normalized);
@@ -1447,37 +1450,54 @@ function harvestHrefsFromObservedCards(cards, hrefSet) {
 	}
 }
 
+function collectUnresolvedListingHrefs(forceHrefs, previousHrefs) {
+	const hrefsToRequest = [];
+	const seen = new Set();
+	const consider = (href, force) => {
+		if (!href || seen.has(href)) return;
+		seen.add(href);
+		if (linkStatusMap.has(href) || pendingStatusHrefs.has(href)) return;
+		if (!force && softMissHrefs.has(href)) return;
+		if (force) softMissHrefs.delete(href);
+		hrefsToRequest.push(href);
+	};
+	for (const href of forceHrefs) consider(href, true);
+	for (const href of linkMap.keys()) {
+		consider(href, previousHrefs ? !previousHrefs.has(href) : false);
+	}
+	return hrefsToRequest;
+}
+
 function processObservedHrefs() {
 	const observedCards = Array.from(pendingObservedTextElements);
 	pendingObservedTextElements = new Set();
-	const hrefSet = pendingObservedHrefs;
+	const harvested = pendingObservedHrefs;
 	pendingObservedHrefs = new Set();
 	mutationDebounceTimer = null;
 
-	harvestHrefsFromObservedCards(observedCards, hrefSet);
-	const hrefs = Array.from(hrefSet);
+	const previousHrefs = new Set(linkMap.keys());
+	buildLinkMap();
+	harvestHrefsFromObservedCards(observedCards, harvested);
 
 	const statusLookup = buildBookmarkStatusLookup(positiveStatusesFromLinkMap());
 	const matchingTextRules = getMatchingTextRules();
-	const hrefsToRequest = [];
-	let waitingOnLookup = false;
-	for (const norm of hrefs) {
-		if (linkStatusMap.has(norm)) {
-			applyCachedLinkStatus(norm, statusLookup, matchingTextRules);
-			continue;
+	for (const href of harvested) {
+		if (linkStatusMap.has(href)) {
+			applyCachedLinkStatus(href, statusLookup, matchingTextRules);
 		}
-		waitingOnLookup = true;
-		if (pendingStatusHrefs.has(norm)) continue;
-		// First paint may have marked these as misses before the card existed.
-		// Mutation-discovered hrefs get one more lookup.
-		softMissHrefs.delete(norm);
-		hrefsToRequest.push(norm);
 	}
 
-	restyleObservedCards(observedCards, statusLookup);
-	if (!waitingOnLookup) {
+	const hrefsToRequest = collectUnresolvedListingHrefs(harvested, previousHrefs);
+	if (hrefsToRequest.length === 0) {
+		restyleObservedCards(observedCards, statusLookup);
 		pendingMutationCards = new Set();
+		scheduleDuplicateWarningPass();
+		return;
 	}
+
+	// Same pipeline as first paint: look up new listing URLs, then style
+	// cards from the resolved looks. Do not apply text rules first — that
+	// marks cards "already styled" and skips bookmark matching.
 	requestBookmarkStatuses(hrefsToRequest, { force: true });
 	scheduleDuplicateWarningPass();
 }
