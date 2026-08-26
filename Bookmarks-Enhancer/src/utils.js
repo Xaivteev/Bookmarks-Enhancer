@@ -713,6 +713,7 @@ function hrefMatchKey(href, explicitRules) {
 }
 
 const DUPLICATE_WARNING_MAX_MATCHES = 3;
+const DUPLICATE_TITLE_MAX_SCORE_CANDIDATES = 80;
 const DUPLICATE_TITLE_FUZZY_MIN_SCORE = 0.7;
 const DUPLICATE_TITLE_STOPWORDS = new Set([
 	"a", "an", "and", "at", "by", "for", "from", "in", "into", "is", "it", "its",

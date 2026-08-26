@@ -90,6 +90,7 @@ svg {
 
 let shortcutSites = [];
 let shortcutStyleRules = [];
+let lookShortcutConfigApplied = false;
 let cachedPageStyleId = "";
 let cachedPageUrl = "";
 let lastOverlayKey = "";
@@ -415,6 +416,13 @@ function sitesMetaFromStorage(result) {
 	})).filter(siteConfig => siteConfig.site);
 }
 
+function applyLookShortcutConfig(config) {
+	if (!config) return;
+	if (Array.isArray(config.sites)) shortcutSites = config.sites;
+	if (Array.isArray(config.styleRules)) shortcutStyleRules = config.styleRules;
+	lookShortcutConfigApplied = true;
+}
+
 function loadLookShortcutSettings() {
 	return browser.storage.local.get([
 		STORAGE_KEYS.sites,
@@ -422,9 +430,19 @@ function loadLookShortcutSettings() {
 	]).then(result => {
 		shortcutSites = sitesMetaFromStorage(result);
 		shortcutStyleRules = migrateStyleRulesFromStorage(result);
+		lookShortcutConfigApplied = true;
 		renderLookShortcuts();
 		refreshLookShortcutState();
 	}).catch(() => {});
+}
+
+function applyArmedLookShortcutSettings() {
+	if (lookShortcutConfigApplied) {
+		renderLookShortcuts();
+		refreshLookShortcutState();
+		return;
+	}
+	loadLookShortcutSettings();
 }
 
 let lookShortcutsArmed = false;
@@ -456,17 +474,18 @@ function installLookShortcutNavHooks() {
 
 function armLookShortcuts() {
 	if (lookShortcutsArmed) {
-		loadLookShortcutSettings();
+		applyArmedLookShortcutSettings();
 		return;
 	}
 	lookShortcutsArmed = true;
 	attachLookShortcutEventGuards();
 	installLookShortcutNavHooks();
-	loadLookShortcutSettings();
+	applyArmedLookShortcutSettings();
 }
 
 function disarmLookShortcuts() {
 	lookShortcutsArmed = false;
+	lookShortcutConfigApplied = false;
 	detachLookShortcutEventGuards();
 	removeOverlay();
 	shortcutSites = [];
@@ -475,17 +494,13 @@ function disarmLookShortcuts() {
 	cachedPageUrl = "";
 }
 
-function syncLookShortcutsRunState(state) {
+function syncLookShortcutsRunState(state, config) {
+	applyLookShortcutConfig(config);
 	if (state && state.runShortcuts) armLookShortcuts();
 	else disarmLookShortcuts();
 }
 
-function requestLookShortcutRunState() {
-	return browser.runtime.sendMessage({
-		getPageRunState: true,
-		url: location.href
-	}).catch(() => ({ runShortcuts: false }));
-}
+globalThis.__beSyncLookShortcuts = syncLookShortcutsRunState;
 
 browser.runtime.onMessage.addListener(message => {
 	if (!message) return;
@@ -493,12 +508,10 @@ browser.runtime.onMessage.addListener(message => {
 		if (lookShortcutsArmed) applyLookShortcutState(message.lookShortcutState);
 		return;
 	}
-	if (message.refresh && message.reloadConfig) {
-		requestLookShortcutRunState().then(syncLookShortcutsRunState);
-		return;
-	}
 	if (!lookShortcutsArmed) return;
 	if (message.refresh) {
+		if (message.reloadConfig) return;
+		if (message.mode === "requery" && cachedPageUrl === location.href) return;
 		refreshLookShortcutState();
 		return;
 	}
@@ -506,6 +519,4 @@ browser.runtime.onMessage.addListener(message => {
 		applyLookShortcutStateFromStatusUpdates(message.statusUpdates);
 	}
 });
-
-requestLookShortcutRunState().then(syncLookShortcutsRunState);
 }

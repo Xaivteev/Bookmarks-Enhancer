@@ -61,10 +61,14 @@ function startContentScript() {
 		if (!state || !state.runStyling) {
 			searchSite = false;
 			settingsLoaded = true;
+			syncLookShortcutsFromContent(state);
 			flushPendingRuntimeMessages();
 			return;
 		}
-		return loadContentSettings().then(onGot, onError);
+		return loadContentSettings().then(item => {
+			onGot(item);
+			syncLookShortcutsFromContent(state);
+		}, onError);
 	}).catch(onError);
 }
 
@@ -157,6 +161,15 @@ function onGot(item) {
 	flushPendingRuntimeMessages();
 }
 
+function syncLookShortcutsFromContent(state) {
+	const sync = globalThis.__beSyncLookShortcuts;
+	if (typeof sync !== "function") return;
+	sync(state, {
+		sites: loadedSites,
+		styleRules: preparedStyleRules
+	});
+}
+
 function stopPageProcessing() {
 	searchSite = false;
 	if (observer) {
@@ -175,12 +188,8 @@ function stopPageProcessing() {
 		clearTimeout(mutationDebounceTimer);
 		mutationDebounceTimer = null;
 	}
-	clearWarmupRescanTimer();
+	clearLookupRetryState();
 	initScanHref = "";
-	if (lookupRetryTimer) {
-		clearTimeout(lookupRetryTimer);
-		lookupRetryTimer = null;
-	}
 	if (typeof managedClassNames !== "undefined" && managedClassNames.length) {
 		removeStatusClasses(managedClassNames);
 	}
@@ -196,12 +205,14 @@ function reloadContentSettings() {
 		if (!state || !state.runStyling) {
 			stopPageProcessing();
 			settingsLoaded = true;
+			syncLookShortcutsFromContent(state);
 			return;
 		}
 
 		return loadContentSettings().then(item => {
 			const previousClassNames = managedClassNames.slice();
 			applyLoadedSettings(item);
+			syncLookShortcutsFromContent(state);
 			if (!searchSite) {
 				stopPageProcessing();
 				return;
@@ -259,7 +270,7 @@ let linkMap = new Map(); // normalizedHref -> [link elements]
 let linkStatusMap = new Map(); // normalizedHref -> status string
 let processedHrefs = new Set(); // positive resolutions only
 // Soft "none" results — skipped on ordinary scans to avoid message spam, cleared
-// on requery / warmup / authoritative so later folder re-checks can recover.
+// on requery / visibility / authoritative so later folder re-checks can recover.
 let softMissHrefs = new Set();
 let pendingStatusHrefs = new Set(); // in-flight lookups; not yet successfully processed
 let urlCacheGeneration = 0;
@@ -277,8 +288,6 @@ let visibilityRescanTimer = null;
 let lookupRetryTimer = null;
 let lookupRetryHrefs = new Set();
 let lookupRetryAttempt = 0;
-let warmupRescanTimer = null;
-let warmupPendingRetries = 0;
 // Location href last scanned by init or requery. Same-document tabs.onUpdated
 // requery is skipped when init already ran for this URL.
 let initScanHref = "";
@@ -662,13 +671,7 @@ function invalidateUrlDependentCaches() {
 		cancelAnimationFrame(mutationFrameId);
 		mutationFrameId = 0;
 	}
-	lookupRetryHrefs = new Set();
-	lookupRetryAttempt = 0;
-	if (lookupRetryTimer) {
-		clearTimeout(lookupRetryTimer);
-		lookupRetryTimer = null;
-	}
-	clearWarmupRescanTimer();
+	clearLookupRetryState();
 
 	if (mutationDebounceTimer) {
 		clearTimeout(mutationDebounceTimer);
@@ -721,38 +724,19 @@ function scheduleLookupRetry(hrefs) {
 	}, delay);
 }
 
+function clearLookupRetryState() {
+	if (lookupRetryTimer) {
+		clearTimeout(lookupRetryTimer);
+		lookupRetryTimer = null;
+	}
+	lookupRetryHrefs = new Set();
+	lookupRetryAttempt = 0;
+}
+
 function clearSoftMissesAndRescan(options = {}) {
 	if (!searchSite) return;
 	softMissHrefs = new Set();
 	sendUniqueHrefs(options);
-}
-
-function clearWarmupRescanTimer() {
-	if (warmupRescanTimer) {
-		clearTimeout(warmupRescanTimer);
-		warmupRescanTimer = null;
-	}
-	warmupPendingRetries = 0;
-}
-
-function scheduleWarmupRescan() {
-	clearWarmupRescanTimer();
-	// One delayed retry is enough now that the first pass waits for settings.
-	// 1.2s sits after first paint without the later hitch of a 3.5s second pass.
-	warmupRescanTimer = setTimeout(runWarmupRescan, 1200);
-}
-
-function runWarmupRescan() {
-	warmupRescanTimer = null;
-	if (!searchSite) return;
-	if (pendingStatusHrefs.size > 0 && warmupPendingRetries < 5) {
-		warmupPendingRetries += 1;
-		warmupRescanTimer = setTimeout(runWarmupRescan, 400);
-		return;
-	}
-	warmupPendingRetries = 0;
-	if (softMissHrefs.size === 0) return;
-	clearSoftMissesAndRescan();
 }
 
 function requestBookmarkStatuses(hrefs, options = {}) {
@@ -809,7 +793,7 @@ function requestBookmarkStatuses(hrefs, options = {}) {
 							sawPositive = true;
 						}
 					} else {
-						// Soft miss — retry on requery / warmup / index-ready.
+						// Soft miss — retry on requery / visibility / index-ready.
 						softMissHrefs.add(href);
 						processedHrefs.delete(href);
 						linkStatusMap.delete(href);
@@ -1934,7 +1918,6 @@ function initProcessing() {
 	sendUniqueHrefs({ showLoading: true });
 	// Start observing for incremental additions
 	startMutationObserver();
-	scheduleWarmupRescan();
 
 	// Background tabs can finish the first scan while still hidden; remember
 	// that so a later focus can flush failed lookups (not every miss).

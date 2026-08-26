@@ -221,9 +221,10 @@ browser.runtime.onMessage.addListener((message, sender, sendResponse) => {
 	return false;
 });
 
-function sendTabMessage(tabId, payload) {
-	return browser.tabs.sendMessage(tabId, payload)
-		.catch(() => ensureContentScripts(tabId).then(() => browser.tabs.sendMessage(tabId, payload)));
+function sendTabMessage(tabId, payload, { inject = true } = {}) {
+	const send = () => browser.tabs.sendMessage(tabId, payload);
+	if (!inject) return send().catch(() => {});
+	return send().catch(() => ensureContentScripts(tabId).then(() => send()));
 }
 
 function refreshTabStyling(tabId, mode = "authoritative", options = {}) {
@@ -484,7 +485,9 @@ function collectDuplicateTitleCandidates(siteKey, queryNormalized) {
 	const entries = titleEntriesBySite.get(siteKey) || [];
 	if (entries.length === 0) return entries;
 	const tokenIndex = titleTokenIndexBySite.get(siteKey);
-	if (!tokenIndex || tokenIndex.size === 0) return entries;
+	if (!tokenIndex || tokenIndex.size === 0) {
+		return entries.slice(0, DUPLICATE_TITLE_MAX_SCORE_CANDIDATES);
+	}
 
 	const variants = [queryNormalized];
 	const queryStripped = stripDuplicateTitleSiteSuffix(queryNormalized);
@@ -492,6 +495,7 @@ function collectDuplicateTitleCandidates(siteKey, queryNormalized) {
 
 	let hasContentTokens = false;
 	const candidateIndexes = new Set();
+	const sharedByIndex = new Map();
 	for (const variant of variants) {
 		const tokens = duplicateTitleTokens(variant);
 		if (tokens.length === 0) continue;
@@ -506,17 +510,23 @@ function collectDuplicateTitleCandidates(siteKey, queryNormalized) {
 			}
 		}
 		for (const [idx, shared] of counts) {
-			if (shared >= need) candidateIndexes.add(idx);
+			if (shared < need) continue;
+			candidateIndexes.add(idx);
+			if (shared > (sharedByIndex.get(idx) || 0)) sharedByIndex.set(idx, shared);
 		}
 	}
-	if (!hasContentTokens) return entries;
+	if (!hasContentTokens) return [];
 
-	const candidates = [];
+	const ranked = [];
 	for (const idx of candidateIndexes) {
 		const entry = entries[idx];
-		if (entry) candidates.push(entry);
+		if (entry) ranked.push({ shared: sharedByIndex.get(idx) || 0, entry });
 	}
-	return candidates;
+	ranked.sort((a, b) => b.shared - a.shared);
+	if (ranked.length > DUPLICATE_TITLE_MAX_SCORE_CANDIDATES) {
+		ranked.length = DUPLICATE_TITLE_MAX_SCORE_CANDIDATES;
+	}
+	return ranked.map(item => item.entry);
 }
 
 function rebuildLinkLookup() {
@@ -529,6 +539,7 @@ function rebuildLinkLookup() {
 	for (const siteConfig of sites) {
 		if (!siteConfig?.site || !hostsLoaded.has(siteConfig.site)) continue;
 		rebuildLinkLookupForHost(siteConfig);
+		ensureTitleIndexForHost(siteConfig);
 	}
 }
 
@@ -560,11 +571,12 @@ function enqueueHostLinkPersist(host, task) {
 
 function applyLoadedHostLinks(siteKey, links) {
 	const siteConfig = resolveSiteConfig(siteKey);
+	hostsLoaded.add(siteKey);
 	if (siteConfig) {
 		siteConfig.links = Array.isArray(links) ? links : [];
 		rebuildLinkLookupForHost(siteConfig);
+		ensureTitleIndexForHost(siteConfig);
 	}
-	hostsLoaded.add(siteKey);
 }
 
 function loadHostLinksBatch(siteKeys) {
@@ -671,7 +683,15 @@ function ensureAllHostLinksReady() {
 
 function applyDuplicateWarningSetting(value) {
 	enableDuplicateWarning = value === true;
-	if (!enableDuplicateWarning) clearTitleIndexes();
+	if (!enableDuplicateWarning) {
+		clearTitleIndexes();
+		return;
+	}
+	for (const siteConfig of sites) {
+		if (siteConfig?.site && hostsLoaded.has(siteConfig.site)) {
+			ensureTitleIndexForHost(siteConfig);
+		}
+	}
 }
 
 function applyLoadedSites(nextSites, nextStyleRules, { rebuild = true } = {}) {
@@ -1849,7 +1869,10 @@ browser.tabs.onUpdated.addListener((tabId, changeInfo, tab) => {
 		.then(() => {
 			if (!getPageRunState(url).runStyling) return;
 			prefetchHostLinksForUrl(url);
-			return sendTabMessage(tabId, { refresh: true, mode: "requery" });
+			// Do not inject here: a new tab's URL event beats document_idle, and
+			// executeScript would parse the content scripts twice during load.
+			// Init handles first paint; this message is for SPA / same-document URL changes.
+			return sendTabMessage(tabId, { refresh: true, mode: "requery" }, { inject: false });
 		})
 		.catch(() => {});
 });
