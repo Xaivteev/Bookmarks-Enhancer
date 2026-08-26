@@ -299,6 +299,8 @@ let pageTitleScanPendingUrl = "";
 let pageTitleScanPendingTitle = "";
 let duplicateWarningToastHost = null;
 let duplicateWarningToastHideTimer = null;
+let duplicateWarningToastRemainingMs = 0;
+let duplicateWarningToastHideStartedAt = 0;
 
 function isResolvableStyleId(styleId) {
 	return !!(styleId && styleId !== "none" && getStyleConfigById(styleId));
@@ -1597,8 +1599,10 @@ function performVisibilityRescan() {
 function onVisibilityChange() {
 	if (document.visibilityState === "hidden") {
 		pageWasHidden = true;
+		pauseDuplicateWarningToastHideTimer();
 		return;
 	}
+	resumeDuplicateWarningToastHideTimer();
 	if (!pageWasHidden) return;
 	pageWasHidden = false;
 	scheduleVisibilityRescan();
@@ -1607,8 +1611,10 @@ function onVisibilityChange() {
 function onPageShow(event) {
 	if (document.visibilityState === "hidden") {
 		pageWasHidden = true;
+		pauseDuplicateWarningToastHideTimer();
 		return;
 	}
+	resumeDuplicateWarningToastHideTimer();
 	// bfcache restore, or a background tab that becomes usable on show.
 	if (event.persisted || pageWasHidden) {
 		pageWasHidden = false;
@@ -1621,8 +1627,10 @@ function onWindowFocus() {
 	// when this tab was already the active tab in a backgrounded window.
 	if (document.visibilityState === "hidden") {
 		pageWasHidden = true;
+		pauseDuplicateWarningToastHideTimer();
 		return;
 	}
+	resumeDuplicateWarningToastHideTimer();
 	scheduleVisibilityRescan();
 }
 
@@ -1757,11 +1765,44 @@ function matchDuplicatePageTitle(urlGeneration) {
 	});
 }
 
-function hideDuplicateWarningToast() {
+function isDuplicateToastPageVisible() {
+	return document.visibilityState !== "hidden";
+}
+
+function clearDuplicateWarningToastHideTimer() {
 	if (duplicateWarningToastHideTimer) {
 		clearTimeout(duplicateWarningToastHideTimer);
 		duplicateWarningToastHideTimer = null;
 	}
+}
+
+function pauseDuplicateWarningToastHideTimer() {
+	if (!duplicateWarningToastHost || !duplicateWarningToastHideTimer) return;
+	duplicateWarningToastRemainingMs = Math.max(
+		0,
+		duplicateWarningToastRemainingMs - (Date.now() - duplicateWarningToastHideStartedAt)
+	);
+	clearDuplicateWarningToastHideTimer();
+}
+
+function resumeDuplicateWarningToastHideTimer() {
+	if (!duplicateWarningToastHost || duplicateWarningToastHideTimer) return;
+	if (!isDuplicateToastPageVisible()) return;
+	if (duplicateWarningToastRemainingMs <= 0) {
+		hideDuplicateWarningToast();
+		return;
+	}
+	duplicateWarningToastHideStartedAt = Date.now();
+	duplicateWarningToastHideTimer = setTimeout(() => {
+		duplicateWarningToastHideTimer = null;
+		hideDuplicateWarningToast();
+	}, duplicateWarningToastRemainingMs);
+}
+
+function hideDuplicateWarningToast() {
+	clearDuplicateWarningToastHideTimer();
+	duplicateWarningToastRemainingMs = 0;
+	duplicateWarningToastHideStartedAt = 0;
 	const host = duplicateWarningToastHost ||
 		document.getElementById(DUPLICATE_WARNING_TOAST_HOST_ID);
 	if (host) host.remove();
@@ -1902,11 +1943,8 @@ function showDuplicateWarningToast(matches) {
 	if (!root) return;
 	root.appendChild(host);
 	duplicateWarningToastHost = host;
-
-	duplicateWarningToastHideTimer = setTimeout(() => {
-		duplicateWarningToastHideTimer = null;
-		hideDuplicateWarningToast();
-	}, DUPLICATE_WARNING_TOAST_DURATION_MS);
+	duplicateWarningToastRemainingMs = DUPLICATE_WARNING_TOAST_DURATION_MS;
+	resumeDuplicateWarningToastHideTimer();
 }
 
 function initProcessing() {
