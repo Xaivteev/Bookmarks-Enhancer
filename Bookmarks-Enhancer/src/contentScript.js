@@ -1,7 +1,8 @@
-// Bookmark import/export helpers live in utilsSitesExtra.js and are not injected here.
+// Shared with utils.js (normalizeHrefForSearch). Must stay at content-script top
+// level — not inside the install guard — or URL normalization throws ReferenceError.
+// Bookmark import/export helpers live in utilsSites.js and are not injected here.
 var urlRules = urlRules || [];
 var urlNormalizationCache = urlNormalizationCache || createUrlNormalizationCache();
-setHrefNormalizationContext(urlRules, urlNormalizationCache);
 
 if (!globalThis.__beContentScriptInstalled) {
 globalThis.__beContentScriptInstalled = true;
@@ -21,6 +22,7 @@ let enableTopBorder = false;
 let enableDeepSearch = false;
 let enableToastNotifications = true;
 let enableDuplicateWarning = false;
+let duplicateWarningStyleId = DEFAULT_DUPLICATE_WARNING_STYLE_ID;
 // Defaults only include built-in ids (blocked/favorited/seen). Custom UUID styles
 // arrive via storage — gate lookups until then so early requery cannot stick
 // positives in processedHrefs that applyBookmarkStyling silently skips.
@@ -37,7 +39,8 @@ const CONTENT_SETTINGS_KEYS = [
 	STORAGE_KEYS.enableTopBorder,
 	STORAGE_KEYS.enableDeepSearch,
 	STORAGE_KEYS.enableToastNotifications,
-	STORAGE_KEYS.enableDuplicateWarning
+	STORAGE_KEYS.enableDuplicateWarning,
+	STORAGE_KEYS.duplicateWarningStyleId
 ];
 
 function loadContentSettings() {
@@ -68,6 +71,10 @@ function startContentScript() {
 }
 
 startContentScript();
+
+function onError(error) {
+    console.log(`Error: ${error}`);
+}
 
 function refreshManagedClassNames() {
 	styleConfigById = new Map();
@@ -119,26 +126,18 @@ function updateClassesForSearch() {
 	classesForSearch = getConfiguredClassGroups(sitesToSearchPairs(matchingSites));
 }
 
-function classGroupsFromSiteConfig(siteConfig) {
-	const raw = siteConfig?.classGroups;
-	if (Array.isArray(raw)) return raw;
-	if (typeof raw === "string") return raw.split(",");
-	return [];
-}
-
 function applySitesConfig(item) {
 	const raw = Array.isArray(item?.[STORAGE_KEYS.sites])
 		? item[STORAGE_KEYS.sites]
 		: (Array.isArray(item?.sites) ? item.sites : []);
 	loadedSites = raw.map(siteConfig => ({
 		site: siteConfig?.site || "",
-		classGroups: classGroupsFromSiteConfig(siteConfig),
+		classGroups: Array.isArray(siteConfig?.classGroups) ? siteConfig.classGroups : [],
 		keepParams: typeof siteConfig?.keepParams === "string" ? siteConfig.keepParams : "",
 		textRules: Array.isArray(siteConfig?.textRules) ? siteConfig.textRules : [],
 		linkFolders: Array.isArray(siteConfig?.linkFolders) ? siteConfig.linkFolders : []
 	})).filter(siteConfig => siteConfig.site);
 	urlRules = sitesToUrlRules(loadedSites);
-	setHrefNormalizationContext(urlRules, urlNormalizationCache);
 	preparedTextRules = preprocessTextRules(sitesToTextRules(loadedSites));
 	updateClassesForSearch();
 }
@@ -150,6 +149,10 @@ function applyLoadedSettings(item) {
 	enableDeepSearch = !!item[STORAGE_KEYS.enableDeepSearch];
 	enableToastNotifications = item[STORAGE_KEYS.enableToastNotifications] !== false;
 	enableDuplicateWarning = !!item[STORAGE_KEYS.enableDuplicateWarning];
+	duplicateWarningStyleId = typeof item[STORAGE_KEYS.duplicateWarningStyleId] === "string" &&
+		item[STORAGE_KEYS.duplicateWarningStyleId]
+		? item[STORAGE_KEYS.duplicateWarningStyleId]
+		: DEFAULT_DUPLICATE_WARNING_STYLE_ID;
 	applySitesConfig(item);
 	settingsLoaded = true;
 }
@@ -174,7 +177,6 @@ function stopPageProcessing() {
 	pendingAddedOffset = 0;
 	pendingObservedHrefs = new Set();
 	pendingObservedTextElements = new Set();
-	pendingMutationCards = new Set();
 	if (mutationDebounceTimer) {
 		clearTimeout(mutationDebounceTimer);
 		mutationDebounceTimer = null;
@@ -263,19 +265,17 @@ let linkMap = new Map(); // normalizedHref -> [link elements]
 let linkStatusMap = new Map(); // normalizedHref -> status string
 let processedHrefs = new Set(); // positive resolutions only
 // Soft "none" results — skipped on ordinary scans to avoid message spam, cleared
-// on requery / warmup / authoritative so later folder re-checks can recover.
+// on requery / visibility / authoritative so folder re-checks can recover.
 let softMissHrefs = new Set();
 let pendingStatusHrefs = new Set(); // in-flight lookups; not yet successfully processed
 let urlCacheGeneration = 0;
 let observer = null;
 let pendingObservedHrefs = new Set();
 let pendingObservedTextElements = new Set();
-let pendingMutationCards = new Set();
 let pendingAddedNodes = [];
 let pendingAddedOffset = 0;
 let mutationFrameId = 0;
 let mutationDebounceTimer = null;
-const linkNormalizedKey = new WeakMap();
 let originalBodyBorderTop = null;
 let visibilityListenersAttached = false;
 let pageWasHidden = typeof document !== "undefined" && document.visibilityState === "hidden";
@@ -288,6 +288,12 @@ let warmupPendingRetries = 0;
 // Location href last scanned by init or requery. Same-document tabs.onUpdated
 // requery is skipped when init already ran for this URL.
 let initScanHref = "";
+let duplicateWarningTimer = null;
+let duplicateWarningPassId = 0;
+let duplicateStyledHrefs = new Set();
+let lastDuplicatePageToastKey = "";
+let duplicateWarningToastHost = null;
+let duplicateWarningToastHideTimer = null;
 
 function isResolvableStyleId(styleId) {
 	return !!(styleId && styleId !== "none" && getStyleConfigById(styleId));
@@ -335,6 +341,15 @@ function flushPendingRuntimeMessages() {
 	}
 }
 
+const STYLING_INDICATOR_DELAY_MS = 300;
+const STYLING_RESULT_DURATION_MS = 4000;
+const STYLING_INDICATOR_HOST_ID = "bookmarks-enhancer-loading";
+let stylingIndicatorDepth = 0;
+let stylingIndicatorShowTimer = null;
+let stylingResultHideTimer = null;
+let stylingIndicatorHost = null;
+let stylingIndicatorUserDismissed = false;
+
 function countStyledAndHiddenElements() {
 	const hideClassNames = new Set();
 	for (const rule of preparedStyleRules) {
@@ -377,6 +392,244 @@ function getActionPopupPageState() {
 	};
 }
 
+function formatStylingSummary({ styled = 0, hidden = 0 } = {}) {
+	return `Styled ${styled} · Hidden ${hidden}`;
+}
+
+function beginStylingIndicator() {
+	stylingIndicatorDepth += 1;
+	stylingIndicatorUserDismissed = false;
+	if (!enableToastNotifications) return;
+	if (stylingIndicatorDepth !== 1) return;
+	if (stylingResultHideTimer) {
+		clearTimeout(stylingResultHideTimer);
+		stylingResultHideTimer = null;
+	}
+	if (stylingIndicatorShowTimer) return;
+	stylingIndicatorShowTimer = setTimeout(() => {
+		stylingIndicatorShowTimer = null;
+		if (
+			stylingIndicatorDepth > 0 &&
+			enableToastNotifications &&
+			!stylingIndicatorUserDismissed
+		) {
+			showStylingIndicator("Applying looks…", { busy: true });
+		}
+	}, STYLING_INDICATOR_DELAY_MS);
+}
+
+function endStylingIndicator(summary = null) {
+	if (stylingIndicatorDepth <= 0) return;
+	stylingIndicatorDepth -= 1;
+	if (stylingIndicatorDepth > 0) return;
+	if (stylingIndicatorShowTimer) {
+		clearTimeout(stylingIndicatorShowTimer);
+		stylingIndicatorShowTimer = null;
+	}
+
+	if (!enableToastNotifications || stylingIndicatorUserDismissed) {
+		hideStylingIndicator();
+		return;
+	}
+
+	if (summary) {
+		showStylingResult(summary);
+		return;
+	}
+
+	hideStylingIndicator();
+}
+
+function showStylingResult(summary) {
+	if (!enableToastNotifications || stylingIndicatorUserDismissed) {
+		hideStylingIndicator();
+		return;
+	}
+
+	showStylingIndicator(formatStylingSummary(summary), { busy: false });
+
+	if (stylingResultHideTimer) {
+		clearTimeout(stylingResultHideTimer);
+	}
+	stylingResultHideTimer = setTimeout(() => {
+		stylingResultHideTimer = null;
+		if (stylingIndicatorDepth === 0) {
+			hideStylingIndicator();
+		}
+	}, STYLING_RESULT_DURATION_MS);
+}
+
+function dismissStylingIndicator() {
+	stylingIndicatorUserDismissed = true;
+	if (stylingIndicatorShowTimer) {
+		clearTimeout(stylingIndicatorShowTimer);
+		stylingIndicatorShowTimer = null;
+	}
+	hideStylingIndicator();
+}
+
+function showStylingIndicator(message, { busy = true } = {}) {
+	if (!enableToastNotifications || stylingIndicatorUserDismissed) return;
+
+	if (stylingIndicatorHost?.isConnected) {
+		updateStylingIndicatorContent(message, busy);
+		stylingIndicatorHost.hidden = false;
+		return;
+	}
+
+	const existing = document.getElementById(STYLING_INDICATOR_HOST_ID);
+	if (existing) {
+		existing.remove();
+	}
+
+	const host = document.createElement("div");
+	host.id = STYLING_INDICATOR_HOST_ID;
+	host.setAttribute("data-be-styling-indicator", "host");
+	host.setAttribute("role", "status");
+	host.setAttribute("aria-live", "polite");
+	host.style.cssText = [
+		"all: initial",
+		"position: fixed",
+		"z-index: 2147483646",
+		"right: 16px",
+		"bottom: 16px",
+		"pointer-events: none"
+	].join(";");
+
+	const shadow = host.attachShadow({ mode: "open" });
+	const style = document.createElement("style");
+	style.textContent = `
+		:host {
+			display: block !important;
+		}
+		.toast {
+			display: flex;
+			align-items: flex-start;
+			gap: 8px;
+			max-width: min(320px, calc(100vw - 32px));
+			padding: 10px 12px;
+			border: 1px solid #475569;
+			border-radius: 8px;
+			background: #0f172a;
+			color: #f8fafc;
+			box-shadow: 0 10px 28px rgb(0 0 0 / 35%);
+			font: 13px/1.35 system-ui, -apple-system, sans-serif;
+			pointer-events: auto;
+		}
+		.toast-main {
+			display: flex;
+			align-items: center;
+			gap: 8px;
+			flex: 1;
+			min-width: 0;
+		}
+		.spinner {
+			box-sizing: border-box;
+			width: 14px;
+			height: 14px;
+			flex: 0 0 auto;
+			border: 2px solid #94a3b8;
+			border-top-color: #f8fafc;
+			border-radius: 50%;
+			animation: be-spin 0.7s linear infinite;
+		}
+		.spinner[hidden] {
+			display: none;
+		}
+		.label {
+			flex: 1;
+			min-width: 0;
+		}
+		.dismiss {
+			display: inline-flex;
+			align-items: center;
+			justify-content: center;
+			flex: 0 0 auto;
+			width: 1.35rem;
+			height: 1.35rem;
+			margin: -0.1rem -0.2rem 0 0;
+			padding: 0;
+			border: 0;
+			border-radius: 4px;
+			background: transparent;
+			color: inherit;
+			font: 700 1rem/1 system-ui, -apple-system, sans-serif;
+			cursor: pointer;
+			opacity: 0.85;
+		}
+		.dismiss:hover {
+			background: rgb(255 255 255 / 14%);
+			opacity: 1;
+		}
+		.dismiss:focus-visible {
+			outline: 2px solid #f8fafc;
+			outline-offset: 1px;
+		}
+		@keyframes be-spin {
+			to { transform: rotate(360deg); }
+		}
+	`;
+
+	const toast = document.createElement("div");
+	toast.className = "toast";
+
+	const main = document.createElement("div");
+	main.className = "toast-main";
+
+	const spinner = document.createElement("div");
+	spinner.className = "spinner";
+	spinner.setAttribute("aria-hidden", "true");
+
+	const label = document.createElement("span");
+	label.className = "label";
+
+	main.append(spinner, label);
+
+	const dismissBtn = document.createElement("button");
+	dismissBtn.type = "button";
+	dismissBtn.className = "dismiss";
+	dismissBtn.setAttribute("aria-label", "Dismiss notification");
+	dismissBtn.title = "Dismiss";
+	dismissBtn.textContent = "×";
+	dismissBtn.addEventListener("click", event => {
+		event.preventDefault();
+		event.stopPropagation();
+		dismissStylingIndicator();
+	});
+
+	toast.append(main, dismissBtn);
+	shadow.append(style, toast);
+
+	const root = document.documentElement || document.body;
+	if (!root) return;
+	root.appendChild(host);
+	stylingIndicatorHost = host;
+	updateStylingIndicatorContent(message, busy);
+}
+
+function updateStylingIndicatorContent(message, busy) {
+	const shadow = stylingIndicatorHost?.shadowRoot;
+	if (!shadow) return;
+	const label = shadow.querySelector(".label");
+	const spinner = shadow.querySelector(".spinner");
+	if (label) label.textContent = message;
+	if (spinner) spinner.hidden = !busy;
+}
+
+function hideStylingIndicator() {
+	if (stylingResultHideTimer) {
+		clearTimeout(stylingResultHideTimer);
+		stylingResultHideTimer = null;
+	}
+	if (!stylingIndicatorHost) {
+		const existing = document.getElementById(STYLING_INDICATOR_HOST_ID);
+		if (existing) existing.remove();
+		return;
+	}
+	stylingIndicatorHost.remove();
+	stylingIndicatorHost = null;
+}
+
 function notifyRefreshBusyComplete(actionBusyGeneration) {
 	browser.runtime.sendMessage({
 		refreshBusyComplete: true,
@@ -407,7 +660,6 @@ function invalidateUrlDependentCaches() {
 	pendingStatusHrefs = new Set();
 	pendingObservedHrefs = new Set();
 	pendingObservedTextElements = new Set();
-	pendingMutationCards = new Set();
 	pendingAddedNodes = [];
 	pendingAddedOffset = 0;
 	if (mutationFrameId) {
@@ -428,11 +680,8 @@ function invalidateUrlDependentCaches() {
 	}
 
 	clearDuplicateWarningPass();
+	duplicateStyledHrefs = new Set();
 	lastDuplicatePageToastKey = "";
-	lastPageTitleScanUrl = "";
-	lastPageTitleScanTitle = "";
-	pageTitleScanPendingUrl = "";
-	pageTitleScanPendingTitle = "";
 	hideDuplicateWarningToast();
 
 	removeStatusClasses(managedClassNames);
@@ -441,21 +690,6 @@ function invalidateUrlDependentCaches() {
 function invalidateTextFilterCache() {
 	textFilterCache.clear();
 	removeStatusClasses(managedClassNames);
-}
-
-function flushLookupRetriesNow() {
-	if (lookupRetryTimer) {
-		clearTimeout(lookupRetryTimer);
-		lookupRetryTimer = null;
-	}
-	if (lookupRetryHrefs.size === 0) return;
-	const batch = Array.from(lookupRetryHrefs);
-	lookupRetryHrefs = new Set();
-	for (const href of batch) {
-		softMissHrefs.delete(href);
-		pendingStatusHrefs.delete(href);
-	}
-	requestBookmarkStatuses(batch, { force: true });
 }
 
 function scheduleLookupRetry(hrefs) {
@@ -469,7 +703,13 @@ function scheduleLookupRetry(hrefs) {
 	lookupRetryAttempt += 1;
 	lookupRetryTimer = setTimeout(() => {
 		lookupRetryTimer = null;
-		flushLookupRetriesNow();
+		const batch = Array.from(lookupRetryHrefs);
+		lookupRetryHrefs = new Set();
+		for (const href of batch) {
+			softMissHrefs.delete(href);
+			pendingStatusHrefs.delete(href);
+		}
+		requestBookmarkStatuses(batch, { force: true });
 	}, delay);
 }
 
@@ -561,7 +801,7 @@ function requestBookmarkStatuses(hrefs, options = {}) {
 							sawPositive = true;
 						}
 					} else {
-						// Soft miss — retry on requery / warmup / index-ready.
+						// Soft miss — retry on requery / visibility / index-ready.
 						softMissHrefs.add(href);
 						processedHrefs.delete(href);
 						linkStatusMap.delete(href);
@@ -582,7 +822,6 @@ function requestBookmarkStatuses(hrefs, options = {}) {
 		})
 		.finally(() => {
 			if (showLoading) endStylingIndicator(countStyledAndHiddenElements());
-			scheduleDuplicateWarningPass();
 		});
 }
 
@@ -681,17 +920,8 @@ function buildLinkMap() {
 	}
 }
 
-function resolvedAnchorHref(link) {
-	if (!link || (link.tagName !== "A" && link.tagName !== "AREA")) return "";
-	// Ignore anchors with no href. .href still reflects the document URL in that case.
-	const attr = link.getAttribute("href");
-	if (attr == null || attr === "") return "";
-	// Prefer the browser-resolved URL so relative listing hrefs match saved links.
-	return link.href || attr;
-}
-
 function collectLink(link) {
-	const href = resolvedAnchorHref(link);
+	const href = link.getAttribute('href') || link.href || '';
 	if (!href) return null;
 	let normalized;
 	try {
@@ -700,20 +930,8 @@ function collectLink(link) {
 
 	if (!/^https?:/.test(normalized)) return null;
 
-	const previous = linkNormalizedKey.get(link);
-	if (previous && previous !== normalized) {
-		const previousList = linkMap.get(previous);
-		if (previousList) {
-			const index = previousList.indexOf(link);
-			if (index >= 0) previousList.splice(index, 1);
-			if (previousList.length === 0) linkMap.delete(previous);
-		}
-	}
-	linkNormalizedKey.set(link, normalized);
-
 	if (!linkMap.has(normalized)) linkMap.set(normalized, []);
-	const list = linkMap.get(normalized);
-	if (!list.includes(link)) list.push(link);
+	linkMap.get(normalized).push(link);
 	return normalized;
 }
 
@@ -758,10 +976,7 @@ function sendUniqueHrefs(options = {}) {
 // Re-asks even for hrefs previously recorded as soft misses.
 function performRequeryRefresh() {
 	if (!searchSite) return;
-	// Skip a duplicate scan only when this URL already got positive looks.
-	// A first pass that ran before the style index was ready leaves only
-	// soft misses; tabs.onUpdated must be allowed to ask again.
-	if (initScanHref === location.href && processedHrefs.size > 0) return;
+	if (initScanHref === location.href) return;
 	initScanHref = location.href;
 
 	buildLinkMap();
@@ -897,22 +1112,11 @@ function closestConfiguredCards(element) {
 			node = node.parentElement;
 		}
 	}
-	// Configured class is often on an inner wrapper inside a listing <a>.
-	if (typeof element.getElementsByClassName === "function") {
-		for (const classGroup of classesForSearch) {
-			for (const nested of element.getElementsByClassName(classGroup)) {
-				if (!seen.has(nested)) {
-					seen.add(nested);
-					cards.push(nested);
-				}
-			}
-		}
-	}
 	return cards;
 }
 
 function restyleConfiguredCard(card, statusLookup, matchingTextRules) {
-	let matchedClassName = findStatusClassFromLinks(card, statusLookup);
+	let matchedClassName = bestStatusClassForCard(card, statusLookup);
 	if (enableDeepSearch && !matchedClassName) {
 		const text = card.textContent || "";
 		const html = card.innerHTML || "";
@@ -996,8 +1200,8 @@ function applyHrefStatusUpdates(statusUpdates) {
 	}
 	if (touchedPageUrl) syncPageTopBorder(statusLookup);
 
-	// Look-shortcut save/unsave of this page restyles its href only.
-	// Hide the toast if this URL is now saved; skip a full title rescan.
+	// Look-shortcut save/unsave of this page restyles its href; other listing
+	// titles are unchanged, so skip the title-similarity scan.
 	const onlyCurrentPage = touchedPageUrl &&
 		Object.keys(statusUpdates).every(href => href === pageHref);
 	if (onlyCurrentPage) {
@@ -1013,11 +1217,10 @@ function applyHrefStatusUpdates(statusUpdates) {
 function applyBookmarkStyling(message) {
 	if (!searchSite) return;
 
-	injectBookmarkStyles();
-
 	const statuses = message && message.statuses && typeof message.statuses === "object"
 		? message.statuses
 		: {};
+	const statusLookup = buildBookmarkStatusLookup(statuses);
 
 	for (const [normalized, status] of Object.entries(statuses)) {
 		if (status && status !== "none" && getStyleConfigById(status)) {
@@ -1031,10 +1234,6 @@ function applyBookmarkStyling(message) {
 		}
 	}
 
-	// Style from every resolved look, not only this batch. Mutations otherwise
-	// restyle new cards against the first-paint match set and miss new URLs.
-	const statusLookup = buildBookmarkStatusLookup(positiveStatusesFromLinkMap());
-
 	for (const [normalized, status] of statusLookup) {
 		const elements = linksForHref(normalized);
 		for (const element of elements) {
@@ -1044,10 +1243,8 @@ function applyBookmarkStyling(message) {
 
 	applyPageTopBorder(statusLookup);
 	applyCardStylesFromLinks(statusLookup);
-	applyCardStylesFromConfiguredClasses(statusLookup);
 	applyDeepSearchToUnstyledCards(statusLookup);
 	applyTextFilters();
-	flushPendingMutationCards();
 	scheduleDuplicateWarningPass();
 }
 
@@ -1058,11 +1255,11 @@ function buildBookmarkStatusLookup(statuses) {
 		const style = getStyleConfigById(status);
 		if (!style) continue;
 
-		let path = "";
+		let path;
 		try {
 			path = new URL(normalized).pathname;
 		} catch {
-			path = "";
+			continue;
 		}
 
 		statusLookup.set(normalized, {
@@ -1095,67 +1292,6 @@ function applyCardStylesFromLinks(statusLookup) {
 	}
 }
 
-function applyCardStylesFromConfiguredClasses(statusLookup) {
-	if (!classesForSearch.length || !statusLookup || statusLookup.size === 0) return;
-	for (const classGroup of classesForSearch) {
-		for (const element of document.getElementsByClassName(classGroup)) {
-			const matchedClassName = findStatusClassFromLinks(element, statusLookup);
-			if (matchedClassName) applyStatusClass(element, matchedClassName);
-		}
-	}
-}
-
-function collectAnchorsForCard(element) {
-	const anchors = [];
-	const seen = new Set();
-	const add = node => {
-		if (!(node instanceof HTMLAnchorElement) || seen.has(node)) return;
-		if (!resolvedAnchorHref(node)) return;
-		seen.add(node);
-		anchors.push(node);
-	};
-	if (element instanceof HTMLAnchorElement) add(element);
-	if (typeof element.getElementsByTagName === "function") {
-		const list = element.getElementsByTagName("a");
-		for (let i = 0; i < list.length; i++) add(list[i]);
-	}
-	let node = element.parentElement;
-	while (node) {
-		if (node instanceof HTMLAnchorElement) {
-			add(node);
-			break;
-		}
-		node = node.parentElement;
-	}
-	return anchors;
-}
-
-function getElementLinkHrefSet(element) {
-	const normalizedHrefs = new Set();
-	for (const link of collectAnchorsForCard(element)) {
-		const normalized = collectLink(link);
-		if (normalized) normalizedHrefs.add(normalized);
-	}
-	return normalizedHrefs;
-}
-
-function findStatusClassFromLinks(element, statusLookup) {
-	if (!element || !statusLookup || statusLookup.size === 0) return null;
-	let matched = bestStatusClassForCard(element, statusLookup);
-	if (matched) return matched;
-
-	const linkHrefs = getElementLinkHrefSet(element);
-	if (linkHrefs.size === 0) return null;
-	let matchedStatus = null;
-	for (const href of linkHrefs) {
-		const status = statusLookup.get(href);
-		if (status && (!matchedStatus || status.priority < matchedStatus.priority)) {
-			matchedStatus = status;
-		}
-	}
-	return matchedStatus?.className || null;
-}
-
 function applyDeepSearchToUnstyledCards(statusLookup) {
 	if (!enableDeepSearch || !classesForSearch.length) return;
 	const statusesByPriority = Array.from(statusLookup.values())
@@ -1182,7 +1318,7 @@ function bestStatusClassForCard(card, statusLookup) {
 	let matched = null;
 	for (const status of statusLookup.values()) {
 		for (const link of linksForHref(status.normalized)) {
-			if (link !== card && !card.contains(link) && !link.contains(card)) continue;
+			if (link !== card && !card.contains(link)) continue;
 			if (!matched || status.priority < matched.priority) matched = status;
 		}
 	}
@@ -1312,62 +1448,42 @@ function compactPendingAddedNodes() {
 	pendingAddedOffset = 0;
 }
 
-function cardMatchesClassGroup(node, classGroup) {
-	if (!node?.classList) return false;
-	const requiredClasses = classGroup.split(/\s+/).filter(Boolean);
-	return requiredClasses.length > 0 &&
-		requiredClasses.every(className => node.classList.contains(className));
-}
-
 function queueObservedTextElements(node) {
-	if (!classesForSearch.length || !(node instanceof Element)) return;
+	if (!classesForSearch.length) return;
 	for (const classGroup of classesForSearch) {
-		if (cardMatchesClassGroup(node, classGroup)) {
+		const requiredClasses = classGroup.split(/\s+/).filter(Boolean);
+		if (
+			requiredClasses.length &&
+			node.classList &&
+			requiredClasses.every(className => node.classList.contains(className))
+		) {
 			pendingObservedTextElements.add(node);
 		}
 		if (typeof node.getElementsByClassName !== "function") continue;
 		const found = node.getElementsByClassName(classGroup);
 		for (const el of found) pendingObservedTextElements.add(el);
 	}
-	// New <a> tags are often inserted into a card that already exists.
-	// Walk ancestors so those cards get the same restyle pass as a refresh.
-	let ancestor = node.parentElement;
-	while (ancestor && ancestor !== document.documentElement && ancestor !== document.body) {
-		for (const classGroup of classesForSearch) {
-			if (cardMatchesClassGroup(ancestor, classGroup)) {
-				pendingObservedTextElements.add(ancestor);
-			}
-		}
-		ancestor = ancestor.parentElement;
-	}
 }
 
-function collectAnchorsFromSubtree(node) {
-	const anchors = [];
-	if (node instanceof HTMLAnchorElement) anchors.push(node);
-	if (typeof node.getElementsByTagName === "function") {
-		const list = node.getElementsByTagName("a");
-		for (let i = 0; i < list.length; i++) anchors.push(list[i]);
-	}
-	return anchors;
-}
-
-function collectObservedNode(node, collectCardTargets) {
-	for (const link of collectAnchorsFromSubtree(node)) {
-		const norm = collectLink(link);
+function collectObservedNode(node, collectTextTargets) {
+	if (node instanceof HTMLAnchorElement) {
+		const norm = collectLink(node);
 		if (norm) pendingObservedHrefs.add(norm);
 	}
-	if (collectCardTargets) queueObservedTextElements(node);
+	if (typeof node.querySelectorAll === "function") {
+		const links = node.querySelectorAll("a[href]");
+		for (const link of links) {
+			const norm = collectLink(link);
+			if (norm) pendingObservedHrefs.add(norm);
+		}
+	}
+	if (collectTextTargets) queueObservedTextElements(node);
 }
 
 function startMutationObserver() {
 	if (observer) return;
 	observer = new MutationObserver(mutations => {
 		for (const record of mutations) {
-			if (record.type === "attributes") {
-				enqueueObservedAddedNode(record.target);
-				continue;
-			}
 			const nodes = record.addedNodes;
 			for (let i = 0; i < nodes.length; i++) {
 				enqueueObservedAddedNode(nodes[i]);
@@ -1377,9 +1493,7 @@ function startMutationObserver() {
 	});
 	observer.observe(document.documentElement || document.body, {
 		childList: true,
-		subtree: true,
-		attributes: true,
-		attributeFilter: ["href"]
+		subtree: true
 	});
 }
 
@@ -1390,7 +1504,8 @@ function scheduleObservedMutationFrame() {
 
 function processObservedMutationFrame() {
 	mutationFrameId = 0;
-	const collectCardTargets = classesForSearch.length > 0;
+	const collectTextTargets = classesForSearch.length > 0 &&
+		getMatchingTextRules().length > 0;
 	const started = performance.now();
 
 	while (pendingAddedOffset < pendingAddedNodes.length) {
@@ -1398,7 +1513,7 @@ function processObservedMutationFrame() {
 			scheduleObservedMutationFrame();
 			break;
 		}
-		collectObservedNode(pendingAddedNodes[pendingAddedOffset], collectCardTargets);
+		collectObservedNode(pendingAddedNodes[pendingAddedOffset], collectTextTargets);
 		pendingAddedOffset += 1;
 	}
 
@@ -1419,109 +1534,56 @@ function scheduleObservedHrefProcessing() {
 	mutationDebounceTimer = setTimeout(processObservedHrefs, mutationDebounceDelay);
 }
 
-function restyleObservedCards(cards, statusLookup) {
-	if (!cards || cards.length === 0) return;
-	const lookup = statusLookup || buildBookmarkStatusLookup(positiveStatusesFromLinkMap());
-	const matchingTextRules = getMatchingTextRules();
-	for (const card of cards) {
-		if (!card?.isConnected) continue;
-		restyleConfiguredCard(card, lookup, matchingTextRules);
-	}
-}
-
-function flushPendingMutationCards() {
-	if (pendingMutationCards.size === 0) return;
-	const cards = [];
-	for (const card of pendingMutationCards) {
-		if (card.isConnected) cards.push(card);
-	}
-	pendingMutationCards = new Set();
-	restyleObservedCards(cards, buildBookmarkStatusLookup(positiveStatusesFromLinkMap()));
-}
-
-function harvestHrefsFromObservedCards(cards, hrefSet) {
-	for (const card of cards) {
-		if (!card?.isConnected) continue;
-		pendingMutationCards.add(card);
-		for (const link of collectAnchorsForCard(card)) {
-			const norm = collectLink(link);
-			if (norm) hrefSet.add(norm);
-		}
-	}
-}
-
-function collectUnresolvedListingHrefs(forceHrefs, previousHrefs) {
-	const hrefsToRequest = [];
-	const seen = new Set();
-	const consider = (href, force) => {
-		if (!href || seen.has(href)) return;
-		seen.add(href);
-		if (linkStatusMap.has(href) || pendingStatusHrefs.has(href)) return;
-		if (!force && softMissHrefs.has(href)) return;
-		if (force) softMissHrefs.delete(href);
-		hrefsToRequest.push(href);
-	};
-	for (const href of forceHrefs) consider(href, true);
-	for (const href of linkMap.keys()) {
-		consider(href, previousHrefs ? !previousHrefs.has(href) : false);
-	}
-	return hrefsToRequest;
-}
-
 function processObservedHrefs() {
-	const observedCards = Array.from(pendingObservedTextElements);
-	pendingObservedTextElements = new Set();
-	const harvested = pendingObservedHrefs;
+	const hrefs = Array.from(pendingObservedHrefs);
 	pendingObservedHrefs = new Set();
+	const textElements = Array.from(pendingObservedTextElements);
+	pendingObservedTextElements = new Set();
 	mutationDebounceTimer = null;
 
-	const previousHrefs = new Set(linkMap.keys());
-	buildLinkMap();
-	harvestHrefsFromObservedCards(observedCards, harvested);
+	if (textElements.length > 0) {
+		applyTextRulesTo(
+			textElements.filter(el => el.isConnected && !hasStatusClass(el)),
+			getMatchingTextRules()
+		);
+	}
 
-	const statusLookup = buildBookmarkStatusLookup(positiveStatusesFromLinkMap());
-	const matchingTextRules = getMatchingTextRules();
-	for (const href of harvested) {
-		if (linkStatusMap.has(href)) {
-			applyCachedLinkStatus(href, statusLookup, matchingTextRules);
+	const hrefsToRequest = [];
+	for (const norm of hrefs) {
+		if (linkStatusMap.has(norm)) {
+			applyCachedLinkStatus(norm);
+		}
+		if (
+			!processedHrefs.has(norm) &&
+			!softMissHrefs.has(norm) &&
+			!pendingStatusHrefs.has(norm)
+		) {
+			hrefsToRequest.push(norm);
 		}
 	}
 
-	const hrefsToRequest = collectUnresolvedListingHrefs(harvested, previousHrefs);
-	if (hrefsToRequest.length === 0) {
-		restyleObservedCards(observedCards, statusLookup);
-		pendingMutationCards = new Set();
-		scheduleDuplicateWarningPass();
-		return;
-	}
-
-	// Same pipeline as first paint: look up new listing URLs, then style
-	// cards from the resolved looks. Do not apply text rules first — that
-	// marks cards "already styled" and skips bookmark matching.
-	requestBookmarkStatuses(hrefsToRequest, { force: true });
+	requestBookmarkStatuses(hrefsToRequest);
 	scheduleDuplicateWarningPass();
 }
 
-function applyCachedLinkStatus(norm, statusLookup, matchingTextRules) {
+function applyCachedLinkStatus(norm) {
 	const status = linkStatusMap.get(norm);
 	if (!status || status === "none") return;
 	const style = getStyleConfigById(status);
 	if (!style) return;
 
-	const lookup = statusLookup || buildBookmarkStatusLookup(positiveStatusesFromLinkMap());
-	const textRules = matchingTextRules === undefined ? getMatchingTextRules() : matchingTextRules;
 	const els = linksForHref(norm);
 	for (const el of els) {
-		applyStatusClass(el, style.className);
+		if (!hasStatusClass(el)) applyStatusClass(el, style.className);
 		for (const card of closestConfiguredCards(el)) {
-			restyleConfiguredCard(card, lookup, textRules);
+			if (card !== el && !hasStatusClass(card)) {
+				applyStatusClass(card, style.className);
+			}
 		}
 	}
 }
 
 function scheduleVisibilityRescan() {
-	if (!searchSite) return;
-	if (lookupRetryHrefs.size === 0) return;
 	if (visibilityRescanTimer) return;
 	visibilityRescanTimer = setTimeout(() => {
 		visibilityRescanTimer = null;
@@ -1532,10 +1594,10 @@ function scheduleVisibilityRescan() {
 function performVisibilityRescan() {
 	if (!searchSite) return;
 	if (document.visibilityState === "hidden") return;
-	// Cmd-Tab / window focus is not a reason to re-ask every unmatched URL.
-	// Lookups already wait for the host list; flush only failed requests
-	// whose retry timer may have been throttled while hidden.
-	flushLookupRetriesNow();
+
+	// Retry soft misses: a prior pass may have resolved before the folder index
+	// was complete. Background re-checks the folder map cheaply.
+	clearSoftMissesAndRescan();
 }
 
 function onVisibilityChange() {
@@ -1567,7 +1629,7 @@ function onWindowFocus() {
 		pageWasHidden = true;
 		return;
 	}
-	pageWasHidden = false;
+	if (softMissHrefs.size === 0 && lookupRetryHrefs.size === 0) return;
 	scheduleVisibilityRescan();
 }
 
@@ -1577,6 +1639,350 @@ function ensureVisibilityRescanListeners() {
 	document.addEventListener("visibilitychange", onVisibilityChange);
 	window.addEventListener("pageshow", onPageShow);
 	window.addEventListener("focus", onWindowFocus);
+}
+
+const DUPLICATE_LISTING_CANDIDATE_LIMIT = 400;
+const DUPLICATE_WARNING_TOAST_DURATION_MS = 10000;
+const DUPLICATE_WARNING_TOAST_HOST_ID = "bookmarks-enhancer-duplicate-warning";
+
+function hrefHasUrlMatch(href) {
+	const status = linkStatusMap.get(href);
+	return !!(status && status !== "none");
+}
+
+function pageHrefHasUrlMatch() {
+	try {
+		return hrefHasUrlMatch(normalizeHrefForSearch(window.location.href));
+	} catch {
+		return false;
+	}
+}
+
+function cardHasUrlMatchedLink(card) {
+	if (!card) return false;
+	for (const [href, status] of linkStatusMap) {
+		if (!status || status === "none") continue;
+		for (const link of linksForHref(href)) {
+			if (link === card || card.contains(link)) return true;
+		}
+	}
+	return false;
+}
+
+function listingLinkInUrlMatchedCard(link) {
+	for (const card of closestConfiguredCards(link)) {
+		if (cardHasUrlMatchedLink(card)) return true;
+	}
+	return false;
+}
+
+function clearDuplicateWarningPass() {
+	duplicateWarningPassId += 1;
+	if (duplicateWarningTimer) {
+		clearTimeout(duplicateWarningTimer);
+		duplicateWarningTimer = null;
+	}
+}
+
+function scheduleDuplicateWarningPass() {
+	if (!enableDuplicateWarning) {
+		clearDuplicateListingLooks();
+		hideDuplicateWarningToast();
+		return;
+	}
+	if (duplicateWarningTimer) return;
+	duplicateWarningTimer = setTimeout(() => {
+		duplicateWarningTimer = null;
+		runDuplicateWarningPass();
+	}, 80);
+}
+
+function runDuplicateWarningPass() {
+	if (!enableDuplicateWarning || !searchSite) {
+		clearDuplicateListingLooks();
+		hideDuplicateWarningToast();
+		return;
+	}
+	const passId = ++duplicateWarningPassId;
+	const urlGeneration = urlCacheGeneration;
+	matchDuplicateListingTitles(passId, urlGeneration);
+	matchDuplicatePageTitle(passId, urlGeneration);
+}
+
+function collectDuplicateListingCandidates() {
+	const candidates = [];
+	for (const href of linkMap.keys()) {
+		if (hrefHasUrlMatch(href)) continue;
+		for (const link of linksForHref(href)) {
+			if (listingLinkInUrlMatchedCard(link)) continue;
+			const title = (link.textContent || "").replace(/\s+/g, " ").trim();
+			const normalized = normalizeDuplicateTitle(title);
+			if (!normalized || isBoilerplateDuplicateLinkTitle(normalized)) continue;
+			candidates.push({ href, title });
+			if (candidates.length >= DUPLICATE_LISTING_CANDIDATE_LIMIT) return candidates;
+		}
+	}
+	return candidates;
+}
+
+function clearDuplicateLookFromHref(href) {
+	if (hrefHasUrlMatch(href)) return;
+	for (const link of linksForHref(href)) {
+		if (managedClassNames.length) link.classList.remove(...managedClassNames);
+		for (const card of closestConfiguredCards(link)) {
+			if (cardHasUrlMatchedLink(card)) continue;
+			if (managedClassNames.length) card.classList.remove(...managedClassNames);
+		}
+	}
+}
+
+function clearDuplicateListingLooks() {
+	for (const href of duplicateStyledHrefs) {
+		clearDuplicateLookFromHref(href);
+	}
+	duplicateStyledHrefs = new Set();
+}
+
+function applyDuplicateListingMatches(matchedHrefs) {
+	const style = getStyleConfigById(duplicateWarningStyleId);
+	const next = new Set(Array.isArray(matchedHrefs) ? matchedHrefs : []);
+	for (const href of duplicateStyledHrefs) {
+		if (next.has(href)) continue;
+		clearDuplicateLookFromHref(href);
+	}
+	if (!style) {
+		duplicateStyledHrefs = new Set();
+		return;
+	}
+
+	const applied = new Set();
+	for (const href of next) {
+		if (hrefHasUrlMatch(href)) continue;
+		let styledAny = false;
+		for (const link of linksForHref(href)) {
+			if (listingLinkInUrlMatchedCard(link)) continue;
+			const title = (link.textContent || "").replace(/\s+/g, " ").trim();
+			const normalized = normalizeDuplicateTitle(title);
+			if (!normalized || isBoilerplateDuplicateLinkTitle(normalized)) continue;
+			applyStatusClass(link, style.className);
+			styledAny = true;
+			for (const card of closestConfiguredCards(link)) {
+				if (cardHasUrlMatchedLink(card) || hasStatusClass(card)) continue;
+				applyStatusClass(card, style.className);
+			}
+		}
+		if (styledAny) applied.add(href);
+	}
+	duplicateStyledHrefs = applied;
+}
+
+function matchDuplicateListingTitles(passId, urlGeneration) {
+	const candidates = collectDuplicateListingCandidates();
+	if (candidates.length === 0) {
+		clearDuplicateListingLooks();
+		return;
+	}
+	browser.runtime.sendMessage({
+		matchDuplicateListingTitles: true,
+		candidates
+	}).then(result => {
+		if (passId !== duplicateWarningPassId) return;
+		if (urlGeneration !== urlCacheGeneration) return;
+		if (!enableDuplicateWarning) return;
+		if (!result || result.ok === false) return;
+		applyDuplicateListingMatches(result.hrefs);
+	}).catch(() => {});
+}
+
+function matchDuplicatePageTitle(passId, urlGeneration) {
+	if (pageHrefHasUrlMatch()) {
+		lastDuplicatePageToastKey = "";
+		hideDuplicateWarningToast();
+		return;
+	}
+	const url = location.href;
+	const title = document.title || "";
+	if (isGenericDuplicatePageTitle(title)) {
+		lastDuplicatePageToastKey = "";
+		hideDuplicateWarningToast();
+		return;
+	}
+	browser.runtime.sendMessage({
+		matchDuplicatePageTitle: true,
+		url,
+		title
+	}).then(result => {
+		if (passId !== duplicateWarningPassId) return;
+		if (urlGeneration !== urlCacheGeneration) return;
+		if (!enableDuplicateWarning) return;
+		if (location.href !== url) return;
+		if (pageHrefHasUrlMatch()) {
+			hideDuplicateWarningToast();
+			return;
+		}
+		const matches = Array.isArray(result?.matches) ? result.matches : [];
+		if (matches.length === 0) {
+			lastDuplicatePageToastKey = "";
+			hideDuplicateWarningToast();
+			return;
+		}
+		const toastKey = `${url}\0${title}\0${matches.map(match => match.url).join("\0")}`;
+		if (toastKey === lastDuplicatePageToastKey) return;
+		lastDuplicatePageToastKey = toastKey;
+		showDuplicateWarningToast(matches);
+	}).catch(() => {});
+}
+
+function hideDuplicateWarningToast() {
+	if (duplicateWarningToastHideTimer) {
+		clearTimeout(duplicateWarningToastHideTimer);
+		duplicateWarningToastHideTimer = null;
+	}
+	const host = duplicateWarningToastHost ||
+		document.getElementById(DUPLICATE_WARNING_TOAST_HOST_ID);
+	if (host) host.remove();
+	duplicateWarningToastHost = null;
+}
+
+function showDuplicateWarningToast(matches) {
+	hideDuplicateWarningToast();
+	const items = (matches || []).slice(0, DUPLICATE_WARNING_MAX_MATCHES);
+	if (!items.length) return;
+
+	const host = document.createElement("div");
+	host.id = DUPLICATE_WARNING_TOAST_HOST_ID;
+	host.setAttribute("data-be-duplicate-warning", "host");
+	host.setAttribute("role", "status");
+	host.setAttribute("aria-live", "polite");
+	host.style.cssText = [
+		"all: initial",
+		"position: fixed",
+		"z-index: 2147483646",
+		"left: 16px",
+		"bottom: 16px",
+		"pointer-events: none"
+	].join(";");
+
+	const shadow = host.attachShadow({ mode: "open" });
+	const style = document.createElement("style");
+	style.textContent = `
+		:host { display: block !important; }
+		.toast {
+			display: flex;
+			align-items: flex-start;
+			gap: 8px;
+			max-width: min(360px, calc(100vw - 32px));
+			padding: 10px 12px;
+			border: 1px solid #92400e;
+			border-radius: 8px;
+			background: #78350f;
+			color: #fffbeb;
+			box-shadow: 0 10px 28px rgb(0 0 0 / 35%);
+			font: 13px/1.35 system-ui, -apple-system, sans-serif;
+			pointer-events: auto;
+		}
+		.toast-main { flex: 1; min-width: 0; }
+		.heading { margin: 0 0 6px; font-weight: 650; }
+		.matches { list-style: none; margin: 0; padding: 0; }
+		.match { margin: 0 0 8px; }
+		.match:last-child { margin-bottom: 0; }
+		.match-title { font-weight: 600; }
+		.match-meta, .match-url {
+			display: block;
+			margin-top: 2px;
+			opacity: 0.9;
+			word-break: break-all;
+		}
+		.match-url {
+			color: inherit;
+			text-decoration: underline;
+		}
+		.dismiss {
+			display: inline-flex;
+			align-items: center;
+			justify-content: center;
+			flex: 0 0 auto;
+			width: 1.35rem;
+			height: 1.35rem;
+			margin: -0.1rem -0.2rem 0 0;
+			padding: 0;
+			border: 0;
+			border-radius: 4px;
+			background: transparent;
+			color: inherit;
+			font: 700 1rem/1 system-ui, -apple-system, sans-serif;
+			cursor: pointer;
+			opacity: 0.85;
+		}
+		.dismiss:hover { background: rgb(255 255 255 / 14%); opacity: 1; }
+		.dismiss:focus-visible { outline: 2px solid #fffbeb; outline-offset: 1px; }
+	`;
+
+	const toast = document.createElement("div");
+	toast.className = "toast";
+
+	const main = document.createElement("div");
+	main.className = "toast-main";
+
+	const heading = document.createElement("p");
+	heading.className = "heading";
+	heading.textContent = items.length === 1
+		? "A similar link is already saved"
+		: "Similar links are already saved";
+
+	const list = document.createElement("ul");
+	list.className = "matches";
+	for (const match of items) {
+		const item = document.createElement("li");
+		item.className = "match";
+		const titleEl = document.createElement("span");
+		titleEl.className = "match-title";
+		titleEl.textContent = match.title || match.url || "Untitled link";
+		item.appendChild(titleEl);
+		if (match.look) {
+			const meta = document.createElement("span");
+			meta.className = "match-meta";
+			meta.textContent = match.look;
+			item.appendChild(meta);
+		}
+		if (match.url) {
+			const urlEl = document.createElement("a");
+			urlEl.className = "match-url";
+			urlEl.href = match.url;
+			urlEl.target = "_blank";
+			urlEl.rel = "noopener noreferrer";
+			urlEl.textContent = match.url;
+			item.appendChild(urlEl);
+		}
+		list.appendChild(item);
+	}
+
+	main.append(heading, list);
+
+	const dismissBtn = document.createElement("button");
+	dismissBtn.type = "button";
+	dismissBtn.className = "dismiss";
+	dismissBtn.setAttribute("aria-label", "Dismiss potential duplicate warning");
+	dismissBtn.title = "Dismiss";
+	dismissBtn.textContent = "×";
+	dismissBtn.addEventListener("click", event => {
+		event.preventDefault();
+		event.stopPropagation();
+		hideDuplicateWarningToast();
+	});
+
+	toast.append(main, dismissBtn);
+	shadow.append(style, toast);
+
+	const root = document.documentElement || document.body;
+	if (!root) return;
+	root.appendChild(host);
+	duplicateWarningToastHost = host;
+
+	duplicateWarningToastHideTimer = setTimeout(() => {
+		duplicateWarningToastHideTimer = null;
+		hideDuplicateWarningToast();
+	}, DUPLICATE_WARNING_TOAST_DURATION_MS);
 }
 
 function initProcessing() {
@@ -1590,8 +1996,8 @@ function initProcessing() {
 	startMutationObserver();
 	scheduleWarmupRescan();
 
-	// Background tabs can finish the first scan while still hidden; remember
-	// that so a later focus can flush failed lookups (not every miss).
+	// Background tabs often finish the first scan while still hidden; rescan
+	// once when the user first focuses the tab.
 	if (document.visibilityState === "hidden") {
 		pageWasHidden = true;
 	}

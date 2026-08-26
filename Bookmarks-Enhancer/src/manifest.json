@@ -16,8 +16,6 @@
           "browser-polyfill.js",
           "utils.js",
           "contentScript.js",
-          "contentToasts.js",
-          "contentDuplicates.js",
           "lookShortcuts.js"
         ]
     }
@@ -28,7 +26,6 @@
       "browser-polyfill.js",
       "utils.js",
       "utilsSites.js",
-      "backgroundLinks.js",
       "backgroundScript.js"
     ]
   },
