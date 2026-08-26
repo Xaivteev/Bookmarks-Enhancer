@@ -1,4 +1,5 @@
 ﻿const CONTENT_SCRIPT_FILES = ["browser-polyfill.js", "utils.js", "contentScript.js", "lookShortcuts.js"];
+const CLASS_PICKER_SITE_UTILS_FILES = ["utilsSites.js", "utilsSitesPicker.js"];
 
 const DEFAULT_ACTION_TITLE = "Bookmarks Enhancer";
 const ACTION_BUSY_TIMEOUT_MS = 60000;
@@ -189,24 +190,6 @@ browser.runtime.onMessage.addListener((message, sender, sendResponse) => {
 		return true;
 	}
 
-	if (message && message.matchDuplicateListingTitles) {
-		const candidates = Array.isArray(message.candidates) ? message.candidates : [];
-		ensureSettingsReady()
-			.then(() => ensureHostLinksReadyForHrefs(
-				candidates.map(candidate => candidate && candidate.href).filter(Boolean)
-			))
-			.then(() => sendResponse(matchDuplicateListingTitles(candidates)))
-			.catch(error => {
-				onError(error);
-				sendResponse({
-					ok: false,
-					hrefs: [],
-					error: String(error && error.message ? error.message : error)
-				});
-			});
-		return true;
-	}
-
 	if (message && message.matchDuplicatePageTitle) {
 		const url = message.url || (sender && sender.tab && sender.tab.url) || "";
 		const title = message.title || (sender && sender.tab && sender.tab.title) || "";
@@ -352,6 +335,36 @@ function setRevealHiddenOnTab(tabId, enabled) {
 		});
 }
 
+let utilsSitesExtraLoadPromise = null;
+
+function loadUtilsSitesExtra() {
+	if (globalThis.__beUtilsSitesExtraLoaded) return Promise.resolve();
+	if (utilsSitesExtraLoadPromise) return utilsSitesExtraLoadPromise;
+	if (typeof importScripts === "function") {
+		importScripts("utilsSitesExtra.js");
+		globalThis.__beUtilsSitesExtraLoaded = true;
+		return Promise.resolve();
+	}
+	if (typeof document === "undefined") {
+		return Promise.reject(new Error("Cannot load site migration helpers"));
+	}
+	utilsSitesExtraLoadPromise = new Promise((resolve, reject) => {
+		const script = document.createElement("script");
+		script.src = browser.runtime.getURL("utilsSitesExtra.js");
+		script.onload = () => {
+			globalThis.__beUtilsSitesExtraLoaded = true;
+			utilsSitesExtraLoadPromise = null;
+			resolve();
+		};
+		script.onerror = () => {
+			utilsSitesExtraLoadPromise = null;
+			reject(new Error("Failed to load site migration helpers"));
+		};
+		(document.head || document.documentElement).appendChild(script);
+	});
+	return utilsSitesExtraLoadPromise;
+}
+
 function onError(error) {
 	console.log(`Error: ${error}`);
 }
@@ -362,8 +375,9 @@ let styleRules = DEFAULT_STYLE_RULES.map(rule => ({ ...rule }));
 let styleRuleById = new Map();
 let enableDuplicateWarning = false;
 let linkLookupBySite = new Map();
-let titleExactBySite = new Map();
 let titleEntriesBySite = new Map();
+let titleTokenIndexBySite = new Map();
+let titleIndexReadyBySite = new Set();
 let siteHostIndex = new Map();
 const urlNormalizationCache = createUrlNormalizationCache();
 let hostsLoaded = new Set();
@@ -414,33 +428,95 @@ function rebuildLinkLookupForHost(siteConfig) {
 		map.set(key, link);
 	}
 	linkLookupBySite.set(siteConfig.site, map);
+	invalidateTitleIndexForHost(siteConfig.site);
+}
+
+function invalidateTitleIndexForHost(host) {
+	if (!host) return;
+	titleIndexReadyBySite.delete(host);
+	titleEntriesBySite.delete(host);
+	titleTokenIndexBySite.delete(host);
+}
+
+function clearTitleIndexes() {
+	titleIndexReadyBySite = new Set();
+	titleEntriesBySite = new Map();
+	titleTokenIndexBySite = new Map();
+}
+
+function ensureTitleIndexForHost(siteConfig) {
+	if (!enableDuplicateWarning || !siteConfig?.site) return;
+	if (titleIndexReadyBySite.has(siteConfig.site)) return;
+	if (!hostsLoaded.has(siteConfig.site)) return;
 	rebuildTitleIndexForHost(siteConfig);
 }
 
 function rebuildTitleIndexForHost(siteConfig) {
 	if (!siteConfig?.site) return;
-	const exact = new Map();
 	const entries = [];
+	const tokenIndex = new Map();
 	for (const link of siteConfig.links || []) {
 		if (!link?.url) continue;
 		const matchKey = hrefMatchKey(link.url);
 		if (!matchKey) continue;
 		const normalized = normalizeDuplicateTitle(link.title);
 		if (!normalized || isBoilerplateDuplicateLinkTitle(normalized)) continue;
-		const entry = {
+		const entryIndex = entries.length;
+		entries.push({
 			url: link.url,
 			title: typeof link.title === "string" ? link.title : "",
 			style: typeof link.style === "string" ? link.style : "",
 			matchKey,
 			normalized
-		};
-		entries.push(entry);
-		const bucket = exact.get(normalized);
-		if (bucket) bucket.push(entry);
-		else exact.set(normalized, [entry]);
+		});
+		for (const token of duplicateTitleIndexTokens(normalized)) {
+			const bucket = tokenIndex.get(token);
+			if (bucket) bucket.push(entryIndex);
+			else tokenIndex.set(token, [entryIndex]);
+		}
 	}
-	titleExactBySite.set(siteConfig.site, exact);
 	titleEntriesBySite.set(siteConfig.site, entries);
+	titleTokenIndexBySite.set(siteConfig.site, tokenIndex);
+	titleIndexReadyBySite.add(siteConfig.site);
+}
+
+function collectDuplicateTitleCandidates(siteKey, queryNormalized) {
+	const entries = titleEntriesBySite.get(siteKey) || [];
+	if (entries.length === 0) return entries;
+	const tokenIndex = titleTokenIndexBySite.get(siteKey);
+	if (!tokenIndex || tokenIndex.size === 0) return entries;
+
+	const variants = [queryNormalized];
+	const queryStripped = stripDuplicateTitleSiteSuffix(queryNormalized);
+	if (queryStripped && queryStripped !== queryNormalized) variants.push(queryStripped);
+
+	let hasContentTokens = false;
+	const candidateIndexes = new Set();
+	for (const variant of variants) {
+		const tokens = duplicateTitleTokens(variant);
+		if (tokens.length === 0) continue;
+		hasContentTokens = true;
+		const need = duplicateTitleMinSharedTokens(tokens.length);
+		const counts = new Map();
+		for (const token of tokens) {
+			const posting = tokenIndex.get(token);
+			if (!posting) continue;
+			for (const idx of posting) {
+				counts.set(idx, (counts.get(idx) || 0) + 1);
+			}
+		}
+		for (const [idx, shared] of counts) {
+			if (shared >= need) candidateIndexes.add(idx);
+		}
+	}
+	if (!hasContentTokens) return entries;
+
+	const candidates = [];
+	for (const idx of candidateIndexes) {
+		const entry = entries[idx];
+		if (entry) candidates.push(entry);
+	}
+	return candidates;
 }
 
 function rebuildLinkLookup() {
@@ -448,8 +524,7 @@ function rebuildLinkLookup() {
 	urlNormalizationCache.clear();
 	rebuildSiteHostIndex();
 	linkLookupBySite = new Map();
-	titleExactBySite = new Map();
-	titleEntriesBySite = new Map();
+	clearTitleIndexes();
 
 	for (const siteConfig of sites) {
 		if (!siteConfig?.site || !hostsLoaded.has(siteConfig.site)) continue;
@@ -596,6 +671,7 @@ function ensureAllHostLinksReady() {
 
 function applyDuplicateWarningSetting(value) {
 	enableDuplicateWarning = value === true;
+	if (!enableDuplicateWarning) clearTitleIndexes();
 }
 
 function applyLoadedSites(nextSites, nextStyleRules, { rebuild = true } = {}) {
@@ -637,7 +713,7 @@ function maybeSplitStoredSiteLinks(result, loadedSites) {
 }
 
 function loadSettingsFromFullStorage() {
-	return browser.storage.local.get(null).then(result => {
+	return loadUtilsSitesExtra().then(() => browser.storage.local.get(null).then(result => {
 		styleRules = migrateStyleRulesFromStorage(result);
 		applyDuplicateWarningSetting(result[STORAGE_KEYS.enableDuplicateWarning]);
 		return purgeLegacyStorage(result).then(migratedSites => {
@@ -652,7 +728,7 @@ function loadSettingsFromFullStorage() {
 				return sitesAfter;
 			});
 		});
-	});
+	}));
 }
 
 function loadSettings() {
@@ -663,14 +739,13 @@ function loadSettings() {
 		styleRules = migrateStyleRulesFromStorage(meta);
 		hostsLoaded = new Set();
 		siteLinksDeltasByHost.clear();
-		return Promise.all([
-			purgeLegacyStorage(meta),
-			browser.storage.local.get(STORAGE_KEYS.enableDuplicateWarning)
-		]).then(([migratedSites, extra]) => {
-			applyDuplicateWarningSetting(extra[STORAGE_KEYS.enableDuplicateWarning]);
-			applyLoadedSites(migratedSites, styleRules);
-			return migratedSites;
-		});
+		return browser.storage.local.get(STORAGE_KEYS.enableDuplicateWarning)
+			.then(extra => {
+				applyDuplicateWarningSetting(extra[STORAGE_KEYS.enableDuplicateWarning]);
+				const loadedSites = loadSitesFromStorageResult(meta, { preserveLinks: true });
+				applyLoadedSites(loadedSites, styleRules);
+				return loadedSites;
+			});
 	});
 }
 
@@ -701,13 +776,6 @@ const REFRESH_TAB_STYLING_MENU_ID = "refreshTabStyling";
 const REFRESH_ALL_TABS_STYLING_MENU_ID = "refreshAllTabsStyling";
 const TOGGLE_REVEAL_HIDDEN_MENU_ID = "toggleRevealHidden";
 const OPEN_OPTIONS_MENU_ID = "openOptions";
-const LEGACY_LINK_MENU_IDS = [
-	"addLinkBlocked",
-	"addLinkFavorited",
-	"addTextFilter",
-	"addLinkToRuleFolderParent",
-	"addPageToRuleFolderParent"
-];
 let listStyleMenuIds = [];
 let textRuleMenuIds = [];
 
@@ -740,22 +808,11 @@ function createStaticContextMenus() {
 		}
 	];
 
-	browser.contextMenus.remove("authoritativeRefresh").catch(() => {});
-	for (const legacyId of LEGACY_LINK_MENU_IDS) {
-		browser.contextMenus.remove(legacyId).catch(() => {});
-	}
-
-	for (const definition of menuDefinitions) {
-		browser.contextMenus.remove(definition.id)
-			.catch(() => {})
-			.finally(() => {
-				try {
-					browser.contextMenus.create(definition);
-				} catch (e) {
-					console.error("Context menu creation failed", e);
-				}
-			});
-	}
+	return Promise.all(menuDefinitions.map(definition =>
+		Promise.resolve(browser.contextMenus.create(definition)).catch(error => {
+			console.error("Context menu creation failed", error);
+		})
+	));
 }
 
 function scheduleDeferredDynamicMenus() {
@@ -768,6 +825,18 @@ function scheduleDeferredDynamicMenus() {
 	} else {
 		setTimeout(run, 250);
 	}
+}
+
+function installContextMenus() {
+	listStyleMenuIds = [];
+	textRuleMenuIds = [];
+	return Promise.resolve(browser.contextMenus.removeAll())
+		.catch(() => {})
+		.then(() => createStaticContextMenus())
+		.then(() => Promise.all([
+			refreshTextRuleContextMenus(),
+			refreshSavedListContextMenus()
+		]));
 }
 
 function removeContextMenu(id) {
@@ -853,8 +922,10 @@ function refreshTextRuleContextMenus() {
 	}).catch(onError);
 }
 
-createStaticContextMenus();
-ensureSettingsReady().then(() => scheduleDeferredDynamicMenus()).catch(onError);
+browser.runtime.onInstalled.addListener(() => {
+	installContextMenus().catch(onError);
+});
+
 browser.tabs.query({ currentWindow: true, active: true })
 	.then(tabs => {
 		if (!tabs[0]) return;
@@ -906,8 +977,7 @@ function persistLoadedHostLinks(previousHosts) {
 		removeKeys.push(siteLinksDeltaStorageKey(host));
 		hostsLoaded.delete(host);
 		linkLookupBySite.delete(host);
-		titleExactBySite.delete(host);
-		titleEntriesBySite.delete(host);
+		invalidateTitleIndexForHost(host);
 		siteLinksDeltasByHost.delete(host);
 	}
 
@@ -1228,6 +1298,7 @@ function applySavedLinkToMemory(url, title, styleId, { toggleOff = false } = {})
 		const idx = siteConfig.links.indexOf(existing);
 		if (idx >= 0) siteConfig.links.splice(idx, 1);
 		map.delete(pageKey);
+		invalidateTitleIndexForHost(siteConfig.site);
 		return {
 			ok: true,
 			styleId: "",
@@ -1241,6 +1312,7 @@ function applySavedLinkToMemory(url, title, styleId, { toggleOff = false } = {})
 		if (savedTitle) existing.title = savedTitle;
 		siteConfig.linkFolders = addLinkFolderId(siteConfig.linkFolders, styleId);
 		map.set(pageKey, existing);
+		invalidateTitleIndexForHost(siteConfig.site);
 		return {
 			ok: true,
 			styleId,
@@ -1261,6 +1333,7 @@ function applySavedLinkToMemory(url, title, styleId, { toggleOff = false } = {})
 	siteConfig.links.push(saved);
 	siteConfig.linkFolders = addLinkFolderId(siteConfig.linkFolders, styleId);
 	map.set(pageKey, saved);
+	invalidateTitleIndexForHost(siteConfig.site);
 	return {
 		ok: true,
 		styleId,
@@ -1367,7 +1440,7 @@ function startClassPickerOnTab(tabId) {
 		if (results[0] && results[0].result) return results;
 		return browser.scripting.executeScript({
 			target: { tabId },
-			files: ["utilsSites.js"]
+			files: CLASS_PICKER_SITE_UTILS_FILES
 		}).then(injected => throwIfScriptInjectionFailed(injected, "inject site utils"));
 	});
 
@@ -1722,38 +1795,6 @@ function searchhrefs(hrefs) {
 	return Promise.resolve({ statuses });
 }
 
-function matchDuplicateListingTitles(candidates) {
-	const hrefs = [];
-	if (!enableDuplicateWarning || !Array.isArray(candidates)) {
-		return { ok: true, hrefs };
-	}
-
-	const seen = new Set();
-	for (const candidate of candidates) {
-		const href = typeof candidate?.href === "string" ? candidate.href : "";
-		if (!href) continue;
-		let hostname = "";
-		try {
-			hostname = new URL(href).hostname;
-		} catch {
-			continue;
-		}
-		const siteConfig = matchingSiteConfig(hostname);
-		if (!siteConfig) continue;
-		const normalizedTitle = normalizeDuplicateTitle(candidate.title);
-		if (!normalizedTitle || isBoilerplateDuplicateLinkTitle(normalizedTitle)) continue;
-		const hits = titleExactBySite.get(siteConfig.site)?.get(normalizedTitle);
-		if (!hits || hits.length === 0) continue;
-		const pageKey = hrefMatchKey(href);
-		if (!hits.some(hit => hit.matchKey !== pageKey)) continue;
-		const normalizedHref = normalizeHrefForSearch(href);
-		if (!normalizedHref || seen.has(normalizedHref)) continue;
-		seen.add(normalizedHref);
-		hrefs.push(normalizedHref);
-	}
-	return { ok: true, hrefs };
-}
-
 function matchDuplicatePageTitle(url, title) {
 	if (!enableDuplicateWarning) return { ok: true, matches: [] };
 	if (!isValidHttpUrl(url) || lookupLinkStyle(url)) return { ok: true, matches: [] };
@@ -1767,11 +1808,12 @@ function matchDuplicatePageTitle(url, title) {
 	}
 	const siteConfig = matchingSiteConfig(hostname);
 	if (!siteConfig) return { ok: true, matches: [] };
+	ensureTitleIndexForHost(siteConfig);
 
 	const query = normalizeDuplicateTitle(title);
 	if (!query) return { ok: true, matches: [] };
 	const pageKey = hrefMatchKey(url);
-	const entries = titleEntriesBySite.get(siteConfig.site) || [];
+	const entries = collectDuplicateTitleCandidates(siteConfig.site, query);
 	const scored = [];
 	for (const entry of entries) {
 		if (entry.matchKey === pageKey) continue;

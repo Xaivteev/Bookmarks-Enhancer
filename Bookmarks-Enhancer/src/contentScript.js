@@ -1,6 +1,6 @@
 // Shared with utils.js (normalizeHrefForSearch). Must stay at content-script top
 // level — not inside the install guard — or URL normalization throws ReferenceError.
-// Bookmark import/export helpers live in utilsSites.js and are not injected here.
+// Bookmark import/export helpers live in utilsSitesExtra.js and are not injected here.
 var urlRules = urlRules || [];
 var urlNormalizationCache = urlNormalizationCache || createUrlNormalizationCache();
 
@@ -22,7 +22,6 @@ let enableTopBorder = false;
 let enableDeepSearch = false;
 let enableToastNotifications = true;
 let enableDuplicateWarning = false;
-let duplicateWarningStyleId = DEFAULT_DUPLICATE_WARNING_STYLE_ID;
 // Defaults only include built-in ids (blocked/favorited/seen). Custom UUID styles
 // arrive via storage — gate lookups until then so early requery cannot stick
 // positives in processedHrefs that applyBookmarkStyling silently skips.
@@ -39,8 +38,7 @@ const CONTENT_SETTINGS_KEYS = [
 	STORAGE_KEYS.enableTopBorder,
 	STORAGE_KEYS.enableDeepSearch,
 	STORAGE_KEYS.enableToastNotifications,
-	STORAGE_KEYS.enableDuplicateWarning,
-	STORAGE_KEYS.duplicateWarningStyleId
+	STORAGE_KEYS.enableDuplicateWarning
 ];
 
 function loadContentSettings() {
@@ -149,10 +147,6 @@ function applyLoadedSettings(item) {
 	enableDeepSearch = !!item[STORAGE_KEYS.enableDeepSearch];
 	enableToastNotifications = item[STORAGE_KEYS.enableToastNotifications] !== false;
 	enableDuplicateWarning = !!item[STORAGE_KEYS.enableDuplicateWarning];
-	duplicateWarningStyleId = typeof item[STORAGE_KEYS.duplicateWarningStyleId] === "string" &&
-		item[STORAGE_KEYS.duplicateWarningStyleId]
-		? item[STORAGE_KEYS.duplicateWarningStyleId]
-		: DEFAULT_DUPLICATE_WARNING_STYLE_ID;
 	applySitesConfig(item);
 	settingsLoaded = true;
 }
@@ -265,7 +259,7 @@ let linkMap = new Map(); // normalizedHref -> [link elements]
 let linkStatusMap = new Map(); // normalizedHref -> status string
 let processedHrefs = new Set(); // positive resolutions only
 // Soft "none" results — skipped on ordinary scans to avoid message spam, cleared
-// on requery / visibility / authoritative so folder re-checks can recover.
+// on requery / warmup / authoritative so later folder re-checks can recover.
 let softMissHrefs = new Set();
 let pendingStatusHrefs = new Set(); // in-flight lookups; not yet successfully processed
 let urlCacheGeneration = 0;
@@ -289,9 +283,11 @@ let warmupPendingRetries = 0;
 // requery is skipped when init already ran for this URL.
 let initScanHref = "";
 let duplicateWarningTimer = null;
-let duplicateWarningPassId = 0;
-let duplicateStyledHrefs = new Set();
 let lastDuplicatePageToastKey = "";
+let lastPageTitleScanUrl = "";
+let lastPageTitleScanTitle = "";
+let pageTitleScanPendingUrl = "";
+let pageTitleScanPendingTitle = "";
 let duplicateWarningToastHost = null;
 let duplicateWarningToastHideTimer = null;
 
@@ -680,8 +676,11 @@ function invalidateUrlDependentCaches() {
 	}
 
 	clearDuplicateWarningPass();
-	duplicateStyledHrefs = new Set();
 	lastDuplicatePageToastKey = "";
+	lastPageTitleScanUrl = "";
+	lastPageTitleScanTitle = "";
+	pageTitleScanPendingUrl = "";
+	pageTitleScanPendingTitle = "";
 	hideDuplicateWarningToast();
 
 	removeStatusClasses(managedClassNames);
@@ -690,6 +689,21 @@ function invalidateUrlDependentCaches() {
 function invalidateTextFilterCache() {
 	textFilterCache.clear();
 	removeStatusClasses(managedClassNames);
+}
+
+function flushLookupRetriesNow() {
+	if (lookupRetryTimer) {
+		clearTimeout(lookupRetryTimer);
+		lookupRetryTimer = null;
+	}
+	if (lookupRetryHrefs.size === 0) return;
+	const batch = Array.from(lookupRetryHrefs);
+	lookupRetryHrefs = new Set();
+	for (const href of batch) {
+		softMissHrefs.delete(href);
+		pendingStatusHrefs.delete(href);
+	}
+	requestBookmarkStatuses(batch, { force: true });
 }
 
 function scheduleLookupRetry(hrefs) {
@@ -703,13 +717,7 @@ function scheduleLookupRetry(hrefs) {
 	lookupRetryAttempt += 1;
 	lookupRetryTimer = setTimeout(() => {
 		lookupRetryTimer = null;
-		const batch = Array.from(lookupRetryHrefs);
-		lookupRetryHrefs = new Set();
-		for (const href of batch) {
-			softMissHrefs.delete(href);
-			pendingStatusHrefs.delete(href);
-		}
-		requestBookmarkStatuses(batch, { force: true });
+		flushLookupRetriesNow();
 	}, delay);
 }
 
@@ -801,7 +809,7 @@ function requestBookmarkStatuses(hrefs, options = {}) {
 							sawPositive = true;
 						}
 					} else {
-						// Soft miss — retry on requery / visibility / index-ready.
+						// Soft miss — retry on requery / warmup / index-ready.
 						softMissHrefs.add(href);
 						processedHrefs.delete(href);
 						linkStatusMap.delete(href);
@@ -1200,8 +1208,8 @@ function applyHrefStatusUpdates(statusUpdates) {
 	}
 	if (touchedPageUrl) syncPageTopBorder(statusLookup);
 
-	// Look-shortcut save/unsave of this page restyles its href; other listing
-	// titles are unchanged, so skip the title-similarity scan.
+	// Look-shortcut save/unsave of this page restyles its href only.
+	// Hide the toast if this URL is now saved; skip a full title rescan.
 	const onlyCurrentPage = touchedPageUrl &&
 		Object.keys(statusUpdates).every(href => href === pageHref);
 	if (onlyCurrentPage) {
@@ -1584,6 +1592,8 @@ function applyCachedLinkStatus(norm) {
 }
 
 function scheduleVisibilityRescan() {
+	if (!searchSite) return;
+	if (lookupRetryHrefs.size === 0) return;
 	if (visibilityRescanTimer) return;
 	visibilityRescanTimer = setTimeout(() => {
 		visibilityRescanTimer = null;
@@ -1594,10 +1604,10 @@ function scheduleVisibilityRescan() {
 function performVisibilityRescan() {
 	if (!searchSite) return;
 	if (document.visibilityState === "hidden") return;
-
-	// Retry soft misses: a prior pass may have resolved before the folder index
-	// was complete. Background re-checks the folder map cheaply.
-	clearSoftMissesAndRescan();
+	// Cmd-Tab / window focus is not a reason to re-ask every unmatched URL.
+	// Lookups already wait for the host list; flush only failed requests
+	// whose retry timer may have been throttled while hidden.
+	flushLookupRetriesNow();
 }
 
 function onVisibilityChange() {
@@ -1629,7 +1639,6 @@ function onWindowFocus() {
 		pageWasHidden = true;
 		return;
 	}
-	if (softMissHrefs.size === 0 && lookupRetryHrefs.size === 0) return;
 	scheduleVisibilityRescan();
 }
 
@@ -1641,7 +1650,6 @@ function ensureVisibilityRescanListeners() {
 	window.addEventListener("focus", onWindowFocus);
 }
 
-const DUPLICATE_LISTING_CANDIDATE_LIMIT = 400;
 const DUPLICATE_WARNING_TOAST_DURATION_MS = 10000;
 const DUPLICATE_WARNING_TOAST_HOST_ID = "bookmarks-enhancer-duplicate-warning";
 
@@ -1658,26 +1666,7 @@ function pageHrefHasUrlMatch() {
 	}
 }
 
-function cardHasUrlMatchedLink(card) {
-	if (!card) return false;
-	for (const [href, status] of linkStatusMap) {
-		if (!status || status === "none") continue;
-		for (const link of linksForHref(href)) {
-			if (link === card || card.contains(link)) return true;
-		}
-	}
-	return false;
-}
-
-function listingLinkInUrlMatchedCard(link) {
-	for (const card of closestConfiguredCards(link)) {
-		if (cardHasUrlMatchedLink(card)) return true;
-	}
-	return false;
-}
-
 function clearDuplicateWarningPass() {
-	duplicateWarningPassId += 1;
 	if (duplicateWarningTimer) {
 		clearTimeout(duplicateWarningTimer);
 		duplicateWarningTimer = null;
@@ -1686,7 +1675,6 @@ function clearDuplicateWarningPass() {
 
 function scheduleDuplicateWarningPass() {
 	if (!enableDuplicateWarning) {
-		clearDuplicateListingLooks();
 		hideDuplicateWarningToast();
 		return;
 	}
@@ -1697,125 +1685,75 @@ function scheduleDuplicateWarningPass() {
 	}, 80);
 }
 
+function rememberPageTitleScan(url, title) {
+	lastPageTitleScanUrl = url;
+	lastPageTitleScanTitle = title;
+	if (pageTitleScanPendingUrl === url && pageTitleScanPendingTitle === title) {
+		pageTitleScanPendingUrl = "";
+		pageTitleScanPendingTitle = "";
+	}
+}
+
+function clearPageTitleScanPending(url, title) {
+	if (pageTitleScanPendingUrl === url && pageTitleScanPendingTitle === title) {
+		pageTitleScanPendingUrl = "";
+		pageTitleScanPendingTitle = "";
+	}
+}
+
+function pageTitleScanAlreadyDone(url, title) {
+	return url === lastPageTitleScanUrl && title === lastPageTitleScanTitle;
+}
+
+function pageTitleScanInFlight(url, title) {
+	return url === pageTitleScanPendingUrl && title === pageTitleScanPendingTitle;
+}
+
 function runDuplicateWarningPass() {
 	if (!enableDuplicateWarning || !searchSite) {
-		clearDuplicateListingLooks();
 		hideDuplicateWarningToast();
 		return;
 	}
-	const passId = ++duplicateWarningPassId;
-	const urlGeneration = urlCacheGeneration;
-	matchDuplicateListingTitles(passId, urlGeneration);
-	matchDuplicatePageTitle(passId, urlGeneration);
+	matchDuplicatePageTitle(urlCacheGeneration);
 }
 
-function collectDuplicateListingCandidates() {
-	const candidates = [];
-	for (const href of linkMap.keys()) {
-		if (hrefHasUrlMatch(href)) continue;
-		for (const link of linksForHref(href)) {
-			if (listingLinkInUrlMatchedCard(link)) continue;
-			const title = (link.textContent || "").replace(/\s+/g, " ").trim();
-			const normalized = normalizeDuplicateTitle(title);
-			if (!normalized || isBoilerplateDuplicateLinkTitle(normalized)) continue;
-			candidates.push({ href, title });
-			if (candidates.length >= DUPLICATE_LISTING_CANDIDATE_LIMIT) return candidates;
-		}
-	}
-	return candidates;
-}
-
-function clearDuplicateLookFromHref(href) {
-	if (hrefHasUrlMatch(href)) return;
-	for (const link of linksForHref(href)) {
-		if (managedClassNames.length) link.classList.remove(...managedClassNames);
-		for (const card of closestConfiguredCards(link)) {
-			if (cardHasUrlMatchedLink(card)) continue;
-			if (managedClassNames.length) card.classList.remove(...managedClassNames);
-		}
-	}
-}
-
-function clearDuplicateListingLooks() {
-	for (const href of duplicateStyledHrefs) {
-		clearDuplicateLookFromHref(href);
-	}
-	duplicateStyledHrefs = new Set();
-}
-
-function applyDuplicateListingMatches(matchedHrefs) {
-	const style = getStyleConfigById(duplicateWarningStyleId);
-	const next = new Set(Array.isArray(matchedHrefs) ? matchedHrefs : []);
-	for (const href of duplicateStyledHrefs) {
-		if (next.has(href)) continue;
-		clearDuplicateLookFromHref(href);
-	}
-	if (!style) {
-		duplicateStyledHrefs = new Set();
-		return;
-	}
-
-	const applied = new Set();
-	for (const href of next) {
-		if (hrefHasUrlMatch(href)) continue;
-		let styledAny = false;
-		for (const link of linksForHref(href)) {
-			if (listingLinkInUrlMatchedCard(link)) continue;
-			const title = (link.textContent || "").replace(/\s+/g, " ").trim();
-			const normalized = normalizeDuplicateTitle(title);
-			if (!normalized || isBoilerplateDuplicateLinkTitle(normalized)) continue;
-			applyStatusClass(link, style.className);
-			styledAny = true;
-			for (const card of closestConfiguredCards(link)) {
-				if (cardHasUrlMatchedLink(card) || hasStatusClass(card)) continue;
-				applyStatusClass(card, style.className);
-			}
-		}
-		if (styledAny) applied.add(href);
-	}
-	duplicateStyledHrefs = applied;
-}
-
-function matchDuplicateListingTitles(passId, urlGeneration) {
-	const candidates = collectDuplicateListingCandidates();
-	if (candidates.length === 0) {
-		clearDuplicateListingLooks();
-		return;
-	}
-	browser.runtime.sendMessage({
-		matchDuplicateListingTitles: true,
-		candidates
-	}).then(result => {
-		if (passId !== duplicateWarningPassId) return;
-		if (urlGeneration !== urlCacheGeneration) return;
-		if (!enableDuplicateWarning) return;
-		if (!result || result.ok === false) return;
-		applyDuplicateListingMatches(result.hrefs);
-	}).catch(() => {});
-}
-
-function matchDuplicatePageTitle(passId, urlGeneration) {
-	if (pageHrefHasUrlMatch()) {
-		lastDuplicatePageToastKey = "";
-		hideDuplicateWarningToast();
-		return;
-	}
+function matchDuplicatePageTitle(urlGeneration) {
 	const url = location.href;
 	const title = document.title || "";
-	if (isGenericDuplicatePageTitle(title)) {
+
+	if (pageHrefHasUrlMatch()) {
 		lastDuplicatePageToastKey = "";
+		rememberPageTitleScan(url, title);
 		hideDuplicateWarningToast();
 		return;
 	}
+	if (isGenericDuplicatePageTitle(title)) {
+		lastDuplicatePageToastKey = "";
+		rememberPageTitleScan(url, title);
+		hideDuplicateWarningToast();
+		return;
+	}
+	// Same URL+title already scanned (or in flight): skip the fuzzy pass.
+	// New tabs, reloads, and SPA URL/title changes are not skipped.
+	if (pageTitleScanAlreadyDone(url, title) || pageTitleScanInFlight(url, title)) {
+		return;
+	}
+
+	pageTitleScanPendingUrl = url;
+	pageTitleScanPendingTitle = title;
 	browser.runtime.sendMessage({
 		matchDuplicatePageTitle: true,
 		url,
 		title
 	}).then(result => {
-		if (passId !== duplicateWarningPassId) return;
-		if (urlGeneration !== urlCacheGeneration) return;
+		if (urlGeneration !== urlCacheGeneration) {
+			clearPageTitleScanPending(url, title);
+			return;
+		}
+		rememberPageTitleScan(url, title);
 		if (!enableDuplicateWarning) return;
 		if (location.href !== url) return;
+		if ((document.title || "") !== title) return;
 		if (pageHrefHasUrlMatch()) {
 			hideDuplicateWarningToast();
 			return;
@@ -1830,7 +1768,9 @@ function matchDuplicatePageTitle(passId, urlGeneration) {
 		if (toastKey === lastDuplicatePageToastKey) return;
 		lastDuplicatePageToastKey = toastKey;
 		showDuplicateWarningToast(matches);
-	}).catch(() => {});
+	}).catch(() => {
+		clearPageTitleScanPending(url, title);
+	});
 }
 
 function hideDuplicateWarningToast() {
@@ -1996,8 +1936,8 @@ function initProcessing() {
 	startMutationObserver();
 	scheduleWarmupRescan();
 
-	// Background tabs often finish the first scan while still hidden; rescan
-	// once when the user first focuses the tab.
+	// Background tabs can finish the first scan while still hidden; remember
+	// that so a later focus can flush failed lookups (not every miss).
 	if (document.visibilityState === "hidden") {
 		pageWasHidden = true;
 	}

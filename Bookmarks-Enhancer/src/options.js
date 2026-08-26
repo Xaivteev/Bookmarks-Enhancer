@@ -226,15 +226,11 @@ function populateStyleSelect(select, selectedId = "blocked", { includeNone = fal
 function refreshAllStyleSelects() {
     cachedStyleRules = normalizeStyleRules(collectStyleRules());
     for (const select of document.querySelectorAll(
-        ".textRuleStyle, .savedLinkMove, .savedLinkGroupLook, .importBookmarkLook, #duplicateWarningStyleId"
+        ".textRuleStyle, .savedLinkMove, .savedLinkGroupLook, .importBookmarkLook"
     )) {
         populateStyleSelect(
             select,
-            select.value || (
-                select.id === "duplicateWarningStyleId"
-                    ? DEFAULT_DUPLICATE_WARNING_STYLE_ID
-                    : ""
-            )
+            select.value || ""
         );
     }
     for (const look of document.querySelectorAll(".importBookmarkLook")) {
@@ -2528,9 +2524,6 @@ function findDomRulesReferencingStyle(styleId) {
             }
         }
     });
-    if (document.querySelector("#duplicateWarningStyleId")?.value === styleId) {
-        references.push("Potential Duplicate Warning listing look");
-    }
     return references;
 }
 
@@ -2552,10 +2545,6 @@ function findDanglingStyleReferences(styleRules, sites) {
                 `Text rule "${rule.text}" on ${siteConfig.site} uses missing style "${rule.style}"`
             );
         }
-    }
-    const warningStyleId = document.querySelector("#duplicateWarningStyleId")?.value;
-    if (warningStyleId && !styleIds.has(warningStyleId)) {
-        dangling.push(`Potential Duplicate Warning uses missing style "${warningStyleId}"`);
     }
     return dangling;
 }
@@ -2581,7 +2570,6 @@ function buildOptionsPayload() {
             enableDeepSearch: document.querySelector("#enableDeepSearch").checked,
             enableToastNotifications: document.querySelector("#enableToastNotifications").checked,
             enableDuplicateWarning: document.querySelector("#enableDuplicateWarning").checked,
-            duplicateWarningStyleId: document.querySelector("#duplicateWarningStyleId").value || "",
             [STYLE_RULE_STORAGE_KEY]: styleRules,
             ...buildSitesStorageWrites(sites)
         }
@@ -2611,8 +2599,7 @@ function getFormSnapshot() {
                 enableTopBorder: document.querySelector("#enableTopBorder").checked,
                 enableDeepSearch: document.querySelector("#enableDeepSearch").checked,
                 enableToastNotifications: document.querySelector("#enableToastNotifications").checked,
-                enableDuplicateWarning: document.querySelector("#enableDuplicateWarning").checked,
-                duplicateWarningStyleId: document.querySelector("#duplicateWarningStyleId").value || ""
+                enableDuplicateWarning: document.querySelector("#enableDuplicateWarning").checked
             },
             styleRules: collectStyleRules(),
             siteDetail: isSiteDetailOpen() ? {
@@ -2896,7 +2883,6 @@ function persistOptionsFromForm({
                 enableDeepSearch: formPayload.enableDeepSearch,
                 enableToastNotifications: formPayload.enableToastNotifications,
                 enableDuplicateWarning: formPayload.enableDuplicateWarning,
-                duplicateWarningStyleId: formPayload.duplicateWarningStyleId,
                 [STYLE_RULE_STORAGE_KEY]: styleRules,
                 ...plan.writes
             };
@@ -2946,8 +2932,7 @@ function persistOptionsFromForm({
                 enableTopBorder: saved.payload.enableTopBorder,
                 enableDeepSearch: saved.payload.enableDeepSearch,
                 enableToastNotifications: saved.payload.enableToastNotifications,
-                enableDuplicateWarning: saved.payload.enableDuplicateWarning,
-                duplicateWarningStyleId: saved.payload.duplicateWarningStyleId
+                enableDuplicateWarning: saved.payload.enableDuplicateWarning
             });
             applyOptionsLocationHash();
             suppressDirtyTracking = false;
@@ -3025,12 +3010,6 @@ function applyLoadedConfiguration(sites, styleRules, general = {}) {
     }
 
     loadStyleRuleRows(styleRules);
-    if (general.duplicateWarningStyleId !== undefined) {
-        populateStyleSelect(
-            document.querySelector("#duplicateWarningStyleId"),
-            general.duplicateWarningStyleId || DEFAULT_DUPLICATE_WARNING_STYLE_ID
-        );
-    }
     sitesDraft = normalizeSites(sites, { preserveLinks: true });
     captureLoadedLinks(sitesDraft);
     selectedSiteIndex = -1;
@@ -3058,9 +3037,7 @@ function restoreOptions() {
                     enableTopBorder: !!result.enableTopBorder,
                     enableDeepSearch: !!result.enableDeepSearch,
                     enableToastNotifications: result.enableToastNotifications !== false,
-                    enableDuplicateWarning: !!result.enableDuplicateWarning,
-                    duplicateWarningStyleId: result.duplicateWarningStyleId ||
-                        DEFAULT_DUPLICATE_WARNING_STYLE_ID
+                    enableDuplicateWarning: !!result.enableDuplicateWarning
                 });
             });
         })
@@ -3192,8 +3169,7 @@ function exportToFile() {
                 enableTopBorder: document.querySelector("#enableTopBorder").checked,
                 enableDeepSearch: document.querySelector("#enableDeepSearch").checked,
                 enableToastNotifications: document.querySelector("#enableToastNotifications").checked,
-                enableDuplicateWarning: document.querySelector("#enableDuplicateWarning").checked,
-                duplicateWarningStyleId: document.querySelector("#duplicateWarningStyleId").value || ""
+                enableDuplicateWarning: document.querySelector("#enableDuplicateWarning").checked
             }, null, 2);
             const blob = new Blob([json], { type: "application/json" });
             const url = URL.createObjectURL(blob);
@@ -3306,13 +3282,6 @@ function importFromJson(jsonString) {
         }
 
         if (
-            data.duplicateWarningStyleId !== undefined &&
-            typeof data.duplicateWarningStyleId !== "string"
-        ) {
-            throw new Error("Invalid duplicateWarningStyleId");
-        }
-
-        if (
             data.bookmarkRules !== undefined &&
             (
                 !Array.isArray(data.bookmarkRules) ||
@@ -3345,8 +3314,7 @@ function importFromJson(jsonString) {
             enableDeepSearch: data.enableDeepSearch,
             enableTopBorder: data.enableTopBorder,
             enableToastNotifications: data.enableToastNotifications,
-            enableDuplicateWarning: data.enableDuplicateWarning,
-            duplicateWarningStyleId: data.duplicateWarningStyleId
+            enableDuplicateWarning: data.enableDuplicateWarning
         });
         setSitesReady(true);
         return persistOptionsFromForm({

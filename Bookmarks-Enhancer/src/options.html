@@ -1666,24 +1666,9 @@
                 <label for="enableDuplicateWarning">Potential Duplicate Warning</label>
             </div>
             <p class="settingHelp" id="enableDuplicateWarningHelp">
-                Warns you when a saved link on this site looks like a duplicate.
-                Listing links whose text exactly matches a saved title (but not
-                that URL) get the look below — they are not added to your saved
-                links. If this page's title is similar to a saved link, a
-                separate toast lists up to three matches. URLs you already saved
-                are left alone. Choose Blocked only if you want those listings
-                hidden.
-            </p>
-            <div class="settingRow settingRowFollowup">
-                <label for="duplicateWarningStyleId">Look for listing matches</label>
-                <select
-                    id="duplicateWarningStyleId"
-                    aria-describedby="duplicateWarningStyleHelp"
-                ></select>
-            </div>
-            <p class="settingHelp" id="duplicateWarningStyleHelp">
-                Applied only to listing links that match by title. Does not
-                change which look a saved URL uses.
+                Warns you when this page's title looks like a saved link on the
+                same site. A toast lists up to three matches. URLs you already
+                saved are left alone.
             </p>
         </section>
 
@@ -2245,6 +2230,7 @@
     <script src="browser-polyfill.js"></script>
     <script src="utils.js"></script>
     <script src="utilsSites.js"></script>
+    <script src="utilsSitesExtra.js"></script>
     <script src="options.js"></script>
 </body>
 </html>

@@ -1,6 +1,7 @@
 /**
  * Content-script-safe helpers shared with background and options.
- * Site storage, bookmark import/export, and legacy migration live in utilsSites.js.
+ * Site storage, bookmark import/export, and legacy migration live in
+ * utilsSites.js / utilsSitesExtra.js.
  */
 
 const STORAGE_KEYS = {
@@ -14,7 +15,6 @@ const STORAGE_KEYS = {
 	enableDeepSearch: "enableDeepSearch",
 	enableToastNotifications: "enableToastNotifications",
 	enableDuplicateWarning: "enableDuplicateWarning",
-	duplicateWarningStyleId: "duplicateWarningStyleId",
 	// Options UI only — not part of config export/import or page refresh.
 	hideGettingStarted: "hideGettingStarted",
 	linkedBookmarkFolderId: "linkedBookmarkFolderId"
@@ -78,8 +78,7 @@ const CONFIG_REFRESH_STORAGE_KEYS = [
 	STORAGE_KEYS.enableTopBorder,
 	STORAGE_KEYS.enableDeepSearch,
 	STORAGE_KEYS.enableToastNotifications,
-	STORAGE_KEYS.enableDuplicateWarning,
-	STORAGE_KEYS.duplicateWarningStyleId
+	STORAGE_KEYS.enableDuplicateWarning
 ];
 
 const SHORTCUT_ICON_IDS = ["star", "x", "eye", "bookmark", "heart"];
@@ -713,9 +712,8 @@ function hrefMatchKey(href, explicitRules) {
 	return hrefMatchKeyFromNormalized(normalizeHrefForSearch(href, explicitRules));
 }
 
-const DEFAULT_DUPLICATE_WARNING_STYLE_ID = "seen";
 const DUPLICATE_WARNING_MAX_MATCHES = 3;
-const DUPLICATE_TITLE_FUZZY_MIN_SCORE = 0.55;
+const DUPLICATE_TITLE_FUZZY_MIN_SCORE = 0.7;
 const DUPLICATE_TITLE_STOPWORDS = new Set([
 	"a", "an", "and", "at", "by", "for", "from", "in", "into", "is", "it", "its",
 	"of", "on", "or", "the", "to", "with"
@@ -776,6 +774,24 @@ function duplicateTitleTokens(normalized) {
 		tokens.push(raw);
 	}
 	return tokens;
+}
+
+function duplicateTitleIndexTokens(normalized) {
+	const tokens = duplicateTitleTokens(normalized);
+	const stripped = stripDuplicateTitleSiteSuffix(normalized);
+	if (!stripped || stripped === normalized) return tokens;
+	const seen = new Set(tokens);
+	for (const token of duplicateTitleTokens(stripped)) {
+		if (seen.has(token)) continue;
+		seen.add(token);
+		tokens.push(token);
+	}
+	return tokens;
+}
+
+function duplicateTitleMinSharedTokens(queryTokenCount, threshold = DUPLICATE_TITLE_FUZZY_MIN_SCORE) {
+	if (queryTokenCount <= 0) return 0;
+	return Math.max(1, Math.ceil(threshold * queryTokenCount));
 }
 
 function duplicateTitleTokenJaccard(aTokens, bTokens) {
